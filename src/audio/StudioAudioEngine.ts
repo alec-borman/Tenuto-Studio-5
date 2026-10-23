@@ -29,12 +29,15 @@ interface ScheduledNoteEvent {
 }
 
 interface ActiveVoiceCleanup {
+  fadeOutAndStop: (now: number) => void;
   stopAndDisconnect: () => void;
 }
 
 export class StudioAudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
+  private dryBus: GainNode | null = null;
+  private drumBus: GainNode | null = null;
   private reverbSendBus: GainNode | null = null;
   private reverbNode: ConvolverNode | null = null;
   private reverbWetGain: GainNode | null = null;
@@ -63,7 +66,7 @@ export class StudioAudioEngine {
   public setMasterVolume(scalar: number): void {
     this.masterVolumeScalar = Math.max(0, Math.min(2.5, scalar));
     if (this.masterGain && this.ctx) {
-      this.masterGain.gain.setValueAtTime(1.45 * this.masterVolumeScalar, this.ctx.currentTime || 0);
+      this.masterGain.gain.setValueAtTime(1.35 * this.masterVolumeScalar, this.ctx.currentTime || 0);
     }
   }
 
@@ -81,11 +84,18 @@ export class StudioAudioEngine {
   }
 
   /**
-   * Rebuilds a clean master bus before playback so no residual ConvolverNode
-   * or DynamicsCompressorNode state can ever poison subsequent plays.
+   * Builds a strictly feed-forward master bus DAG:
+   *   Voices -> dryBus  ----(dry)----> masterGain -> compressor -> destination
+   *                \---(send)---> reverbSendBus -> reverbNode -> reverbWetGain -^
+   *   Drums  -> drumBus ---(dry)----> masterGain
+   *                \---(room)---> reverbSendBus
+   * Because masterGain and reverbWetGain NEVER connect back to dryBus or drumBus,
+   * positive feedback loops are structurally impossible.
    */
   private rebuildMasterChain(ctx: AudioContext): void {
     try {
+      this.dryBus?.disconnect();
+      this.drumBus?.disconnect();
       this.reverbSendBus?.disconnect();
       this.reverbNode?.disconnect();
       this.reverbWetGain?.disconnect();
@@ -96,16 +106,16 @@ export class StudioAudioEngine {
     }
 
     this.masterGain = ctx.createGain();
-    this.masterGain.gain.value = 1.45 * this.masterVolumeScalar;
+    this.masterGain.gain.value = 1.35 * this.masterVolumeScalar;
 
     if (typeof (ctx as any).createDynamicsCompressor === 'function') {
       const comp = ctx.createDynamicsCompressor();
       const now = ctx.currentTime || 0;
       comp.threshold?.setValueAtTime?.(-3, now);
-      comp.knee?.setValueAtTime?.(6, now);
-      comp.ratio?.setValueAtTime?.(12, now);
-      comp.attack?.setValueAtTime?.(0.002, now);
-      comp.release?.setValueAtTime?.(0.12, now);
+      comp.knee?.setValueAtTime?.(8, now);
+      comp.ratio?.setValueAtTime?.(10, now);
+      comp.attack?.setValueAtTime?.(0.005, now);
+      comp.release?.setValueAtTime?.(0.16, now);
       comp.connect(ctx.destination);
       this.masterGain.connect(comp);
       this.compressorNode = comp;
@@ -114,13 +124,28 @@ export class StudioAudioEngine {
       this.compressorNode = null;
     }
 
+    this.dryBus = ctx.createGain();
+    this.dryBus.gain.value = 1.0;
+    this.dryBus.connect(this.masterGain);
+
+    this.drumBus = ctx.createGain();
+    this.drumBus.gain.value = 1.0;
+    this.drumBus.connect(this.masterGain);
+
     this.reverbSendBus = ctx.createGain();
-    this.reverbSendBus.gain.value = 0.22;
+    this.reverbSendBus.gain.value = 0.16;
 
     if (typeof (ctx as any).createConvolver === 'function') {
-      this.reverbNode = this.createImpulseReverb(ctx, 1.5, 3.2);
+      this.reverbNode = this.createImpulseReverb(ctx, 1.4, 3.8);
       this.reverbWetGain = ctx.createGain();
-      this.reverbWetGain.gain.value = 0.28;
+      this.reverbWetGain.gain.value = 0.2;
+
+      this.dryBus.connect(this.reverbSendBus);
+      const drumRoom = ctx.createGain();
+      drumRoom.gain.value = 0.08;
+      this.drumBus.connect(drumRoom);
+      drumRoom.connect(this.reverbSendBus);
+
       this.reverbSendBus.connect(this.reverbNode);
       this.reverbNode.connect(this.reverbWetGain);
       this.reverbWetGain.connect(this.masterGain);
@@ -277,42 +302,136 @@ export class StudioAudioEngine {
     return list;
   }
 
-  private triggerRealtimeVoice(ctx: AudioContext, item: ScheduledNoteEvent, absStartSec: number): void {
-    if (!this.masterGain) return;
+  private getInstrumentArticulationProfile(
+    sfInstrument?: string | null,
+    patch?: string,
+    physics?: AtomicEvent['physics']
+  ): {
+    attackSec: number;
+    releaseSec: number;
+    sampleOffsetSec: number;
+    sustainRatio: number;
+    filterCutoffHz: number;
+  } {
+    const inst = (sfInstrument || patch || '').toLowerCase();
+    const isStacc = physics?.articulation === 'stacc' || physics?.articulation === 'staccato';
+    const isMarc = physics?.articulation === 'marc' || physics?.articulation === 'accent';
+    const isLegato = Boolean(physics?.legato);
+    const isPizz = Boolean(physics?.pizz) || inst.includes('pizz');
 
-    // Cap simultaneous live voices at 48 to prevent WebAudio thread saturation on dense scores
-    while (this.activeVoices.size >= 48) {
+    if (isPizz) {
+      return {
+        attackSec: 0.008,
+        releaseSec: 0.09,
+        sampleOffsetSec: 0,
+        sustainRatio: 0.35,
+        filterCutoffHz: 4200,
+      };
+    }
+
+    // 1. Bowed Strings (Violin, Viola, Cello, Contrabass, String Ensembles)
+    if (
+      inst.includes('violin') ||
+      inst.includes('viola') ||
+      inst.includes('cello') ||
+      inst.includes('contrabass') ||
+      inst.includes('string')
+    ) {
+      return {
+        attackSec: isLegato ? 0.075 : isStacc ? 0.022 : isMarc ? 0.028 : 0.052,
+        releaseSec: isStacc ? 0.09 : 0.24,
+        // Skip the initial bow-scrape click on sustained and legato string notes
+        sampleOffsetSec: isLegato ? 0.032 : isStacc || isMarc ? 0.004 : 0.016,
+        sustainRatio: 0.92,
+        filterCutoffHz: 4400,
+      };
+    }
+
+    // 2. Choir & Warm Pads
+    if (inst.includes('choir') || inst.includes('voice') || inst.includes('pad')) {
+      return {
+        attackSec: isLegato ? 0.09 : 0.068,
+        releaseSec: 0.28,
+        sampleOffsetSec: 0.025,
+        sustainRatio: 0.95,
+        filterCutoffHz: 3800,
+      };
+    }
+
+    // 3. Woodwinds (Flute, Piccolo, Oboe, English Horn, Clarinet, Bassoon, Sax)
+    if (
+      inst.includes('flute') ||
+      inst.includes('piccolo') ||
+      inst.includes('oboe') ||
+      inst.includes('english_horn') ||
+      inst.includes('clarinet') ||
+      inst.includes('bassoon') ||
+      inst.includes('sax')
+    ) {
+      return {
+        attackSec: isLegato ? 0.058 : isStacc ? 0.018 : 0.038,
+        releaseSec: isStacc ? 0.08 : 0.18,
+        sampleOffsetSec: isLegato ? 0.022 : 0.008,
+        sustainRatio: 0.9,
+        filterCutoffHz: 5200,
+      };
+    }
+
+    // 4. Orchestral Brass (French Horn, Trumpet, Trombone, Tuba, Brass Section)
+    if (
+      inst.includes('horn') ||
+      inst.includes('trumpet') ||
+      inst.includes('trombone') ||
+      inst.includes('tuba') ||
+      inst.includes('brass')
+    ) {
+      const isWarmBrass = inst.includes('horn') || inst.includes('trombone') || inst.includes('tuba');
+      return {
+        attackSec: isLegato ? 0.055 : isStacc || isMarc ? 0.016 : 0.034,
+        releaseSec: isStacc ? 0.09 : 0.2,
+        sampleOffsetSec: isLegato ? 0.02 : isStacc || isMarc ? 0.002 : 0.01,
+        sustainRatio: 0.88,
+        filterCutoffHz: isWarmBrass ? 3600 : 4600,
+      };
+    }
+
+    // 5. Pianos, Harps, Timpani, Chromatic Percussion & Plucked Instruments
+    return {
+      attackSec: isLegato ? 0.022 : 0.012,
+      releaseSec: 0.22,
+      sampleOffsetSec: 0,
+      sustainRatio: 0.65,
+      filterCutoffHz: 6500,
+    };
+  }
+
+  private triggerRealtimeVoice(ctx: AudioContext, item: ScheduledNoteEvent, absStartSec: number): void {
+    if (!this.dryBus || !this.drumBus) return;
+
+    // Soft-steal oldest voice with a 22ms de-clicking fade-out if active voices exceed 72
+    while (this.activeVoices.size >= 72) {
       const oldest = this.activeVoices.values().next().value;
       if (!oldest) break;
-      oldest.stopAndDisconnect();
       this.activeVoices.delete(oldest);
+      oldest.fadeOutAndStop(ctx.currentTime);
     }
 
     const safeStart = Math.max(ctx.currentTime + 0.008, absStartSec);
     const durSec = Math.max(0.05, item.durSec);
+    const isDrumTrack = item.style === 'grid' || Boolean(item.gridKey);
+    const targetBus: AudioNode = isDrumTrack ? this.drumBus : this.dryBus;
 
-    let voiceOut: AudioNode = this.masterGain;
+    let voiceOut: AudioNode = targetBus;
     let pannerNode: StereoPannerNode | null = null;
 
     if (typeof ctx.createStereoPanner === 'function' && item.pan !== 0) {
       pannerNode = ctx.createStereoPanner();
       pannerNode.pan.setValueAtTime(item.pan, safeStart);
-      pannerNode.connect(this.masterGain);
+      pannerNode.connect(targetBus);
       voiceOut = pannerNode;
     }
 
-    if (this.reverbSendBus) {
-      if (item.style === 'grid' || item.gridKey) {
-        const drumRoomSend = ctx.createGain();
-        drumRoomSend.gain.value = 0.14;
-        voiceOut.connect(drumRoomSend);
-        drumRoomSend.connect(this.reverbSendBus);
-      } else {
-        voiceOut.connect(this.reverbSendBus);
-      }
-    }
-
-    if (item.style === 'grid' || item.gridKey) {
+    if (isDrumTrack) {
       const key = (item.gridKey || '').toLowerCase();
       const isTimpaniStrike =
         item.sfInstrument === 'timpani' &&
@@ -327,14 +446,16 @@ export class StudioAudioEngine {
             voiceOut,
             pannerNode,
             timpSample,
+            'timpani',
             safeStart,
-            Math.max(0.45, durSec),
-            item.amp * 1.1,
+            Math.max(0.38, durSec),
+            item.amp * 0.95,
             item.swell,
             item.startAmp,
             item.endAmp,
             item.event.physics
           );
+          return;
         }
       }
 
@@ -350,6 +471,7 @@ export class StudioAudioEngine {
           voiceOut,
           pannerNode,
           cachedSample,
+          item.sfInstrument,
           safeStart,
           durSec,
           item.amp,
@@ -399,6 +521,7 @@ export class StudioAudioEngine {
     output: AudioNode,
     pannerNode: StereoPannerNode | null,
     sampleData: { buffer: AudioBuffer; playbackRate: number },
+    sfInstrument: string,
     startSec: number,
     durSec: number,
     amp: number,
@@ -407,6 +530,7 @@ export class StudioAudioEngine {
     endAmp?: number,
     physics?: AtomicEvent['physics']
   ): void {
+    const profile = this.getInstrumentArticulationProfile(sfInstrument, sfInstrument, physics);
     const env = ctx.createGain();
     const src = ctx.createBufferSource();
     src.buffer = sampleData.buffer;
@@ -425,23 +549,43 @@ export class StudioAudioEngine {
       }
     }
 
-    src.connect(env);
+    let toneFilter: BiquadFilterNode | null = null;
+    if (typeof ctx.createBiquadFilter === 'function') {
+      toneFilter = ctx.createBiquadFilter();
+      toneFilter.type = 'lowpass';
+      toneFilter.Q.setValueAtTime(0.5, startSec);
+      const baseCut = profile.filterCutoffHz;
+      if (swell === 'crescendo') {
+        toneFilter.frequency.setValueAtTime(Math.max(900, baseCut * 0.65), startSec);
+        toneFilter.frequency.exponentialRampToValueAtTime(Math.min(8500, baseCut * 1.25), startSec + durSec);
+      } else if (swell === 'diminuendo') {
+        toneFilter.frequency.setValueAtTime(Math.min(8500, baseCut * 1.15), startSec);
+        toneFilter.frequency.exponentialRampToValueAtTime(Math.max(800, baseCut * 0.6), startSec + durSec);
+      } else {
+        toneFilter.frequency.setValueAtTime(baseCut, startSec);
+      }
+      src.connect(toneFilter);
+      toneFilter.connect(env);
+    } else {
+      src.connect(env);
+    }
+
     env.connect(output);
 
     const t0 = startSec;
-    const attack = physics?.legato ? 0.018 : 0.006;
+    const attack = Math.min(profile.attackSec, Math.max(0.01, durSec * 0.45));
     const tAttack = t0 + attack;
-    const tSustain = Math.max(tAttack + 0.02, t0 + durSec);
-    const release = physics?.pizz ? 0.08 : Math.min(0.32, Math.max(0.12, durSec * 0.35));
+    const tSustain = Math.max(tAttack + 0.015, t0 + durSec);
+    const release = profile.releaseSec;
     const tEnd = tSustain + release;
-    const sampleScale = 2.6;
+    const sampleScale = 2.1;
 
     env.gain.setValueAtTime(0.0001, t0);
     if (physics?.fp) {
-      const fpPeak = Math.max(0.004, amp * sampleScale * 1.15);
-      const fpDrop = Math.max(0.001, fpPeak * 0.28);
-      env.gain.linearRampToValueAtTime(fpPeak, t0 + 0.008);
-      env.gain.exponentialRampToValueAtTime(fpDrop, Math.min(tSustain, t0 + 0.075));
+      const fpPeak = Math.max(0.004, amp * sampleScale * 1.1);
+      const fpDrop = Math.max(0.001, fpPeak * 0.3);
+      env.gain.linearRampToValueAtTime(fpPeak, t0 + Math.min(0.02, attack));
+      env.gain.exponentialRampToValueAtTime(fpDrop, Math.min(tSustain, t0 + 0.09));
       env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
     } else if (swell === 'crescendo' || swell === 'diminuendo') {
       const sPeak = Math.max(0.002, (startAmp ?? amp) * sampleScale);
@@ -452,16 +596,30 @@ export class StudioAudioEngine {
     } else {
       const peak = Math.max(0.002, amp * sampleScale);
       env.gain.linearRampToValueAtTime(peak, tAttack);
-      env.gain.setValueAtTime(peak * 0.9, tSustain);
+      env.gain.exponentialRampToValueAtTime(Math.max(0.001, peak * profile.sustainRatio), tSustain);
       env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
     }
 
-    const stopAt = tEnd + 0.02;
-    src.start(t0);
+    const stopAt = tEnd + 0.025;
+    const safeOffset =
+      sampleData.buffer.duration > 0.25 ? Math.min(profile.sampleOffsetSec, sampleData.buffer.duration * 0.15) : 0;
+    src.start(t0, safeOffset);
     src.stop(stopAt);
 
     let cleaned = false;
     const cleanup: ActiveVoiceCleanup = {
+      fadeOutAndStop: (now: number) => {
+        if (cleaned) return;
+        cleaned = true;
+        this.activeVoices.delete(cleanup);
+        try {
+          env.gain.cancelScheduledValues?.(now);
+          env.gain.setTargetAtTime?.(0.0001, now, 0.006);
+          src.stop(now + 0.025);
+        } catch {
+          cleanup.stopAndDisconnect();
+        }
+      },
       stopAndDisconnect: () => {
         if (cleaned) return;
         cleaned = true;
@@ -473,6 +631,7 @@ export class StudioAudioEngine {
         }
         try {
           src.disconnect();
+          toneFilter?.disconnect();
           env.disconnect();
           pannerNode?.disconnect();
         } catch {
@@ -576,24 +735,37 @@ export class StudioAudioEngine {
     gFund.gain.value = 0.75;
     gHarm.gain.value = 0.25;
 
-    oscFund.connect(gFund);
-    oscHarm.connect(gHarm);
-    gFund.connect(env);
-    gHarm.connect(env);
+    let lpFilter: BiquadFilterNode | null = null;
+    if (typeof ctx.createBiquadFilter === 'function') {
+      lpFilter = ctx.createBiquadFilter();
+      lpFilter.type = 'lowpass';
+      lpFilter.Q.setValueAtTime(0.5, startSec);
+      lpFilter.frequency.setValueAtTime(3800, startSec);
+      oscFund.connect(gFund);
+      oscHarm.connect(gHarm);
+      gFund.connect(lpFilter);
+      gHarm.connect(lpFilter);
+      lpFilter.connect(env);
+    } else {
+      oscFund.connect(gFund);
+      oscHarm.connect(gHarm);
+      gFund.connect(env);
+      gHarm.connect(env);
+    }
     env.connect(output);
 
     const t0 = startSec;
-    const tAttack = t0 + (physics?.legato ? 0.018 : 0.01);
+    const tAttack = t0 + (physics?.legato ? 0.028 : 0.015);
     const tDecay = Math.max(tAttack + 0.02, t0 + durSec);
-    const release = Math.min(0.2, durSec * 0.4);
-    const tEnd = tDecay + Math.max(0.03, release);
+    const release = Math.min(0.22, durSec * 0.45);
+    const tEnd = tDecay + Math.max(0.04, release);
 
     env.gain.setValueAtTime(0.0001, t0);
     if (physics?.fp) {
       const fpPeak = Math.max(0.004, amp * 1.15);
       const fpDrop = Math.max(0.001, fpPeak * 0.25);
-      env.gain.linearRampToValueAtTime(fpPeak, t0 + 0.008);
-      env.gain.exponentialRampToValueAtTime(fpDrop, Math.min(tDecay, t0 + 0.07));
+      env.gain.linearRampToValueAtTime(fpPeak, t0 + 0.014);
+      env.gain.exponentialRampToValueAtTime(fpDrop, Math.min(tDecay, t0 + 0.075));
       env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
     } else if (swell === 'crescendo' || swell === 'diminuendo') {
       const sPeak = Math.max(0.002, (startAmp ?? amp) * 0.95);
@@ -616,6 +788,9 @@ export class StudioAudioEngine {
 
     let cleaned = false;
     const cleanup: ActiveVoiceCleanup = {
+      fadeOutAndStop: (_now: number) => {
+        cleanup.stopAndDisconnect();
+      },
       stopAndDisconnect: () => {
         if (cleaned) return;
         cleaned = true;
@@ -632,6 +807,7 @@ export class StudioAudioEngine {
           oscHarm.disconnect();
           gFund.disconnect();
           gHarm.disconnect();
+          lpFilter?.disconnect();
           env.disconnect();
           pannerNode?.disconnect();
         } catch {
@@ -658,6 +834,7 @@ export class StudioAudioEngine {
     endAmp?: number,
     physics?: AtomicEvent['physics']
   ): void {
+    const profile = this.getInstrumentArticulationProfile(undefined, patch, physics);
     const isSub = patch.includes('sub') || patch.includes('808') || freq < 130;
     const isPad = patch.includes('pad') || patch.includes('string');
 
@@ -665,7 +842,7 @@ export class StudioAudioEngine {
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
     filter.Q.setValueAtTime(0.707, startSec);
-    const baseCutoff = isSub ? 360 : physics?.pizz ? 1600 : isPad ? 1900 : 3000;
+    const baseCutoff = isSub ? 360 : physics?.pizz ? 1600 : Math.min(3200, profile.filterCutoffHz);
     if (swell === 'crescendo') {
       filter.frequency.setValueAtTime(Math.max(220, baseCutoff * 0.55), startSec);
       filter.frequency.exponentialRampToValueAtTime(Math.min(7500, baseCutoff * 1.45), startSec + durSec);
@@ -701,16 +878,10 @@ export class StudioAudioEngine {
     env.connect(output);
 
     const t0 = startSec;
-    const attack = physics?.pizz
-      ? 0.004
-      : physics?.legato
-        ? Math.min(0.035, durSec * 0.2)
-        : isPad
-          ? Math.min(0.06, durSec * 0.25)
-          : 0.01;
-    const tAttack = t0 + Math.max(0.004, attack);
+    const attack = Math.min(profile.attackSec, Math.max(0.008, durSec * 0.45));
+    const tAttack = t0 + attack;
     const tSustain = Math.max(tAttack + 0.02, t0 + durSec);
-    const release = physics?.pizz ? 0.06 : isPad ? 0.2 : 0.08;
+    const release = profile.releaseSec;
     const tEnd = tSustain + release;
     const voiceScale = isSub ? 0.95 : isPad ? 0.65 : 0.75;
 
@@ -718,8 +889,8 @@ export class StudioAudioEngine {
     if (physics?.fp) {
       const fpPeak = Math.max(0.004, amp * voiceScale * 1.25);
       const fpDrop = Math.max(0.001, fpPeak * 0.25);
-      env.gain.linearRampToValueAtTime(fpPeak, t0 + 0.008);
-      env.gain.exponentialRampToValueAtTime(fpDrop, Math.min(tSustain, t0 + 0.07));
+      env.gain.linearRampToValueAtTime(fpPeak, t0 + Math.min(0.018, attack));
+      env.gain.exponentialRampToValueAtTime(fpDrop, Math.min(tSustain, t0 + 0.075));
       env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
     } else if (swell === 'crescendo' || swell === 'diminuendo') {
       const sPeak = Math.max(0.002, (startAmp ?? amp) * voiceScale);
@@ -731,7 +902,7 @@ export class StudioAudioEngine {
       const peak = Math.max(0.002, amp * voiceScale);
       env.gain.linearRampToValueAtTime(peak, tAttack);
       env.gain.exponentialRampToValueAtTime(
-        Math.max(0.0005, peak * (physics?.pizz ? 0.2 : 0.7)),
+        Math.max(0.0005, peak * profile.sustainRatio),
         tSustain
       );
       env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
@@ -745,6 +916,9 @@ export class StudioAudioEngine {
 
     let cleaned = false;
     const cleanup: ActiveVoiceCleanup = {
+      fadeOutAndStop: (_now: number) => {
+        cleanup.stopAndDisconnect();
+      },
       stopAndDisconnect: () => {
         if (cleaned) return;
         cleaned = true;
@@ -824,6 +998,9 @@ export class StudioAudioEngine {
 
       let cleaned = false;
       const cleanup: ActiveVoiceCleanup = {
+        fadeOutAndStop: (_now: number) => {
+          cleanup.stopAndDisconnect();
+        },
         stopAndDisconnect: () => {
           if (cleaned) return;
           cleaned = true;
@@ -887,6 +1064,9 @@ export class StudioAudioEngine {
 
       let cleaned = false;
       const cleanup: ActiveVoiceCleanup = {
+        fadeOutAndStop: (_now: number) => {
+          cleanup.stopAndDisconnect();
+        },
         stopAndDisconnect: () => {
           if (cleaned) return;
           cleaned = true;
@@ -966,6 +1146,9 @@ export class StudioAudioEngine {
 
       let cleaned = false;
       const cleanup: ActiveVoiceCleanup = {
+        fadeOutAndStop: (_now: number) => {
+          cleanup.stopAndDisconnect();
+        },
         stopAndDisconnect: () => {
           if (cleaned) return;
           cleaned = true;
@@ -1016,6 +1199,9 @@ export class StudioAudioEngine {
 
       let cleaned = false;
       const cleanup: ActiveVoiceCleanup = {
+        fadeOutAndStop: (_now: number) => {
+          cleanup.stopAndDisconnect();
+        },
         stopAndDisconnect: () => {
           if (cleaned) return;
           cleaned = true;
@@ -1089,6 +1275,9 @@ export class StudioAudioEngine {
 
     let cleaned = false;
     const cleanup: ActiveVoiceCleanup = {
+      fadeOutAndStop: (_now: number) => {
+        cleanup.stopAndDisconnect();
+      },
       stopAndDisconnect: () => {
         if (cleaned) return;
         cleaned = true;
@@ -1241,7 +1430,8 @@ export class StudioAudioEngine {
       if (startFrame >= totalFrames) continue;
 
       const isDrum = item.style === 'grid' || Boolean(item.gridKey);
-      const releaseSec = isDrum ? 0.05 : item.patch.includes('pad') ? 0.28 : 0.16;
+      const profile = this.getInstrumentArticulationProfile(item.sfInstrument, item.patch, item.event.physics);
+      const releaseSec = isDrum ? 0.05 : profile.releaseSec;
       const totalNoteSec = item.durSec + releaseSec;
       const noteFrames = Math.min(totalFrames - startFrame, Math.floor(totalNoteSec * sampleRate));
 
@@ -1381,10 +1571,13 @@ export class StudioAudioEngine {
         const rateRatio = (buf.sampleRate / sampleRate) * cachedSample.playbackRate;
         const hasSwell = item.swell === 'crescendo' || item.swell === 'diminuendo';
         const baseAmpScalar = hasSwell ? 1.0 : item.amp;
-        const attackSec = item.event.physics?.legato ? 0.018 : 0.006;
+        const attackSec = Math.min(profile.attackSec, Math.max(0.01, item.durSec * 0.45));
         const phys = item.event.physics;
 
-        let readPos = 0;
+        let readPos = Math.min(
+          Math.max(0, bufLen - 2),
+          Math.floor(profile.sampleOffsetSec * (buf.sampleRate || sampleRate))
+        );
         for (let i = 0; i < noteFrames; i++) {
           const idx0 = Math.floor(readPos);
           if (idx0 >= bufLen - 1) break;
@@ -1396,7 +1589,7 @@ export class StudioAudioEngine {
           const t = i / sampleRate;
           let env = 1.0;
           if (phys?.fp) {
-            env = t < 0.008 ? t / 0.008 : t < 0.065 ? 1.0 - ((t - 0.008) / 0.057) * 0.72 : 0.28;
+            env = t < 0.015 ? t / 0.015 : t < 0.075 ? 1.0 - ((t - 0.015) / 0.06) * 0.7 : 0.3;
             if (t > item.durSec) {
               env *= Math.max(0, 1 - (t - item.durSec) / Math.max(0.001, releaseSec));
             }
@@ -1426,7 +1619,7 @@ export class StudioAudioEngine {
           }
           readPos += stepRatio;
 
-          const gain = env * baseAmpScalar * 2.4;
+          const gain = env * baseAmpScalar * 2.1;
           left[startFrame + i] += s0 * gain * gainL;
           right[startFrame + i] += s1 * gain * gainR;
         }
@@ -1437,7 +1630,7 @@ export class StudioAudioEngine {
       const isPad = item.patch.includes('pad') || item.patch.includes('string');
       const isSynth = item.style === 'synth';
 
-      const attackSec = isPad ? Math.min(0.08, item.durSec * 0.25) : 0.008;
+      const attackSec = Math.min(profile.attackSec, Math.max(0.01, item.durSec * 0.45));
       const twoPiOverSr = (2 * Math.PI) / sampleRate;
 
       const hasSwell = item.swell === 'crescendo' || item.swell === 'diminuendo';

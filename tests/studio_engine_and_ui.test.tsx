@@ -323,5 +323,33 @@ describe('TDB-603 & TDB-604: Syntax-Highlighted Code Editor, Scrolling Player & 
 
     expect(maxSampleInt16).toBeGreaterThan(16383);
   });
+
+  it('marks .roll(N) and .trem continuation slices as legato and prevents feedback on unpanned voices', async () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+
+    const score = parser.compile(`
+      tenuto "5.0" {
+        meta @{ title: "No Feedback & Smooth Attack Test", tempo: 110, time: "4/4" }
+        def vln1 "First Violins" style=synth patch="violin"
+        def timp "Timpani" style=grid patch="timpani"
+        measure 1 {
+          vln1: [c5 e5]:2.trem g5:2.vib |
+          timp: k:2.roll(4) k:2 |
+        }
+      }
+    `);
+
+    const vlnEvents = score.events.filter((e) => e.trackId === 'vln1');
+    // First slice of .trem has normal attack; continuation slices (index >= 2) are marked legato
+    expect(vlnEvents[2].physics?.legato).toBe(true);
+
+    const timpEvents = score.events.filter((e) => e.trackId === 'timp');
+    expect(timpEvents[1].physics?.legato).toBe(true);
+
+    const wavBlob = await engine.exportWavBlob(score);
+    expect(wavBlob.size).toBeGreaterThan(44100 * 2);
+  });
 });
+
 

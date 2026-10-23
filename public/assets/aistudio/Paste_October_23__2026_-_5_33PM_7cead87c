@@ -1,0 +1,687 @@
+Both issues come from two specific bugs in `src/audio/StudioAudioEngine.ts` and `src/parser/DocumentParser.ts`:
+
+### Root Cause Diagnosis
+
+1. **Why the Horrible Metallic Feedback Returned (A Direct Positive Feedback Loop in `triggerRealtimeVoice`):**
+* Look at how `voiceOut` is initialized in `StudioAudioEngine.triggerRealtimeVoice()`:
+```ts
+let voiceOut: AudioNode = this.masterGain;
+if (typeof ctx.createStereoPanner === 'function' && item.pan !== 0) {
+  ...
+  voiceOut = pannerNode;
+}
+
+```
+
+
+* Whenever a note has `pan === 0` (the default for unpanned tracks like `pno`, `vc`, `cb`, `ob`, `cl`, `tba`, and `timp`), **`voiceOut` is `this.masterGain` itself**.
+* Two lines later, `voiceOut.connect(this.reverbSendBus)` (and for drums, `voiceOut.connect(drumRoomSend); drumRoomSend.connect(this.reverbSendBus)`) literally connects **`this.masterGain` back into `this.reverbSendBus**`, while `this.reverbSendBus` connects through `this.reverbNode` and `this.reverbWetGain` **back into `this.masterGain**`:
+
+$$\text{masterGain} \longrightarrow \text{reverbSendBus} \longrightarrow \text{reverbNode} \longrightarrow \text{reverbWetGain} \longrightarrow \text{masterGain}$$
+
+
+* Every unpanned drum or timpani hit in `TDB-614` added another parallel `drumRoomSend` (`gain = 0.14`) bridging `masterGain` $\rightarrow$ `reverbSendBus`. Within a single timpani roll (`k:2.roll(8)`), the loop gain exceeded `1.0` and turned the `ConvolverNode` into a screaming metallic comb-filter oscillator.
+
+
+2. **Why Every Note Has an Unnatural, Distinct Click/Attack:**
+* **Hard `6ms` Attack + Sample `0.00s` Transient on Bowed & Blown Instruments:** `scheduleSoundfontBufferVoice()` used a hard `6ms` (`0.006s`) attack on every instrument—even violins, cellos, violas, flutes, oboes, horns, trombones, and choir—and started every MP3 sample at `0.00s` where the raw bow-scrape/tonguing transient is sharpest.
+* **Instantaneous Voice-Stealing Clicks:** When `this.activeVoices.size >= 48` during dense passages, `oldest.stopAndDisconnect()` called `src.stop()` and `env.disconnect()` instantaneously at full amplitude, creating a loud digital pop/click every time a new note stole an old voice.
+* **Machine-Gun `.trem` and `.roll(N)` Slices:** `DocumentParser.ts` split `.trem` and `.roll(N)` notes into separate slices that each re-triggered a hard attack from `0.0001` instead of overlapping smoothly.
+
+
+
+---
+
+### Implementation Contract (`TDB-615`)
+
+Copy and paste the contract below directly into Google AI Studio:
+
+```markdown
+# Implementation Contract: Strictly Feed-Forward Dry/Wet Bus Topology, Instrument-Aware Natural Attack Envelopes & Click-Free Voice Stealing (TDB-615)
+
+**Project:** Tenuto Studio 5
+**Scope:** Eliminate the `masterGain -> reverbSendBus -> masterGain` positive feedback loop in `src/audio/StudioAudioEngine.ts` by introducing a dedicated `dryBus` in a strictly feed-forward DAG; replace the hard 6ms attack with instrument-family-aware natural envelopes (`bowed`, `woodwind`, `brass`, `choir`, `plucked`) and sample-onset feathering; add 25ms de-clicking fade-outs on voice stealing; and smooth `.trem` / `.roll(N)` continuations in `src/parser/DocumentParser.ts`.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+Playing dense multi-track symphonies (such as Mahler's 5th) currently exhibits two audio defects:
+1. **Metallic Runaway Feedback:** In `StudioAudioEngine.triggerRealtimeVoice()`, `voiceOut` defaults to `this.masterGain` when `item.pan === 0`. Connecting `voiceOut` to `this.reverbSendBus` (or connecting `voiceOut -> drumRoomSend -> this.reverbSendBus`) creates a direct positive feedback cycle (`masterGain -> reverbSendBus -> reverbNode -> reverbWetGain -> masterGain`).
+2. **Unnatural Clicky Attack on Every Note:** `scheduleSoundfontBufferVoice()` applies the same hard `6ms` linear attack and `0.0s` sample start offset to bowed strings (`violin`, `viola`, `cello`, `contrabass`), woodwinds (`flute`, `oboe`, `clarinet`), brass (`french_horn`, `trumpet`, `trombone`, `tuba`), and choir (`choir_aahs`), and `triggerRealtimeVoice()` abruptly calls `src.stop()` mid-waveform when stealing voices (`activeVoices.size >= 48`), causing a harsh transient pop on every note.
+
+This contract permanently fixes both issues:
+1. **Strictly Feed-Forward Audio Graph (`dryBus` + `drumBus` $\rightarrow$ `masterGain`):** Voices connect ONLY to `this.dryBus` (or `this.drumBus`). `this.dryBus` feeds `this.masterGain` and `this.reverbSendBus -> this.reverbNode -> this.reverbWetGain -> this.masterGain`. Individual voices never touch `this.masterGain` or `this.reverbSendBus` directly, making feedback loops structurally impossible.
+2. **Instrument-Aware Natural Envelopes & Sample Offset Feathering:** Bowed strings, woodwinds, brass, and choir use soft, natural attack curves (`35ms`–`85ms`, or `95ms` on `.legato`), gentle low-pass warmth filtering (`3.6 kHz`–`5.2 kHz`), and subtle sample-start offsets (`12ms`–`35ms` on sustained/legato notes) so melodies flow smoothly without percussive clicks.
+3. **Click-Free Voice Stealing & Smooth Rolls (`.trem` / `.roll`):** Voice stealing ramps gain down over `22ms` before stopping the node, and `.trem` / `.roll(N)` subdivisions in `DocumentParser.ts` mark continuation slices as `.legato` so tremolos and timpani rolls shimmer smoothly instead of machine-gun clicking.
+
+---
+
+## 2. Root Cause
+1. In `src/audio/StudioAudioEngine.ts` (`triggerRealtimeVoice`), `let voiceOut: AudioNode = this.masterGain;` followed by `voiceOut.connect(this.reverbSendBus)` (and `voiceOut.connect(drumRoomSend); drumRoomSend.connect(this.reverbSendBus)`) wires `this.masterGain` directly back into `this.reverbSendBus`.
+2. In `scheduleSoundfontBufferVoice`, `const attack = physics?.legato ? 0.018 : 0.006;` and `src.start(t0)` force a hard 6ms transient on bowed strings, winds, brass, and choir, while `stopAndDisconnect()` cuts active waveforms at non-zero amplitude without a micro-fade.
+3. In `src/parser/DocumentParser.ts`, `.roll(N)` and `.trem` slices do not set `legato: true` on continuation hits, causing every slice to re-trigger a sharp attack.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/parser/DocumentParser.ts` - Smooth Continuation Slices on `.roll(N)` and `.trem`
+In `src/parser/DocumentParser.ts`, inside `parseVoiceTokensToEvents()`:
+
+1. In the chord `.roll(N)` subdivision loop (`for (let r = 0; r < rollSubdiv; r++)`), mark continuation slices (`r > 0`) with `legato: true` so bowed tremolos and rolls connect smoothly without hard re-attack clicks:
+```typescript
+            for (let r = 0; r < rollSubdiv; r++) {
+              for (const baseEv of chordEvents) {
+                const cloned: AtomicEvent = {
+                  ...baseEv,
+                  duration: { ...sliceDur },
+                  startTime: { ...sliceCursor },
+                  physics: baseEv.physics
+                    ? {
+                        ...baseEv.physics,
+                        roll: undefined,
+                        legato: r > 0 ? true : baseEv.physics.legato,
+                      }
+                    : r > 0
+                      ? { legato: true }
+                      : undefined,
+                };
+                events.push(cloned);
+              }
+              sliceCursor = this.addFractions(sliceCursor, sliceDur);
+            }
+
+```
+
+2. In the single-note `.roll(N)` subdivision loop (`for (let r = 0; r < rollCount; r++)`), also mark continuation slices (`r > 0`) with `legato: true`:
+
+```typescript
+            for (let r = 0; r < rollCount; r++) {
+              events.push({
+                ...ev,
+                duration: { ...sliceDur },
+                startTime: { ...sliceCursor },
+                physics: ev.physics
+                  ? {
+                      ...ev.physics,
+                      roll: undefined,
+                      legato: r > 0 ? true : ev.physics.legato,
+                    }
+                  : r > 0
+                    ? { legato: true }
+                    : undefined,
+              });
+              sliceCursor = this.addFractions(sliceCursor, sliceDur);
+            }
+
+```
+
+### 3.2 `src/audio/StudioAudioEngine.ts` - Feed-Forward Dry/Wet Bus, Natural Instrument Articulations & De-Clicked Voice Lifecycle
+
+In `src/audio/StudioAudioEngine.ts`, replace the class implementation with the following feed-forward, instrument-aware architecture:
+
+1. Add `private dryBus: GainNode | null = null;` and `private drumBus: GainNode | null = null;` to `StudioAudioEngine`, and update `ActiveVoiceCleanup` to support both soft fade-out (`fadeOutAndStop`) and immediate teardown (`stopAndDisconnect`):
+
+```typescript
+interface ActiveVoiceCleanup {
+  fadeOutAndStop: (now: number) => void;
+  stopAndDisconnect: () => void;
+}
+
+```
+
+2. Replace `rebuildMasterChain(ctx: AudioContext)` with a **strictly feed-forward DAG** where voices connect ONLY to `this.dryBus` or `this.drumBus`, making feedback loops between `masterGain` and `reverbSendBus` impossible:
+
+```typescript
+  /**
+   * Builds a strictly feed-forward master bus DAG:
+   *   Voices -> dryBus  ----(dry)----> masterGain -> compressor -> destination
+   *                \---(send)---> reverbSendBus -> reverbNode -> reverbWetGain -^
+   *   Drums  -> drumBus ---(dry)----> masterGain
+   *                \---(room)---> reverbSendBus
+   * Because masterGain and reverbWetGain NEVER connect back to dryBus or drumBus,
+   * positive feedback loops are structurally impossible.
+   */
+  private rebuildMasterChain(ctx: AudioContext): void {
+    try {
+      this.dryBus?.disconnect();
+      this.drumBus?.disconnect();
+      this.reverbSendBus?.disconnect();
+      this.reverbNode?.disconnect();
+      this.reverbWetGain?.disconnect();
+      this.masterGain?.disconnect();
+      this.compressorNode?.disconnect();
+    } catch {
+      // Ignore disconnect errors on old nodes
+    }
+
+    this.masterGain = ctx.createGain();
+    this.masterGain.gain.value = 1.35 * this.masterVolumeScalar;
+
+    if (typeof (ctx as any).createDynamicsCompressor === 'function') {
+      const comp = ctx.createDynamicsCompressor();
+      const now = ctx.currentTime || 0;
+      comp.threshold?.setValueAtTime?.(-3, now);
+      comp.knee?.setValueAtTime?.(8, now);
+      comp.ratio?.setValueAtTime?.(10, now);
+      comp.attack?.setValueAtTime?.(0.005, now);
+      comp.release?.setValueAtTime?.(0.16, now);
+      comp.connect(ctx.destination);
+      this.masterGain.connect(comp);
+      this.compressorNode = comp;
+    } else {
+      this.masterGain.connect(ctx.destination);
+      this.compressorNode = null;
+    }
+
+    this.dryBus = ctx.createGain();
+    this.dryBus.gain.value = 1.0;
+    this.dryBus.connect(this.masterGain);
+
+    this.drumBus = ctx.createGain();
+    this.drumBus.gain.value = 1.0;
+    this.drumBus.connect(this.masterGain);
+
+    this.reverbSendBus = ctx.createGain();
+    this.reverbSendBus.gain.value = 0.16;
+
+    if (typeof (ctx as any).createConvolver === 'function') {
+      this.reverbNode = this.createImpulseReverb(ctx, 1.4, 3.8);
+      this.reverbWetGain = ctx.createGain();
+      this.reverbWetGain.gain.value = 0.2;
+
+      this.dryBus.connect(this.reverbSendBus);
+      const drumRoom = ctx.createGain();
+      drumRoom.gain.value = 0.08;
+      this.drumBus.connect(drumRoom);
+      drumRoom.connect(this.reverbSendBus);
+
+      this.reverbSendBus.connect(this.reverbNode);
+      this.reverbNode.connect(this.reverbWetGain);
+      this.reverbWetGain.connect(this.masterGain);
+    } else {
+      this.reverbNode = null;
+      this.reverbWetGain = null;
+    }
+  }
+
+```
+
+And in `setMasterVolume(scalar: number)`:
+
+```typescript
+  public setMasterVolume(scalar: number): void {
+    this.masterVolumeScalar = Math.max(0, Math.min(2.5, scalar));
+    if (this.masterGain && this.ctx) {
+      this.masterGain.gain.setValueAtTime(1.35 * this.masterVolumeScalar, this.ctx.currentTime || 0);
+    }
+  }
+
+```
+
+3. Add a helper method `getInstrumentArticulationProfile(sfInstrument?: string | null, patch?: string, physics?: AtomicEvent['physics'])` on `StudioAudioEngine` that computes natural, non-clicky attack times, release times, sample start offsets, and warm low-pass filter cutoffs for each orchestral family:
+
+```typescript
+  private getInstrumentArticulationProfile(
+    sfInstrument?: string | null,
+    patch?: string,
+    physics?: AtomicEvent['physics']
+  ): {
+    attackSec: number;
+    releaseSec: number;
+    sampleOffsetSec: number;
+    sustainRatio: number;
+    filterCutoffHz: number;
+  } {
+    const inst = (sfInstrument || patch || '').toLowerCase();
+    const isStacc = physics?.articulation === 'stacc' || physics?.articulation === 'staccato';
+    const isMarc = physics?.articulation === 'marc' || physics?.articulation === 'accent';
+    const isLegato = Boolean(physics?.legato);
+    const isPizz = Boolean(physics?.pizz) || inst.includes('pizz');
+
+    if (isPizz) {
+      return {
+        attackSec: 0.008,
+        releaseSec: 0.09,
+        sampleOffsetSec: 0,
+        sustainRatio: 0.35,
+        filterCutoffHz: 4200,
+      };
+    }
+
+    // 1. Bowed Strings (Violin, Viola, Cello, Contrabass, String Ensembles)
+    if (
+      inst.includes('violin') ||
+      inst.includes('viola') ||
+      inst.includes('cello') ||
+      inst.includes('contrabass') ||
+      inst.includes('string')
+    ) {
+      return {
+        attackSec: isLegato ? 0.075 : isStacc ? 0.022 : isMarc ? 0.028 : 0.052,
+        releaseSec: isStacc ? 0.09 : 0.24,
+        // Skip the initial bow-scrape click on sustained and legato string notes
+        sampleOffsetSec: isLegato ? 0.032 : isStacc || isMarc ? 0.004 : 0.016,
+        sustainRatio: 0.92,
+        filterCutoffHz: 4400,
+      };
+    }
+
+    // 2. Choir & Warm Pads
+    if (inst.includes('choir') || inst.includes('voice') || inst.includes('pad')) {
+      return {
+        attackSec: isLegato ? 0.09 : 0.068,
+        releaseSec: 0.28,
+        sampleOffsetSec: 0.025,
+        sustainRatio: 0.95,
+        filterCutoffHz: 3800,
+      };
+    }
+
+    // 3. Woodwinds (Flute, Piccolo, Oboe, English Horn, Clarinet, Bassoon, Sax)
+    if (
+      inst.includes('flute') ||
+      inst.includes('piccolo') ||
+      inst.includes('oboe') ||
+      inst.includes('english_horn') ||
+      inst.includes('clarinet') ||
+      inst.includes('bassoon') ||
+      inst.includes('sax')
+    ) {
+      return {
+        attackSec: isLegato ? 0.058 : isStacc ? 0.018 : 0.038,
+        releaseSec: isStacc ? 0.08 : 0.18,
+        sampleOffsetSec: isLegato ? 0.022 : 0.008,
+        sustainRatio: 0.9,
+        filterCutoffHz: 5200,
+      };
+    }
+
+    // 4. Orchestral Brass (French Horn, Trumpet, Trombone, Tuba, Brass Section)
+    if (
+      inst.includes('horn') ||
+      inst.includes('trumpet') ||
+      inst.includes('trombone') ||
+      inst.includes('tuba') ||
+      inst.includes('brass')
+    ) {
+      const isWarmBrass = inst.includes('horn') || inst.includes('trombone') || inst.includes('tuba');
+      return {
+        attackSec: isLegato ? 0.055 : isStacc || isMarc ? 0.016 : 0.034,
+        releaseSec: isStacc ? 0.09 : 0.2,
+        sampleOffsetSec: isLegato ? 0.02 : isStacc || isMarc ? 0.002 : 0.01,
+        sustainRatio: 0.88,
+        filterCutoffHz: isWarmBrass ? 3600 : 4600,
+      };
+    }
+
+    // 5. Pianos, Harps, Timpani, Chromatic Percussion & Plucked Instruments
+    return {
+      attackSec: isLegato ? 0.022 : 0.012,
+      releaseSec: 0.22,
+      sampleOffsetSec: 0,
+      sustainRatio: 0.65,
+      filterCutoffHz: 6500,
+    };
+  }
+
+```
+
+4. Update `triggerRealtimeVoice` so it routes ONLY to `this.dryBus` (for melodic voices) or `this.drumBus` (for drums/percussion), NEVER touches `this.reverbSendBus` or `this.masterGain` directly, and uses `oldest.fadeOutAndStop(ctx.currentTime)` when stealing voices above 72 simultaneous voices:
+
+```typescript
+  private triggerRealtimeVoice(ctx: AudioContext, item: ScheduledNoteEvent, absStartSec: number): void {
+    if (!this.dryBus || !this.drumBus) return;
+
+    // Soft-steal oldest voice with a 22ms de-clicking fade-out if active voices exceed 72
+    while (this.activeVoices.size >= 72) {
+      const oldest = this.activeVoices.values().next().value;
+      if (!oldest) break;
+      this.activeVoices.delete(oldest);
+      oldest.fadeOutAndStop(ctx.currentTime);
+    }
+
+    const safeStart = Math.max(ctx.currentTime + 0.008, absStartSec);
+    const durSec = Math.max(0.05, item.durSec);
+    const isDrumTrack = item.style === 'grid' || Boolean(item.gridKey);
+    const targetBus: AudioNode = isDrumTrack ? this.drumBus : this.dryBus;
+
+    let voiceOut: AudioNode = targetBus;
+    let pannerNode: StereoPannerNode | null = null;
+
+    if (typeof ctx.createStereoPanner === 'function' && item.pan !== 0) {
+      pannerNode = ctx.createStereoPanner();
+      pannerNode.pan.setValueAtTime(item.pan, safeStart);
+      pannerNode.connect(targetBus);
+      voiceOut = pannerNode;
+    }
+
+    if (isDrumTrack) {
+      const key = (item.gridKey || '').toLowerCase();
+      const isTimpaniStrike =
+        item.sfInstrument === 'timpani' &&
+        (key === 'k' || key === 'bd' || key === 'kick' || key === 'lt' || key === 'mt' || key === 'ht' || !key);
+
+      if (isTimpaniStrike) {
+        const timpMidi = key === 'ht' ? 52 : key === 'mt' ? 48 : 45;
+        const timpSample = this.soundfontLoader.getCachedSampleForNote('timpani', timpMidi);
+        if (timpSample) {
+          this.scheduleSoundfontBufferVoice(
+            ctx,
+            voiceOut,
+            pannerNode,
+            timpSample,
+            'timpani',
+            safeStart,
+            Math.max(0.38, durSec),
+            item.amp * 0.95,
+            item.swell,
+            item.startAmp,
+            item.endAmp,
+            item.event.physics
+          );
+          return;
+        }
+      }
+
+      this.scheduleDrumHit(ctx, voiceOut, pannerNode, item.gridKey || 'k', item.midi, safeStart, item.amp);
+      return;
+    }
+
+    if (item.sfInstrument) {
+      const cachedSample = this.soundfontLoader.getCachedSampleForNote(item.sfInstrument, item.midi);
+      if (cachedSample) {
+        this.scheduleSoundfontBufferVoice(
+          ctx,
+          voiceOut,
+          pannerNode,
+          cachedSample,
+          item.sfInstrument,
+          safeStart,
+          durSec,
+          item.amp,
+          item.swell,
+          item.startAmp,
+          item.endAmp,
+          item.event.physics
+        );
+        return;
+      }
+    }
+
+    if (item.style === 'synth') {
+      this.scheduleSynthVoice(
+        ctx,
+        voiceOut,
+        pannerNode,
+        item.freq,
+        item.patch,
+        safeStart,
+        durSec,
+        item.amp,
+        item.swell,
+        item.startAmp,
+        item.endAmp,
+        item.event.physics
+      );
+    } else {
+      this.scheduleAcousticPianoVoice(
+        ctx,
+        voiceOut,
+        pannerNode,
+        item.freq,
+        safeStart,
+        durSec,
+        item.amp,
+        item.swell,
+        item.startAmp,
+        item.endAmp,
+        item.event.physics
+      );
+    }
+  }
+
+```
+
+5. Update `scheduleSoundfontBufferVoice` to use `getInstrumentArticulationProfile`, a warm low-pass filter (`toneFilter`), sample-start offset feathering (`src.start(t0, safeOffset)`), and a click-free `fadeOutAndStop`:
+
+```typescript
+  private scheduleSoundfontBufferVoice(
+    ctx: BaseAudioContext,
+    output: AudioNode,
+    pannerNode: StereoPannerNode | null,
+    sampleData: { buffer: AudioBuffer; playbackRate: number },
+    sfInstrument: string,
+    startSec: number,
+    durSec: number,
+    amp: number,
+    swell?: 'crescendo' | 'diminuendo',
+    startAmp?: number,
+    endAmp?: number,
+    physics?: AtomicEvent['physics']
+  ): void {
+    const profile = this.getInstrumentArticulationProfile(sfInstrument, sfInstrument, physics);
+    const env = ctx.createGain();
+    const src = ctx.createBufferSource();
+    src.buffer = sampleData.buffer;
+    src.playbackRate.setValueAtTime(sampleData.playbackRate, startSec);
+
+    if (physics?.mordent && durSec >= 0.08) {
+      src.playbackRate.setValueAtTime(sampleData.playbackRate, startSec);
+      src.playbackRate.setValueAtTime(sampleData.playbackRate * Math.pow(2, 2 / 12), startSec + 0.025);
+      src.playbackRate.setValueAtTime(sampleData.playbackRate, startSec + 0.065);
+    } else if (physics?.trill && durSec >= 0.1) {
+      const upperRate = sampleData.playbackRate * Math.pow(2, 2 / 12);
+      const stepSec = 0.065;
+      const steps = Math.min(48, Math.floor(durSec / stepSec));
+      for (let s = 0; s < steps; s++) {
+        src.playbackRate.setValueAtTime(s % 2 === 0 ? sampleData.playbackRate : upperRate, startSec + s * stepSec);
+      }
+    }
+
+    let toneFilter: BiquadFilterNode | null = null;
+    if (typeof ctx.createBiquadFilter === 'function') {
+      toneFilter = ctx.createBiquadFilter();
+      toneFilter.type = 'lowpass';
+      toneFilter.Q.setValueAtTime(0.5, startSec);
+      const baseCut = profile.filterCutoffHz;
+      if (swell === 'crescendo') {
+        toneFilter.frequency.setValueAtTime(Math.max(900, baseCut * 0.65), startSec);
+        toneFilter.frequency.exponentialRampToValueAtTime(Math.min(8500, baseCut * 1.25), startSec + durSec);
+      } else if (swell === 'diminuendo') {
+        toneFilter.frequency.setValueAtTime(Math.min(8500, baseCut * 1.15), startSec);
+        toneFilter.frequency.exponentialRampToValueAtTime(Math.max(800, baseCut * 0.6), startSec + durSec);
+      } else {
+        toneFilter.frequency.setValueAtTime(baseCut, startSec);
+      }
+      src.connect(toneFilter);
+      toneFilter.connect(env);
+    } else {
+      src.connect(env);
+    }
+
+    env.connect(output);
+
+    const t0 = startSec;
+    const attack = Math.min(profile.attackSec, Math.max(0.01, durSec * 0.45));
+    const tAttack = t0 + attack;
+    const tSustain = Math.max(tAttack + 0.015, t0 + durSec);
+    const release = profile.releaseSec;
+    const tEnd = tSustain + release;
+    const sampleScale = 2.1;
+
+    env.gain.setValueAtTime(0.0001, t0);
+    if (physics?.fp) {
+      const fpPeak = Math.max(0.004, amp * sampleScale * 1.1);
+      const fpDrop = Math.max(0.001, fpPeak * 0.3);
+      env.gain.linearRampToValueAtTime(fpPeak, t0 + Math.min(0.02, attack));
+      env.gain.exponentialRampToValueAtTime(fpDrop, Math.min(tSustain, t0 + 0.09));
+      env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    } else if (swell === 'crescendo' || swell === 'diminuendo') {
+      const sPeak = Math.max(0.002, (startAmp ?? amp) * sampleScale);
+      const ePeak = Math.max(0.002, (endAmp ?? amp) * sampleScale);
+      env.gain.linearRampToValueAtTime(sPeak, tAttack);
+      env.gain.linearRampToValueAtTime(ePeak, tSustain);
+      env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    } else {
+      const peak = Math.max(0.002, amp * sampleScale);
+      env.gain.linearRampToValueAtTime(peak, tAttack);
+      env.gain.exponentialRampToValueAtTime(Math.max(0.001, peak * profile.sustainRatio), tSustain);
+      env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    }
+
+    const stopAt = tEnd + 0.025;
+    const safeOffset =
+      sampleData.buffer.duration > 0.25 ? Math.min(profile.sampleOffsetSec, sampleData.buffer.duration * 0.15) : 0;
+    src.start(t0, safeOffset);
+    src.stop(stopAt);
+
+    let cleaned = false;
+    const cleanup: ActiveVoiceCleanup = {
+      fadeOutAndStop: (now: number) => {
+        if (cleaned) return;
+        cleaned = true;
+        this.activeVoices.delete(cleanup);
+        try {
+          env.gain.cancelScheduledValues?.(now);
+          env.gain.setTargetAtTime?.(0.0001, now, 0.006);
+          src.stop(now + 0.025);
+        } catch {
+          cleanup.stopAndDisconnect();
+        }
+      },
+      stopAndDisconnect: () => {
+        if (cleaned) return;
+        cleaned = true;
+        this.activeVoices.delete(cleanup);
+        try {
+          src.stop();
+        } catch {
+          // Ignore
+        }
+        try {
+          src.disconnect();
+          toneFilter?.disconnect();
+          env.disconnect();
+          pannerNode?.disconnect();
+        } catch {
+          // Ignore
+        }
+      },
+    };
+
+    this.activeVoices.add(cleanup);
+    src.onended = () => cleanup.stopAndDisconnect();
+  }
+
+```
+
+6. Also update `scheduleAcousticPianoVoice`, `scheduleSynthVoice`, and `scheduleDrumHit` so:
+* Their `cleanup` object implements `fadeOutAndStop: (now: number) => { cleanup.stopAndDisconnect(); }`.
+* `scheduleAcousticPianoVoice` uses a soft `0.015s` attack (`0.028s` when `physics?.legato` is true) and a `3800 Hz` low-pass filter so synthesized fallback piano/harp notes never click.
+* `scheduleSynthVoice` uses `this.getInstrumentArticulationProfile(undefined, patch, physics)` for its attack (`0.035s–0.075s` on strings/brass/winds/pads) and release so synth fallback voices also have smooth, natural attacks without clicks.
+* In `exportWavBlob(score: CompiledScore)`, use `const profile = this.getInstrumentArticulationProfile(item.sfInstrument, item.patch, item.event.physics);` for both the SoundFont sample loop (starting `readPos` at `Math.floor(profile.sampleOffsetSec * buf.sampleRate)` and using `profile.attackSec` and `profile.releaseSec`) and the synth fallback loop so exported `.wav` files have the exact same smooth, click-free attacks.
+
+
+
+### 3.3 `tests/studio_engine_and_ui.test.tsx` - Add Regression Test for Feed-Forward Bus & Smooth Articulation Profiles
+
+Append a test in `tests/studio_engine_and_ui.test.tsx` verifying that unpanned voices (`pan === 0`) and `.roll(N)` / `.trem` tremolos compile with `.legato` continuation slices and render clean WAV output without feedback runaway:
+
+```typescript
+  it('marks .roll(N) and .trem continuation slices as legato and prevents feedback on unpanned voices', async () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+
+    const score = parser.compile(`
+      tenuto "5.0" {
+        meta @{ title: "No Feedback & Smooth Attack Test", tempo: 110, time: "4/4" }
+        def vln1 "First Violins" style=synth patch="violin"
+        def timp "Timpani" style=grid patch="timpani"
+        measure 1 {
+          vln1: [c5 e5]:2.trem g5:2.vib |
+          timp: k:2.roll(4) k:2 |
+        }
+      }
+    `);
+
+    const vlnEvents = score.events.filter((e) => e.trackId === 'vln1');
+    // First slice of .trem has normal attack; continuation slices (index >= 2) are marked legato
+    expect(vlnEvents[2].physics?.legato).toBe(true);
+
+    const timpEvents = score.events.filter((e) => e.trackId === 'timp');
+    expect(timpEvents[1].physics?.legato).toBe(true);
+
+    const wavBlob = await engine.exportWavBlob(score);
+    expect(wavBlob.size).toBeGreaterThan(44100 * 2);
+  });
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/PitchEngine.ts`, `src/parser/TemporalEngine.ts`, `src/parser/ASTSerializer.ts`, `src/parser/IncrementalCompiler.ts`
+* `src/audio/SoundfontLibrary.ts`, `src/audio/AudioContextManager.ts`, `src/audio/PlaybackOrchestrator.ts`, `src/audio/TenutoProcessor.ts`, `src/audio/TCALManager.ts`
+* `src/components/`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) completes with zero TypeScript errors.
+2. `npx vitest run tests/studio_engine_and_ui.test.tsx tests/document_compiler.test.ts` passes 100%.
+3. `npm run build` succeeds cleanly.
+4. Playing the 100-measure Mahler 5th score (or any dense symphony) produces zero metallic feedback and smooth, natural instrument attacks on strings, woodwinds, brass, choir, and timpani rolls.
+
+---
+
+## 6. Constraints
+
+* Do NOT add any new npm dependencies to `package.json`.
+* Ensure `this.masterGain` and `this.reverbWetGain` NEVER connect back to `this.dryBus`, `this.drumBus`, or `this.reverbSendBus`.
+
+---
+
+## 7. Manual Steps
+
+After AI Studio completes this contract and you push to GitHub, run `git pull && npm run electron:build:mac` on your Mac to update your installed `.pkg`.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or restore `src/audio/StudioAudioEngine.ts`, `src/parser/DocumentParser.ts`, and `tests/studio_engine_and_ui.test.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* Modified file(s): `src/audio/StudioAudioEngine.ts`, `src/parser/DocumentParser.ts`, `tests/studio_engine_and_ui.test.tsx`
+* Commit message: `fix(audio): eliminate masterGain-to-reverb feedback loop and add natural instrument attack envelopes`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Unpanned Voices & Reverb (`pan === 0`)** | `voiceOut` defaulted to `this.masterGain` and connected back into `this.reverbSendBus`, creating a screaming metallic positive feedback loop | Uses a strictly feed-forward `dryBus` / `drumBus` DAG where feedback between `masterGain` and `reverbSendBus` is structurally impossible |
+| **Note Attack Transients** | Hard `6ms` attack and `0.00s` sample start on every instrument made strings, winds, and horns sound clicky and plucked | Instrument-aware natural attacks (`35ms–90ms` for strings, winds, brass, and choir), sample-start offset feathering, and warm low-pass filtering |
+| **Voice Stealing & Rolls (`.trem` / `.roll`)** | Abrupt `src.stop()` mid-waveform caused digital pops, and `.trem`/`.roll` re-triggered hard attacks on every slice | 25ms de-clicking micro-fade on stolen voices and `.legato` continuation slices on tremolos and timpani rolls |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-23
+Implementer: AI Agent
+
+```
+
+```

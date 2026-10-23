@@ -405,7 +405,15 @@ export class DocumentParser {
                   ...baseEv,
                   duration: { ...sliceDur },
                   startTime: { ...sliceCursor },
-                  physics: baseEv.physics ? { ...baseEv.physics, roll: undefined } : undefined,
+                  physics: baseEv.physics
+                    ? {
+                        ...baseEv.physics,
+                        roll: undefined,
+                        legato: r > 0 ? true : baseEv.physics.legato,
+                      }
+                    : r > 0
+                      ? { legato: true }
+                      : undefined,
                 };
                 events.push(cloned);
               }
@@ -447,7 +455,15 @@ export class DocumentParser {
                 ...ev,
                 duration: { ...sliceDur },
                 startTime: { ...sliceCursor },
-                physics: ev.physics ? { ...ev.physics, roll: undefined } : undefined,
+                physics: ev.physics
+                  ? {
+                      ...ev.physics,
+                      roll: undefined,
+                      legato: r > 0 ? true : ev.physics.legato,
+                    }
+                  : r > 0
+                    ? { legato: true }
+                    : undefined,
               });
               sliceCursor = this.addFractions(sliceCursor, sliceDur);
             }
