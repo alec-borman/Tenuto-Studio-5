@@ -1,6 +1,7 @@
 {
   "appId": "com.tenuto.studio5",
   "productName": "Tenuto Studio 5",
+  "electronVersion": "33.2.1",
   "directories": {
     "output": "release"
   },

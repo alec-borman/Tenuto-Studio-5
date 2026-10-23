@@ -108,5 +108,18 @@ describe('TDB-603 & TDB-604: Syntax-Highlighted Code Editor, Scrolling Player & 
     const glass = parser.compile(PRESET_SCORES.find((p) => p.id === 'glass_cathedral')!.code);
     expect(engine.calculateScoreDuration(glass).totalQuarterBeats).toBe(8); // 2 written measures * 4 beats
   });
+
+  it('renders a complete multi-measure WAV blob without NaN dropouts', async () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+    const neon = parser.compile(PRESET_SCORES.find((p) => p.id === 'neon_horizon')!.code);
+
+    expect(engine.calculateScoreDuration(neon).totalQuarterBeats).toBe(16);
+
+    const wavBlob = await engine.exportWavBlob(neon);
+    expect(wavBlob.type).toBe('audio/wav');
+    expect(wavBlob.size).toBeGreaterThan(44100 * 4);
+  });
 });
+
 

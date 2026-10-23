@@ -1,14 +1,18 @@
 {
-  "name": "react-example",
+  "name": "tenuto-studio-5",
   "private": true,
-  "version": "0.0.0",
+  "version": "5.0.0",
+  "description": "Tenuto Studio 5 - Declarative Code-to-Music Studio and Scrolling Piano Roll Player",
+  "author": "Alec Borman",
+  "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "electron:build:mac": "vite build && npx --yes electron-builder --config electron-builder.json --mac pkg --arm64"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

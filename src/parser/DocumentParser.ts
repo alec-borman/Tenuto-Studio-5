@@ -238,136 +238,140 @@ export class DocumentParser {
     }
 
     for (const token of expandedTokens) {
-      // 1. Euclidean syntax: (c2):3/8 or (k):3/8:16 or k(3,8):16
-      const euclidParensMatch = token.match(/^\(([^()\s]+)\):(\d+)\/(\d+)(?::(\d+\.?))?((?:\.[a-zA-Z_].*)?)$/);
-      const euclidCallMatch = token.match(/^([a-zA-Z0-9_#b]+)\((\d+)\s*,\s*(\d+)\)(?::(\d+\.?))?((?:\.[a-zA-Z_].*)?)$/);
+      try {
+        // 1. Euclidean syntax: (c2):3/8 or (k):3/8:16 or k(3,8):16
+        const euclidParensMatch = token.match(/^\(([^()\s]+)\):(\d+)\/(\d+)(?::(\d+\.?))?((?:\.[a-zA-Z_].*)?)$/);
+        const euclidCallMatch = token.match(/^([a-zA-Z0-9_#b]+)\((\d+)\s*,\s*(\d+)\)(?::(\d+\.?))?((?:\.[a-zA-Z_].*)?)$/);
 
-      if (euclidParensMatch || euclidCallMatch) {
-        const m = (euclidParensMatch || euclidCallMatch)!;
-        const pitchToken = m[1];
-        const hits = parseInt(m[2], 10);
-        const steps = parseInt(m[3], 10);
-        const stepDenom = m[4] ? m[4] : String(steps);
-        const modSuffix = m[5] || '';
+        if (euclidParensMatch || euclidCallMatch) {
+          const m = (euclidParensMatch || euclidCallMatch)!;
+          const pitchToken = m[1];
+          const hits = parseInt(m[2], 10);
+          const steps = parseInt(m[3], 10);
+          const stepDenom = m[4] ? m[4] : String(steps);
+          const modSuffix = m[5] || '';
 
-        const pattern = this.expandEuclideanPattern(hits, steps);
-        for (const isHit of pattern) {
-          const stepToken = isHit
-            ? `${pitchToken}:${stepDenom}${modSuffix}`
-            : `r:${stepDenom}`;
-          const ev = serializer.parseToken(stepToken, trackDef.style);
-          ev.rawToken = stepToken;
-          ev.startTime = { ...cursorTime };
-          ev.trackId = trackDef.id;
-          ev.voiceId = voiceId;
-          ev.measureNumber = measureNumber;
-          ev.style = trackDef.style;
-          ev.patch = trackDef.patch;
-          ev.env = trackDef.env;
+          const pattern = this.expandEuclideanPattern(hits, steps);
+          for (const isHit of pattern) {
+            const stepToken = isHit
+              ? `${pitchToken}:${stepDenom}${modSuffix}`
+              : `r:${stepDenom}`;
+            const ev = serializer.parseToken(stepToken, trackDef.style);
+            ev.rawToken = stepToken;
+            ev.startTime = { ...cursorTime };
+            ev.trackId = trackDef.id;
+            ev.voiceId = voiceId;
+            ev.measureNumber = measureNumber;
+            ev.style = trackDef.style;
+            ev.patch = trackDef.patch;
+            ev.env = trackDef.env;
 
-          if (!ev.pitch.isRest && !ev.pitch.isSpacer) {
-            events.push(ev);
+            if (!ev.pitch.isRest && !ev.pitch.isSpacer) {
+              events.push(ev);
+            }
+            if (!ev.duration.isGrace) {
+              cursorTime = this.addFractions(cursorTime, ev.duration);
+              voiceDuration = this.addFractions(voiceDuration, ev.duration);
+            }
           }
-          if (!ev.duration.isGrace) {
-            cursorTime = this.addFractions(cursorTime, ev.duration);
-            voiceDuration = this.addFractions(voiceDuration, ev.duration);
-          }
-        }
-        continue;
-      }
-
-      // 2. Tuplet syntax: (c4:8 d e):3/2
-      const tupletMatch = token.match(/^\((.+)\):(\d+)\/(\d+)((?:\.[a-zA-Z_].*)?)$/);
-      if (tupletMatch) {
-        const innerStream = tupletMatch[1];
-        const num = parseInt(tupletMatch[2], 10);
-        const den = parseInt(tupletMatch[3], 10);
-        const innerTokens = this.tokenizeVoiceStream(innerStream);
-
-        for (const innerTok of innerTokens) {
-          const ev = serializer.parseToken(innerTok, trackDef.style);
-          const scaledNum = ev.duration.numerator * den;
-          const scaledDen = ev.duration.denominator * num;
-          const div = this.gcd(scaledNum, scaledDen);
-          ev.duration = {
-            numerator: scaledNum / div,
-            denominator: scaledDen / div,
-            isGrace: ev.duration.isGrace,
-          };
-          ev.rawToken = innerTok;
-          ev.startTime = { ...cursorTime };
-          ev.trackId = trackDef.id;
-          ev.voiceId = voiceId;
-          ev.measureNumber = measureNumber;
-          ev.style = trackDef.style;
-          ev.patch = trackDef.patch;
-          ev.env = trackDef.env;
-
-          if (!ev.pitch.isRest && !ev.pitch.isSpacer) {
-            events.push(ev);
-          }
-          if (!ev.duration.isGrace) {
-            cursorTime = this.addFractions(cursorTime, ev.duration);
-            voiceDuration = this.addFractions(voiceDuration, ev.duration);
-          }
-        }
-        continue;
-      }
-
-      // 3. Chord syntax: [c4 e4 g4]:4.stacc or [c4 e4 g4]
-      const chordMatch = token.match(/^\[([^\]]+)\](.*)$/);
-      if (chordMatch) {
-        const chordPitches = chordMatch[1].trim().split(/\s+/).filter(Boolean);
-        const suffix = chordMatch[2] || ''; // e.g. ":4.stacc"
-
-        let chordDuration: TemporalResult | null = null;
-        for (let i = 0; i < chordPitches.length; i++) {
-          const noteToken = i === 0 ? `${chordPitches[i]}${suffix}` : chordPitches[i];
-          const ev = serializer.parseToken(noteToken, trackDef.style);
-          if (i === 0) {
-            chordDuration = ev.duration;
-          } else if (chordDuration) {
-            ev.duration = { ...chordDuration };
-          }
-          ev.rawToken = token;
-          ev.startTime = { ...cursorTime };
-          ev.trackId = trackDef.id;
-          ev.voiceId = voiceId;
-          ev.measureNumber = measureNumber;
-          ev.style = trackDef.style;
-          ev.patch = trackDef.patch;
-          ev.env = trackDef.env;
-
-          if (!ev.pitch.isRest && !ev.pitch.isSpacer) {
-            events.push(ev);
-          }
+          continue;
         }
 
-        if (chordDuration && !chordDuration.isGrace) {
-          cursorTime = this.addFractions(cursorTime, chordDuration);
-          voiceDuration = this.addFractions(voiceDuration, chordDuration);
+        // 2. Tuplet syntax: (c4:8 d e):3/2
+        const tupletMatch = token.match(/^\((.+)\):(\d+)\/(\d+)((?:\.[a-zA-Z_].*)?)$/);
+        if (tupletMatch) {
+          const innerStream = tupletMatch[1];
+          const num = parseInt(tupletMatch[2], 10);
+          const den = parseInt(tupletMatch[3], 10);
+          const innerTokens = this.tokenizeVoiceStream(innerStream);
+
+          for (const innerTok of innerTokens) {
+            const ev = serializer.parseToken(innerTok, trackDef.style);
+            const scaledNum = ev.duration.numerator * den;
+            const scaledDen = ev.duration.denominator * num;
+            const div = this.gcd(scaledNum, scaledDen);
+            ev.duration = {
+              numerator: scaledNum / div,
+              denominator: scaledDen / div,
+              isGrace: ev.duration.isGrace,
+            };
+            ev.rawToken = innerTok;
+            ev.startTime = { ...cursorTime };
+            ev.trackId = trackDef.id;
+            ev.voiceId = voiceId;
+            ev.measureNumber = measureNumber;
+            ev.style = trackDef.style;
+            ev.patch = trackDef.patch;
+            ev.env = trackDef.env;
+
+            if (!ev.pitch.isRest && !ev.pitch.isSpacer) {
+              events.push(ev);
+            }
+            if (!ev.duration.isGrace) {
+              cursorTime = this.addFractions(cursorTime, ev.duration);
+              voiceDuration = this.addFractions(voiceDuration, ev.duration);
+            }
+          }
+          continue;
         }
-        continue;
-      }
 
-      // 4. Standard atomic note / rest / spacer token
-      const ev = serializer.parseToken(token, trackDef.style);
-      ev.rawToken = token;
-      ev.startTime = { ...cursorTime };
-      ev.trackId = trackDef.id;
-      ev.voiceId = voiceId;
-      ev.measureNumber = measureNumber;
-      ev.style = trackDef.style;
-      ev.patch = trackDef.patch;
-      ev.env = trackDef.env;
+        // 3. Chord syntax: [c4 e4 g4]:4.stacc or [c4 e4 g4]
+        const chordMatch = token.match(/^\[([^\]]+)\](.*)$/);
+        if (chordMatch) {
+          const chordPitches = chordMatch[1].trim().split(/\s+/).filter(Boolean);
+          const suffix = chordMatch[2] || ''; // e.g. ":4.stacc"
 
-      if (!ev.pitch.isRest && !ev.pitch.isSpacer) {
-        events.push(ev);
-      }
+          let chordDuration: TemporalResult | null = null;
+          for (let i = 0; i < chordPitches.length; i++) {
+            const noteToken = i === 0 ? `${chordPitches[i]}${suffix}` : chordPitches[i];
+            const ev = serializer.parseToken(noteToken, trackDef.style);
+            if (i === 0) {
+              chordDuration = ev.duration;
+            } else if (chordDuration) {
+              ev.duration = { ...chordDuration };
+            }
+            ev.rawToken = token;
+            ev.startTime = { ...cursorTime };
+            ev.trackId = trackDef.id;
+            ev.voiceId = voiceId;
+            ev.measureNumber = measureNumber;
+            ev.style = trackDef.style;
+            ev.patch = trackDef.patch;
+            ev.env = trackDef.env;
 
-      if (!ev.duration.isGrace) {
-        cursorTime = this.addFractions(cursorTime, ev.duration);
-        voiceDuration = this.addFractions(voiceDuration, ev.duration);
+            if (!ev.pitch.isRest && !ev.pitch.isSpacer) {
+              events.push(ev);
+            }
+          }
+
+          if (chordDuration && !chordDuration.isGrace) {
+            cursorTime = this.addFractions(cursorTime, chordDuration);
+            voiceDuration = this.addFractions(voiceDuration, chordDuration);
+          }
+          continue;
+        }
+
+        // 4. Standard atomic note / rest / spacer token
+        const ev = serializer.parseToken(token, trackDef.style);
+        ev.rawToken = token;
+        ev.startTime = { ...cursorTime };
+        ev.trackId = trackDef.id;
+        ev.voiceId = voiceId;
+        ev.measureNumber = measureNumber;
+        ev.style = trackDef.style;
+        ev.patch = trackDef.patch;
+        ev.env = trackDef.env;
+
+        if (!ev.pitch.isRest && !ev.pitch.isSpacer) {
+          events.push(ev);
+        }
+
+        if (!ev.duration.isGrace) {
+          cursorTime = this.addFractions(cursorTime, ev.duration);
+          voiceDuration = this.addFractions(voiceDuration, ev.duration);
+        }
+      } catch {
+        // Resiliently skip unrecognized token without aborting multi-measure compilation
       }
     }
 

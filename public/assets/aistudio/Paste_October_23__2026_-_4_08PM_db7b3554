@@ -1,0 +1,584 @@
+Here is the updated Implementation Contract (**`TDB-607`**) with a brand-new, final-release **`README.md`** written from scratch alongside **`TENUTO_GRAMMAR.md`**.
+
+Paste the contract below directly into Google AI Studio:
+
+```markdown
+# Implementation Contract: Final Release README.md & Tenuto 5.0 Grammar Guide (TDB-607)
+
+**Project:** Tenuto Studio 5
+**Scope:** Replace `README.md` from scratch for the final v5.0.0 production release, create `TENUTO_GRAMMAR.md` with the complete Tenuto 5.0 songwriting reference and LLM prompt, and add `tests/documentation_integrity.test.ts`.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+`README.md` currently contains outdated early-alpha notes ("~28% completion", "Do not expect to compose music today") that no longer reflect the finished application, and the repository is missing a dedicated grammar guide for writing songs.
+
+This contract replaces `README.md` from scratch with the official v5.0.0 final release documentation, adds `TENUTO_GRAMMAR.md` as the complete songwriting and LLM prompt reference, and adds `tests/documentation_integrity.test.ts` to verify both documents.
+
+---
+
+## 2. Root Cause
+1. `README.md` was written during initial scaffolding before the full Tenuto 5.0 compiler, syntax-highlighted code editor, scrolling Piano Roll player, polyphonic WebAudio/DSP engine, WAV exporter, and macOS `.pkg` installer pipeline were completed.
+2. `TENUTO_GRAMMAR.md` does not yet exist in the repository root.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `README.md` - Rewrite From Scratch for the v5.0.0 Final Release
+Replace the entire contents of `README.md` with the following:
+
+```markdown
+<div align="center">
+  <img width="1200" height="475" alt="Tenuto Studio 5 Banner" src="[https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6](https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6)" />
+
+  <h1>𝄆 TENUTO STUDIO 5 𝄇</h1>
+  <p><b>Declarative Code-to-Music Studio & Real-Time Scrolling Piano Roll Player</b></p>
+
+  [![Release: v5.0.0](https://img.shields.io/badge/Release-v5.0.0-2563eb.svg)](./SPEC.md)
+  [![Grammar Guide: TENUTO_GRAMMAR.md](https://img.shields.io/badge/Grammar_Guide-TENUTO__GRAMMAR.md-10b981.svg)](./TENUTO_GRAMMAR.md)
+  [![Platform: macOS .pkg & Web](https://img.shields.io/badge/Platform-macOS_.pkg_%7C_Web-8b5cf6.svg)](#macos-desktop-app-pkg-installer)
+  [![License: MIT](https://img.shields.io/badge/License-MIT-64748b.svg)](LICENSE)
+</div>
+
+---
+
+## Overview
+
+**Tenuto Studio 5** is a code-driven music studio and real-time piano roll player built around the **Tenuto 5.0** domain-specific language (`.ten`). 
+
+It is designed for a fast, modern creative workflow: write a score directly in the editor—or ask an AI model like Gemini, Claude, or ChatGPT to compose a multi-track piece—paste the text into Tenuto Studio 5, and press **Play** (`Space`) to hear it rendered in real time or exported to a stereo `.wav` audio file.
+
+* **Songwriting & Prompt Reference:** [**`TENUTO_GRAMMAR.md`**](./TENUTO_GRAMMAR.md)
+* **Formal Language Specification:** [**`SPEC.md`**](./SPEC.md)
+
+---
+
+## Core Features
+
+### 1. Split-Screen Studio Workspace
+* **Left Pane — Syntax-Highlighted Tenuto Editor:** Built on Monaco Editor with a custom Tenuto 5.0 language grammar (`tenuto-dark` theme) that highlights keywords, track headers, scientific pitches, rational durations, chords, and audio modifiers.
+* **Right Pane — Scrolling Piano Roll Player:** Automatically centers vertically on the pitch range of the active score, labels piano keys (`C3`, `C4`, `C5`) and measure bars (`M1`, `M2`, `M3`), lights up notes as they play, and scrolls horizontally in sync with the playhead.
+* **Top Transport Bar:** Instant **Play / Pause** (`Space`), **Stop**, **Loop**, live **BPM & Measure:Beat** display, a built-in **Demo Score Selector**, and one-click **Export WAV**.
+
+### 2. Full Tenuto 5.0 Compiler & LLM Paste Sanitizer
+* **Automatic Markdown Fence Stripping:** Copy and paste code blocks straight from LLM chat responses (` ```tenuto ... ``` `) without manually deleting backticks.
+* **Stateful Cursor (Sticky Octave & Duration):** Octave numbers and note durations persist across sequential notes until changed (`c4:8 d e f g:4`), keeping scores compact and readable.
+* **Rich Musical Constructs:** Supports multi-track `measure` blocks, chords (`[c4 e4 g4]:2`), parallel polyphonic voices (`<[ v1: ... | v2: ... ]>`), tuplets (`(c4:8 d e):3/2`), Euclidean rhythms (`(k):3/8`), and reusable `$macros`.
+* **Quick Sketch Mode:** Type a single line of notes (`pno: c4:8 d e f g:4`) without any file headers or setup blocks to audition melodies immediately.
+
+### 3. Polyphonic Synthesis, Acoustic Piano & Drum Engine
+* **Acoustic Instruments (`style=standard`):** Multi-harmonic grand piano synthesis (`salamander_grand`) with hammer attack transients and natural low-pass filter decay.
+* **Polyphonic Synthesizers (`style=synth`):** Detuned sawtooth leads (`saw_lead`), warm analog and chamber string pads (`warm_pad`, `string_pad`), and deep sub-bass (`808_sub`) with portamento pitch `.glide()`.
+* **Drum & Percussion Grid (`style=grid`):** Dedicated percussion synthesis (`tenuto_808_kit`) for kicks (`k`/`bd`), snares (`s`/`sd`), claps (`cp`), closed hi-hats (`h`), and open hi-hats (`oh`).
+* **Real-Time Lookahead Scheduler:** Streams WebAudio nodes within a rolling 280ms lookahead window and cleans up finished nodes automatically, allowing long 60+ measure multi-instrument arrangements to play smoothly.
+* **Mix & Effects Processing:** Supports per-note dynamics (`.pp` to `.ff`, `.vol()`), articulations (`.stacc`, `.marc`, `.ten`), stereo panning (`.pan()`), micro-timing pocket offsets (`.pull()`, `.push()`), stereo reverb/delay (`.fx()`), and kick-triggered sidechain ducking.
+
+### 4. Full-Length Mastered WAV Export
+* Clicking **Export WAV** renders the entire compiled score using a deterministic stereo Float32 PCM synthesis engine with stereo room reflections and soft-knee limiting, downloading a standard 44.1 kHz / 16-bit `.wav` file in seconds.
+
+---
+
+## Installation & Setup
+
+### Option 1: macOS Desktop App (`.pkg` Installer)
+
+Tenuto Studio 5 packages directly into a native macOS `.pkg` installer that installs **Tenuto Studio 5.app** into your `/Applications` directory.
+
+```bash
+# 1. Clone the repository and install dependencies
+git clone https://github.com/alec-borman/Tenuto-Studio-5.git
+cd Tenuto-Studio-5
+npm install
+
+# 2. Build the production bundle and package the macOS .pkg installer
+npm run electron:build:mac
+
+# 3. Run the macOS installer
+open release/"Tenuto Studio 5-5.0.0-arm64.pkg"
+
+```
+
+Once installed, launch **Tenuto Studio 5** from `/Applications` or Spotlight (`Cmd + Space`).
+
+### Option 2: Local Web Development
+
+**Prerequisites:** Node.js 20+
+
+```bash
+# Install dependencies
+npm install
+
+# Start the Vite development server at http://localhost:3000
+npm run dev
+
+```
+
+---
+
+## Composing with an AI (Gemini / Claude / ChatGPT)
+
+To have an AI write a multi-track song that you can paste directly into Tenuto Studio 5, copy the prompt below into any LLM chat:
+
+```text
+Write a multi-track musical composition in Tenuto 5.0 DSL (.ten) and return ONLY the code inside a single ```tenuto code block.
+
+Follow these strict Tenuto 5.0 rules:
+1. Wrap the score in:
+   tenuto "5.0" {
+     meta @{ title: "Title", tempo: 120, time: "4/4", sidechain: "drums" }
+     ...
+   }
+2. Define instruments using `def <id> "<Name>" style=<standard|synth|grid> patch="<salamander_grand|saw_lead|warm_pad|string_pad|808_sub|tenuto_808_kit>"`.
+3. Use sequential measure blocks: `measure 1 { ... }`, `measure 2 { ... }`, etc.
+4. MEASURE MATH: In 4/4 time, every track/voice line inside a single `measure N` block MUST sum to 4 quarter-note beats (one :1 whole note, two :2 half notes, four :4 quarter notes, eight :8 eighth notes, or sixteen :16 sixteenth notes). Never pack 8 beats into a single measure block.
+5. Pitches: c4, d#4, eb3, f5, or r (rest). Durations: :1, :2, :2., :4, :4., :8, :8., :16.
+6. Chords: [c4 e4 g4]:2. Polyphonic voices on one track: <[ v1: ... | v2: ... ]>.
+7. Drum tokens on `style=grid` tracks: k (kick), s (snare), cp (clap), h (closed hat), oh (open hat).
+8. Expressive modifiers: .stacc, .marc, .pp, .p, .mp, .mf, .f, .ff, .pan(-0.3), .pull(10ms), .fx(reverb, @{mix: 0.4}).
+
+```
+
+For the full grammar breakdown, see **[`TENUTO_GRAMMAR.md`](https://www.google.com/search?q=./TENUTO_GRAMMAR.md)**.
+
+---
+
+## Language Quick Reference
+
+```tenuto
+tenuto "5.0" {
+  meta @{ title: "Midnight Patio", tempo: 86, time: "4/4" }
+
+  def pno "Felt Grand Piano" style=standard patch="salamander_grand"
+  def bass "Warm Sub Bass" style=synth patch="808_sub"
+  def drums "Dusty Kit" style=grid patch="tenuto_808_kit"
+
+  measure 1 {
+    pno: <[ v1: r:8 a4:8.mf c5:8 e5:8 g5:4 f5:8 e5:8 | v2: [d3 f3 a3 c4]:2.fx(reverb, @{mix: 0.4}) [g2 b2 d3 f3]:2 ]>
+    bass: d2:4. r:8 g1:2 |
+    drums: <[ v1: k:4 r:8 k:8 r:2 | v2: r:4 s:4.pull(12ms) r:4 s:4.pull(12ms) | v3: h:8 h:8 h:8 h:8 h:8 h:8 h:8 h:8 ]>
+  }
+
+  measure 2 {
+    pno: <[ v1: d5:4. c5:8 a4:2 | v2: [c3 e3 g3 b3]:2 [a2 c#3 e3 g3]:2 ]>
+    bass: c2:4. g1:8 a1:2 |
+    drums: <[ v1: k:4 r:8 k:8 r:2 | v2: r:4 s:4.pull(12ms) r:4 s:4.pull(12ms) | v3: h:8 h:8 h:8 h:8 h:8 h:8 h:8 oh:8 ]>
+  }
+}
+
+```
+
+| Feature | Syntax Example | Meaning |
+| --- | --- | --- |
+| **Pitch + Duration** | `c4:4`, `f#5:8`, `eb3:2.` | Middle C quarter note, F#5 eighth note, Eb3 dotted half note |
+| **Sticky State** | `c4:8 d e f g:4` | Four eighth notes in octave 4 (`c4 d4 e4 f4`) followed by a quarter note `g4` |
+| **Rest** | `r:4`, `r:8` | Quarter-note rest, eighth-note rest |
+| **Chord** | `[c4 e4 g4 b4]:1` | C major 7th chord held for a whole note |
+| **Polyphonic Voices** | `<[ v1: e5:2 d5:2 | v2: c3:1 ]>` | Two independent voices playing simultaneously on the same track |
+| **Drum Grid Triggers** | `k:4 s:4 h:8 oh:8 cp:4` | Kick (`k`), snare (`s`), closed hat (`h`), open hat (`oh`), clap (`cp`) |
+| **Euclidean Rhythm** | `(k):3/8` | Distributes 3 hits evenly across 8 eighth-note steps |
+| **Modifiers** | `.stacc`, `.ff`, `.pan(-0.4)`, `.pull(12ms)` | Staccato gate, fortissimo velocity, stereo pan, laid-back micro-timing |
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `Space` | Play / Pause score (when focus is outside the text editor) |
+| `Cmd / Ctrl + Z` | Undo last code edit |
+| `Cmd / Ctrl + Shift + Z` | Redo code edit |
+
+---
+
+## Project Layout & Testing
+
+```text
+├── electron/
+│   └── main.cjs                   # Electron main process for macOS desktop build
+├── src/
+│   ├── audio/
+│   │   ├── StudioAudioEngine.ts   # Polyphonic lookahead synth, drum & WAV export engine
+│   │   ├── AudioContextManager.ts # WebAudio & SharedArrayBuffer manager
+│   │   ├── PlaybackOrchestrator.ts# Audio buffer dispatcher
+│   │   ├── SpatialAudioMatrix.ts  # Bus routing & cycle detection
+│   │   ├── TCALManager.ts         # Core acoustic sample cache manager
+│   │   └── TenutoProcessor.ts     # AudioWorklet DSP processor
+│   ├── commands/
+│   │   ├── ASTCommand.ts          # Editor mutation command
+│   │   └── CommandManager.ts      # Undo / Redo stack manager
+│   ├── components/
+│   │   ├── CodeEditor.tsx         # Monaco editor with Tenuto 5.0 syntax highlighting
+│   │   ├── SplitWorkspace.tsx     # 50/50 split studio workspace
+│   │   ├── Transport.tsx          # Top transport bar, demo loader & WAV export trigger
+│   │   └── WebGPUCanvas.tsx       # Auto-centered scrolling Piano Roll player
+│   ├── parser/
+│   │   ├── DocumentParser.ts      # Full Tenuto 5.0 compiler & markdown fence sanitizer
+│   │   ├── IncrementalCompiler.ts # Real-time compiler bridge
+│   │   ├── ASTSerializer.ts       # Token & modifier serializer
+│   │   ├── PitchEngine.ts         # Scientific pitch, sticky octave & drum grid parser
+│   │   └── TemporalEngine.ts      # Rational duration & sticky rhythm engine
+│   └── presets/
+│       └── presetScores.ts        # Built-in multi-track demo scores
+├── tests/                         # Vitest unit & integration test suites
+├── electron-builder.json          # macOS .pkg installer configuration
+├── TENUTO_GRAMMAR.md              # Songwriting grammar & LLM prompt guide
+├── SPEC.md                        # Canonical Tenuto 5.0.0 language specification
+└── README.md
+
+```
+
+### Running Checks
+
+```bash
+# TypeScript type check
+npm run lint
+
+# Run Vitest test suites
+npx vitest run
+
+# Build production bundle
+npm run build
+
+```
+
+---
+
+## License
+
+MIT License — Copyright (c) 2026 Alec Borman.
+
+```
+
+### 3.2 `TENUTO_GRAMMAR.md` - Create Complete Tenuto 5.0 Songwriting & LLM Grammar Guide
+Create `TENUTO_GRAMMAR.md` in the repository root with the following content:
+
+```markdown
+# Tenuto 5.0 Songwriting & Grammar Specification (`.ten`)
+
+Tenuto 5.0 is a human-readable, token-efficient musical language designed so you (or an LLM like Gemini or Claude) can write complete multi-track arrangements in plain text, paste them into **Tenuto Studio 5**, and immediately hear them rendered with polyphonic synthesis, acoustic piano, drums, and studio effects.
+
+---
+
+## 1. Document Skeleton
+
+Every full Tenuto 5.0 score follows a three-part layout wrapped in `tenuto "5.0" { ... }`:
+
+```tenuto
+tenuto "5.0" {
+  %% 1. Global Metadata
+  meta @{ title: "Song Title", tempo: 120, time: "4/4", sidechain: "drums" }
+
+  %% 2. Instrument Definitions
+  def pno "Grand Piano" style=standard patch="salamander_grand"
+  def lead "Synth Lead" style=synth patch="saw_lead"
+  def pad "Warm Pad" style=synth patch="warm_pad"
+  def bass "Sub Bass" style=synth patch="808_sub"
+  def drums "Drum Kit" style=grid patch="tenuto_808_kit"
+
+  %% 3. Sequential Measures
+  measure 1 {
+    pno: <[ v1: c5:4 d5:8 e5:8 f5:2 | v2: [c3 g3 c4]:1 ]>
+    lead: r:2 g5:4. f5:8 |
+    pad: [c4 e4 g4 b4]:1.fx(reverb, @{mix: 0.5}) |
+    bass: c2:8.stacc c3:8 c2:8 c3:8 c2:8 c3:8 g1:8 g2:8 |
+    drums: <[ v1: k:4 r:4 k:4 r:4 | v2: r:4 s:4 r:4 s:4 | v3: h:8 h:8 h:8 h:8 h:8 h:8 h:8 oh:8 ]>
+  }
+}
+
+```
+
+> **Quick Sketch Mode:** You can also type raw single-line sketches without any wrapper boilerplate (for example: `pno: c4:8 d e f g:4 a b c5:2`) and Tenuto Studio 5 will compile and play them automatically.
+
+---
+
+## 2. Global Metadata (`meta @{ ... }`)
+
+The `meta` block configures global timing and mix behavior:
+
+| Key | Type | Example | Description |
+| --- | --- | --- | --- |
+| `title` | String | `"Neon Horizon"` | Displays in the top transport bar and sets the default filename for `.wav` exports. |
+| `tempo` | Number | `118` | Tempo in Beats Per Minute (BPM). |
+| `time` | String | `"4/4"` | Time signature (`"4/4"`, `"3/4"`, `"6/8"`, `"5/4"`). |
+| `key` | String | `"Am"` | Optional key signature metadata. |
+| `sidechain` | String | `"drums"` | Automatically ducks non-drum tracks whenever a kick (`k` or `bd`) hits on the specified track. |
+
+---
+
+## 3. Instrument Definitions (`def`)
+
+Define as many tracks as your arrangement needs using `def <trackId> "<Display Name>" style=<style> patch="<patch>"`:
+
+| `style` | `patch` Options | Timbre & Behavior |
+| --- | --- | --- |
+| `standard` | `"salamander_grand"` | Multi-harmonic acoustic concert grand piano with hammer transient and natural decay. |
+| `synth` | `"saw_lead"` | Detuned dual-oscillator analog brass/sawtooth lead with low-pass filter sweep. |
+| `synth` | `"warm_pad"`, `"string_pad"` | Lush, slow-attack polyphonic chorus pad / chamber string ensemble. |
+| `synth` | `"808_sub"` | Deep sine/triangle sub-bass with punchy low-pass envelope. |
+| `grid` | `"tenuto_808_kit"` | Percussion trigger grid supporting kick, snare, clap, hi-hats, toms, and cymbals. |
+
+---
+
+## 4. Pitches, Drum Keys, Rests & Sticky Octaves
+
+### 4.1 Melodic Pitches (`style=standard` and `style=synth`)
+
+* **Format:** `<note><accidental><octave>`
+* **Note letters:** `c`, `d`, `e`, `f`, `g`, `a`, `b`
+* **Accidentals:** `#` (sharp) or `b` (flat) — e.g., `f#4`, `eb3`, `c#5`
+* **Octaves:** `0` through `8` (`c4` is Middle C, `a4` is 440 Hz)
+
+
+* **Sticky Octave Rule:** Once you specify an octave on a voice, subsequent notes inherit that octave until you write a new octave number:
+* `c4:8 d e f g a b c5` compiles as `c4:8 d4:8 e4:8 f4:8 g4:8 a4:8 b4:8 c5:8`.
+
+
+
+### 4.2 Drum & Percussion Keys (`style=grid`)
+
+On any `style=grid` track, use these shorthand trigger tokens instead of melodic pitches:
+
+| Token(s) | Drum Sound | MIDI Note |
+| --- | --- | --- |
+| `k`, `bd`, `kick` | 808 / Acoustic Bass Drum (Kick) | 36 |
+| `s`, `sd`, `snare` | Snare Drum | 38 |
+| `cp`, `clap` | Hand Clap | 39 |
+| `rim` | Rimshot | 37 |
+| `h`, `hh`, `ch` | Closed Hi-Hat | 42 |
+| `oh` | Open Hi-Hat | 46 |
+| `lt`, `mt`, `ht` | Low, Mid, High Tom | 45, 47, 50 |
+| `cr`, `rd` | Crash / Ride Cymbal | 49, 51 |
+
+### 4.3 Rests & Spacers
+
+* `r` — Silence for the specified duration (e.g., `r:4` is a quarter-note rest).
+* `s` — Invisible automation spacer (on non-grid tracks).
+
+---
+
+## 5. Durations & Sticky Rhythm Math
+
+Durations are appended to a pitch, chord, or rest using a colon (`:`):
+
+| Token | Musical Value | Fraction of a `4/4` Bar | Quarter-Note Beats |
+| --- | --- | --- | --- |
+| `:1` | Whole note | `1/1` | `4.0` beats |
+| `:2.` | Dotted half note | `3/4` | `3.0` beats |
+| `:2` | Half note | `1/2` | `2.0` beats |
+| `:4.` | Dotted quarter note | `3/8` | `1.5` beats |
+| `:4` | Quarter note | `1/4` | `1.0` beat |
+| `:8.` | Dotted eighth note | `3/16` | `0.75` beats |
+| `:8` | Eighth note | `1/8` | `0.5` beats |
+| `:16` | Sixteenth note | `1/16` | `0.25` beats |
+| `:32` | Thirty-second note | `1/32` | `0.125` beats |
+| `:grace` | Grace note | `0` | `0` beats |
+
+* **Sticky Duration Rule:** If a note omits `:duration`, it automatically reuses the previous duration in that voice:
+* `c4:16 g4 c5 d5 e5:4` = four 16th notes (`1.0` beat total) followed by one quarter note (`1.0` beat).
+
+
+* **Multipliers:** Append `*N` to multiply a duration (e.g., `c4:4*3` equals three quarter notes).
+
+---
+
+## 6. Chords, Polyphonic Voices, Tuplets & Euclidean Rhythms
+
+* **Chords (`[ ... ]`):** Group pitches inside square brackets and attach the duration/modifiers to the closing bracket:
+* `[c4 e4 g4 b4]:2.mp` (C major 7th half-note chord)
+
+
+* **Parallel Polyphonic Voices (`<[ v1: ... | v2: ... ]>`):** Run independent melodies, chords, or drum layers simultaneously on a single track:
+* `pno: <[ v1: e5:4 d5:4 c5:2 | v2: [a2 e3 a3]:2 [g2 d3 g3]:2 ]>`
+* `drums: <[ v1: k:4 r:4 k:4 r:4 | v2: r:4 s:4 r:4 s:4 | v3: h:8 h:8 h:8 h:8 h:8 h:8 h:8 oh:8 ]>`
+
+
+* **Euclidean Rhythms (`(pitch):hits/steps`):** Distribute `hits` evenly across `steps`:
+* `(k):3/8` generates the classic 3-over-8 tresillo pattern (`k:8 r:8 r:8 k:8 r:8 r:8 k:8 r:8`).
+
+
+* **Tuplets (`(notes):num/den`):** Scale a group of notes by a rational ratio:
+* `(c4:8 d4:8 e4:8):3/2` fits three eighth-note triplets into the space of two eighth notes (1 quarter beat).
+
+
+* **Macros (`macro name = { ... }` and `$name`):** Define reusable motifs once and invoke them with `$`:
+* `macro arp_motif = { a3:16 e4 a4 c5 e5 c5 a4 e4 }`
+* `pno: $arp_motif $arp_motif |`
+
+
+
+---
+
+## 7. Articulations, Dynamics, Micro-Timing & DSP Effects
+
+Chain dot modifiers directly onto any note or chord:
+
+* **Articulations:**
+* `.stacc` / `.staccato` (short, detached gate)
+* `.ten` / `.tenuto` (full, slightly lengthened sustain)
+* `.marc` / `.accent` (emphasized attack)
+
+
+* **Dynamics & Velocity:**
+* `.pp` (`40`), `.p` (`60`), `.mp` (`75`), `.mf` (`90`), `.f` (`105`), `.ff` (`120`), `.sfz` (`124`)
+* `.vol(0..127)` for exact MIDI velocity (e.g., `c4:8.vol(110)`)
+
+
+* **Spatial Panning:**
+* `.pan(-1.0..1.0)` where `-1.0` is hard left, `0.0` is center, and `1.0` is hard right (e.g., `arp: c5:8.pan(-0.4)`).
+
+
+* **Micro-Timing ("The Pocket") & Portamento:**
+* `.pull(12ms)` delays the physical note slightly behind the grid (great for laid-back lo-fi snares).
+* `.push(8ms)` plays the note slightly ahead of the beat.
+* `.glide(80ms)` slides pitch smoothly into the next note on `style=synth` tracks.
+
+
+* **DSP Effects:**
+* `.fx(reverb, @{mix: 0.5})`
+* `.fx(delay, @{mix: 0.3})`
+
+
+
+---
+
+## 8. The Golden Rule of Measure Math (`4/4` Alignment)
+
+To ensure `measure 1`, `measure 2`, `measure 3`, etc. in your code line up 1-to-1 with `M1`, `M2`, `M3` on the Scrolling Piano Roll Player:
+
+* In `4/4` time, **every voice inside a `measure N { ... }` block must sum to at most 4 quarter-note beats (`1/1` whole note)**:
+* `1` whole note (`:1`) = **4 beats**
+* `2` half notes (`:2 :2`) = **4 beats**
+* `4` quarter notes (`:4 :4 :4 :4`) = **4 beats**
+* `8` eighth notes (`:8` $\times 8$) = **4 beats**
+* `16` sixteenth notes (`:16` $\times 16$) = **4 beats**
+
+
+* Never pack 8 beats (such as two `:1` whole-note chords or 32 `:16` notes) into a single `measure` block—split them into `measure 1 { ... }` and `measure 2 { ... }`.
+
+---
+
+## 9. Copy-Paste Prompt for Gemini / Claude / ChatGPT
+
+Copy the prompt block below into any LLM chat when you want it to write a new song for Tenuto Studio 5:
+
+```text
+Write a multi-track musical composition in Tenuto 5.0 DSL (.ten) and return ONLY the code inside a single ```tenuto code block.
+
+Follow these strict Tenuto 5.0 rules:
+1. Wrap the score in:
+   tenuto "5.0" {
+     meta @{ title: "Title", tempo: 120, time: "4/4", sidechain: "drums" }
+     ...
+   }
+2. Define instruments using `def <id> "<Name>" style=<standard|synth|grid> patch="<salamander_grand|saw_lead|warm_pad|string_pad|808_sub|tenuto_808_kit>"`.
+3. Use `measure 1 { ... }`, `measure 2 { ... }`, etc.
+4. CRITICAL MEASURE MATH: In 4/4 time, every track/voice line inside a single `measure N` block MUST sum to exactly 4 quarter-note beats (1 whole note = :1, two :2 notes, four :4 notes, eight :8 notes, or sixteen :16 notes). Never put 8 beats inside one measure block.
+5. Pitches: c4, d#4, eb3, f5, or r (rest). Durations: :1, :2, :2., :4, :4., :8, :8., :16.
+6. Chords: [c4 e4 g4]:2. Polyphonic voices on one track: <[ v1: ... | v2: ... ]>.
+7. Drum tokens on `style=grid` tracks: k (kick), s (snare), cp (clap), h (closed hat), oh (open hat).
+8. Expressive modifiers: .stacc, .marc, .pp, .p, .mp, .mf, .f, .ff, .pan(-0.3), .pull(10ms), .fx(reverb, @{mix: 0.4}).
+
+```
+
+```
+
+### 3.3 `tests/documentation_integrity.test.ts` - Verify Final Release README & Grammar Guide
+Create `tests/documentation_integrity.test.ts` to verify that `README.md` and `TENUTO_GRAMMAR.md` exist and contain the v5.0.0 release documentation:
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+
+describe('TDB-607: Final Release Documentation & Grammar Guide Integrity', () => {
+  it('provides TENUTO_GRAMMAR.md with complete songwriting rules and LLM prompt template', () => {
+    const grammarPath = path.resolve(__dirname, '../TENUTO_GRAMMAR.md');
+    expect(fs.existsSync(grammarPath)).toBe(true);
+
+    const content = fs.readFileSync(grammarPath, 'utf-8');
+    expect(content).toContain('tenuto "5.0"');
+    expect(content).toContain('salamander_grand');
+    expect(content).toContain('tenuto_808_kit');
+    expect(content).toContain('Copy-Paste Prompt for Gemini');
+  });
+
+  it('provides the final release README.md without legacy alpha disclaimers', () => {
+    const readmePath = path.resolve(__dirname, '../README.md');
+    expect(fs.existsSync(readmePath)).toBe(true);
+
+    const content = fs.readFileSync(readmePath, 'utf-8');
+    expect(content).toContain('TENUTO STUDIO 5');
+    expect(content).toContain('TENUTO_GRAMMAR.md');
+    expect(content).toContain('npm run electron:build:mac');
+    expect(content).not.toContain('Do not expect to compose music today');
+    expect(content).not.toContain('~28% completion');
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/` (All application source files remain untouched)
+* `electron/`, `electron-builder.json`, `package.json`, `vite.config.ts`
+* Existing test files in `tests/`
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) completes with zero errors.
+2. `npx vitest run tests/documentation_integrity.test.ts` passes 100%.
+3. `npm run build` (`vite build`) completes cleanly.
+
+---
+
+## 6. Constraints
+
+* Do NOT modify any code in `src/` or `package.json`.
+
+---
+
+## 7. Manual Steps
+
+None required.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or restore `README.md` and remove `TENUTO_GRAMMAR.md` and `tests/documentation_integrity.test.ts`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `TENUTO_GRAMMAR.md`, `tests/documentation_integrity.test.ts`
+* Modified file(s): `README.md`
+* Commit message: `docs(release): rewrite README for v5.0.0 release and add TENUTO_GRAMMAR.md`
+
+Confirm acceptance criteria checks pass, then stop and report back.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **`README.md`** | Contained legacy alpha warnings ("~28% completion", "Do not expect to compose music today") | Complete v5.0.0 final release documentation covering the 50/50 split workspace, audio engine, AI workflow, quick syntax reference, and macOS `.pkg` installation |
+| **`TENUTO_GRAMMAR.md`** | Did not exist in the repository | Standalone songwriting grammar guide and copy-paste LLM composer prompt |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-23
+Implementer: AI Agent
+
+```
+
+```
