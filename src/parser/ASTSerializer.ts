@@ -5,6 +5,9 @@ export interface EventPhysics {
   articulation?: string;
   modifiers?: string[];
   velocity?: number;
+  swell?: 'crescendo' | 'diminuendo';
+  startVelocity?: number;
+  endVelocity?: number;
   pan?: number;
   pushMs?: number;
   pullMs?: number;
@@ -141,6 +144,58 @@ export class ASTSerializer {
       } else if (mod.startsWith('vol(') && mod.endsWith(')')) {
         const val = parseFloat(mod.slice(4, -1));
         if (!isNaN(val)) physics.velocity = Math.max(0, Math.min(127, Math.round(val)));
+      } else if (
+        mod === 'cresc' ||
+        mod === 'crescendo' ||
+        mod.startsWith('cresc(') ||
+        mod.startsWith('crescendo(')
+      ) {
+        physics.swell = 'crescendo';
+        const openIdx = mod.indexOf('(');
+        if (openIdx !== -1 && mod.endsWith(')')) {
+          const parts = mod
+            .slice(openIdx + 1, -1)
+            .split(',')
+            .map((s) => parseFloat(s.trim()));
+          if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            physics.startVelocity = Math.max(1, Math.min(127, Math.round(parts[0])));
+            physics.endVelocity = Math.max(1, Math.min(127, Math.round(parts[1])));
+            physics.velocity = Math.round((physics.startVelocity + physics.endVelocity) / 2);
+          }
+        }
+        if (physics.startVelocity === undefined || physics.endVelocity === undefined) {
+          const base = physics.velocity !== defaultVelocity ? physics.velocity! : 45;
+          physics.startVelocity = Math.max(20, Math.min(100, base));
+          physics.endVelocity = Math.min(124, physics.startVelocity + 55);
+          physics.velocity = Math.round((physics.startVelocity + physics.endVelocity) / 2);
+        }
+      } else if (
+        mod === 'dim' ||
+        mod === 'diminuendo' ||
+        mod === 'decresc' ||
+        mod === 'decrescendo' ||
+        mod.startsWith('dim(') ||
+        mod.startsWith('diminuendo(')
+      ) {
+        physics.swell = 'diminuendo';
+        const openIdx = mod.indexOf('(');
+        if (openIdx !== -1 && mod.endsWith(')')) {
+          const parts = mod
+            .slice(openIdx + 1, -1)
+            .split(',')
+            .map((s) => parseFloat(s.trim()));
+          if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            physics.startVelocity = Math.max(1, Math.min(127, Math.round(parts[0])));
+            physics.endVelocity = Math.max(1, Math.min(127, Math.round(parts[1])));
+            physics.velocity = Math.round((physics.startVelocity + physics.endVelocity) / 2);
+          }
+        }
+        if (physics.startVelocity === undefined || physics.endVelocity === undefined) {
+          const base = physics.velocity !== defaultVelocity ? physics.velocity! : 110;
+          physics.startVelocity = Math.max(50, Math.min(124, base));
+          physics.endVelocity = Math.max(20, physics.startVelocity - 55);
+          physics.velocity = Math.round((physics.startVelocity + physics.endVelocity) / 2);
+        }
       } else if (mod.startsWith('pan(') && mod.endsWith(')')) {
         const val = parseFloat(mod.slice(4, -1));
         if (!isNaN(val)) physics.pan = Math.max(-1, Math.min(1, val));

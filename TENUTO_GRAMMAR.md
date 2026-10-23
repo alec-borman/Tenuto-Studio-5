@@ -147,6 +147,11 @@ Chain dot modifiers directly onto any note or chord:
 * **Dynamics & Velocity:**
   * `.pp` (`40`), `.p` (`60`), `.mp` (`75`), `.mf` (`90`), `.f` (`105`), `.ff` (`120`), `.sfz` (`124`)
   * `.vol(0..127)` for exact MIDI velocity (e.g., `c4:8.vol(110)`)
+* **Continuous Dynamic Swells (Crescendo & Diminuendo):**
+  * `.cresc` or `.crescendo` — Smoothly swells volume and harmonic brightness upward across a held note/chord (`[eb4 g4 bb4]:1.cresc`) or across a sequence of consecutive `.cresc` notes (`c4:8.cresc d:8.cresc e:8.cresc f:8.cresc`).
+  * `.cresc(startVel, endVel)` — Swells between exact MIDI velocities (e.g., `c4:1.cresc(30, 120)`).
+  * `.dim` or `.diminuendo` — Smoothly tapers volume and brightness downward across a held note/chord (`[eb4 g4 bb4]:1.dim`) or across a sequence of `.dim` notes.
+  * `.dim(startVel, endVel)` — Fades between exact MIDI velocities (e.g., `c5:1.dim(115, 25)`).
 * **Spatial Panning:**
   * `.pan(-1.0..1.0)` where `-1.0` is hard left, `0.0` is center, and `1.0` is hard right (e.g., `arp: c5:8.pan(-0.4)`).
 * **Micro-Timing ("The Pocket") & Portamento:**

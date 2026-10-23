@@ -198,7 +198,7 @@ export class DocumentParser {
     const finalTokens: string[] = [];
     for (const tok of merged) {
       const fusedMatch = tok.match(
-        /^([a-gA-G][#b]*[0-9]*:[0-9.]+\.(?:pp|p|mp|mf|f|ff|sfz|stacc|ten|marc))([a-gA-G][#b]*[0-9]*:[0-9.].*)$/
+        /^([a-gA-G][#b]*[0-9]*:[0-9.]+\.(?:pp|p|mp|mf|f|ff|sfz|stacc|ten|marc|cresc|crescendo|dim|diminuendo))([a-gA-G][#b]*[0-9]*:[0-9.].*)$/
       );
       if (fusedMatch) {
         finalTokens.push(fusedMatch[1], fusedMatch[2]);
@@ -390,7 +390,67 @@ export class DocumentParser {
       }
     }
 
+    this.applyPhraseSwellInterpolation(events);
     return { events, totalDuration: voiceDuration };
+  }
+
+  /**
+   * When multiple consecutive notes in a voice carry .cresc or .dim (without explicit (start,end) overrides),
+   * smoothly interpolates their startVelocity and endVelocity across the entire phrase run.
+   */
+  private applyPhraseSwellInterpolation(events: AtomicEvent[]): void {
+    let i = 0;
+    while (i < events.length) {
+      const swellType = events[i].physics?.swell;
+      if (!swellType) {
+        i++;
+        continue;
+      }
+
+      const startTime0 = events[i].startTime;
+      let j = i;
+      const timeSteps: Array<{ startNum: number; startDen: number; items: AtomicEvent[] }> = [];
+
+      while (j < events.length && events[j].physics?.swell === swellType) {
+        const st = events[j].startTime || { numerator: 0, denominator: 1 };
+        const lastStep = timeSteps[timeSteps.length - 1];
+        if (lastStep && lastStep.startNum === st.numerator && lastStep.startDen === st.denominator) {
+          lastStep.items.push(events[j]);
+        } else {
+          timeSteps.push({ startNum: st.numerator, startDen: st.denominator, items: [events[j]] });
+        }
+        j++;
+      }
+
+      void startTime0;
+      if (timeSteps.length > 1) {
+        const firstPhysics = timeSteps[0].items[0].physics!;
+        const overallStart =
+          swellType === 'crescendo'
+            ? Math.min(85, firstPhysics.startVelocity ?? 40)
+            : Math.max(65, firstPhysics.startVelocity ?? 112);
+        const overallEnd =
+          swellType === 'crescendo'
+            ? Math.max(overallStart + 25, firstPhysics.endVelocity ?? 116)
+            : Math.min(overallStart - 25, firstPhysics.endVelocity ?? 32);
+
+        const totalSteps = timeSteps.length;
+        for (let s = 0; s < totalSteps; s++) {
+          const segStart = Math.round(overallStart + ((overallEnd - overallStart) * s) / totalSteps);
+          const segEnd = Math.round(overallStart + ((overallEnd - overallStart) * (s + 1)) / totalSteps);
+          const segMid = Math.round((segStart + segEnd) / 2);
+          for (const ev of timeSteps[s].items) {
+            if (ev.physics) {
+              ev.physics.startVelocity = segStart;
+              ev.physics.endVelocity = segEnd;
+              ev.physics.velocity = segMid;
+            }
+          }
+        }
+      }
+
+      i = j;
+    }
   }
 
   public compile(rawSource: string): CompiledScore {

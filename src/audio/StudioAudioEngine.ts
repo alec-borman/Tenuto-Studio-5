@@ -20,6 +20,9 @@ interface ScheduledNoteEvent {
   style: string;
   patch: string;
   amp: number;
+  startAmp: number;
+  endAmp: number;
+  swell?: 'crescendo' | 'diminuendo';
   pan: number;
 }
 
@@ -196,7 +199,14 @@ export class StudioAudioEngine {
         durSec = Math.max(0.045, durSec * 0.48);
       }
 
-      const amp = Math.max(0.012, Math.min(0.55, ((ev.physics?.velocity ?? 85) / 127) * trackGainScalar));
+      const vel = ev.physics?.velocity ?? 85;
+      const swell = ev.physics?.swell;
+      const startVel = ev.physics?.startVelocity ?? (swell === 'crescendo' ? 40 : swell === 'diminuendo' ? 112 : vel);
+      const endVel = ev.physics?.endVelocity ?? (swell === 'crescendo' ? 116 : swell === 'diminuendo' ? 32 : vel);
+
+      const amp = Math.max(0.012, Math.min(0.55, (vel / 127) * trackGainScalar));
+      const startAmp = Math.max(0.008, Math.min(0.6, (startVel / 127) * trackGainScalar));
+      const endAmp = Math.max(0.008, Math.min(0.6, (endVel / 127) * trackGainScalar));
       const pan = Math.max(-1, Math.min(1, ev.physics?.pan ?? def?.pan ?? 0));
       const freq =
         Number.isFinite(ev.pitch.frequency) && ev.pitch.frequency >= 20 && ev.pitch.frequency <= 10000
@@ -214,6 +224,9 @@ export class StudioAudioEngine {
         style,
         patch,
         amp,
+        startAmp,
+        endAmp,
+        swell,
         pan,
       });
     }
@@ -253,9 +266,32 @@ export class StudioAudioEngine {
     if (item.style === 'grid' || item.gridKey) {
       this.scheduleDrumHit(ctx, voiceOut, pannerNode, item.gridKey || 'k', item.midi, safeStart, item.amp);
     } else if (item.style === 'synth') {
-      this.scheduleSynthVoice(ctx, voiceOut, pannerNode, item.freq, item.patch, safeStart, durSec, item.amp);
+      this.scheduleSynthVoice(
+        ctx,
+        voiceOut,
+        pannerNode,
+        item.freq,
+        item.patch,
+        safeStart,
+        durSec,
+        item.amp,
+        item.swell,
+        item.startAmp,
+        item.endAmp
+      );
     } else {
-      this.scheduleAcousticPianoVoice(ctx, voiceOut, pannerNode, item.freq, safeStart, durSec, item.amp);
+      this.scheduleAcousticPianoVoice(
+        ctx,
+        voiceOut,
+        pannerNode,
+        item.freq,
+        safeStart,
+        durSec,
+        item.amp,
+        item.swell,
+        item.startAmp,
+        item.endAmp
+      );
     }
   }
 
@@ -266,7 +302,10 @@ export class StudioAudioEngine {
     freq: number,
     startSec: number,
     durSec: number,
-    amp: number
+    amp: number,
+    swell?: 'crescendo' | 'diminuendo',
+    startAmp?: number,
+    endAmp?: number
   ): void {
     const env = ctx.createGain();
     const oscFund = ctx.createOscillator();
@@ -288,7 +327,6 @@ export class StudioAudioEngine {
     gHarm.connect(env);
     env.connect(output);
 
-    const peak = Math.max(0.002, amp * 0.5);
     const t0 = startSec;
     const tAttack = t0 + 0.01;
     const tDecay = Math.max(tAttack + 0.02, t0 + durSec);
@@ -296,9 +334,18 @@ export class StudioAudioEngine {
     const tEnd = tDecay + Math.max(0.03, release);
 
     env.gain.setValueAtTime(0.0001, t0);
-    env.gain.linearRampToValueAtTime(peak, tAttack);
-    env.gain.exponentialRampToValueAtTime(Math.max(0.0005, peak * 0.35), tDecay);
-    env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    if (swell === 'crescendo' || swell === 'diminuendo') {
+      const sPeak = Math.max(0.002, (startAmp ?? amp) * 0.52);
+      const ePeak = Math.max(0.002, (endAmp ?? amp) * 0.52);
+      env.gain.linearRampToValueAtTime(sPeak, tAttack);
+      env.gain.linearRampToValueAtTime(ePeak, tDecay);
+      env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    } else {
+      const peak = Math.max(0.002, amp * 0.5);
+      env.gain.linearRampToValueAtTime(peak, tAttack);
+      env.gain.exponentialRampToValueAtTime(Math.max(0.0005, peak * 0.35), tDecay);
+      env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    }
 
     const stopAt = tEnd + 0.015;
     oscFund.start(t0);
@@ -343,7 +390,10 @@ export class StudioAudioEngine {
     patch: string,
     startSec: number,
     durSec: number,
-    amp: number
+    amp: number,
+    swell?: 'crescendo' | 'diminuendo',
+    startAmp?: number,
+    endAmp?: number
   ): void {
     const isSub = patch.includes('sub') || patch.includes('808') || freq < 130;
     const isPad = patch.includes('pad') || patch.includes('string');
@@ -352,7 +402,16 @@ export class StudioAudioEngine {
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
     filter.Q.setValueAtTime(0.707, startSec);
-    filter.frequency.setValueAtTime(isSub ? 360 : isPad ? 1900 : 3000, startSec);
+    const baseCutoff = isSub ? 360 : isPad ? 1900 : 3000;
+    if (swell === 'crescendo') {
+      filter.frequency.setValueAtTime(Math.max(220, baseCutoff * 0.55), startSec);
+      filter.frequency.exponentialRampToValueAtTime(Math.min(7500, baseCutoff * 1.45), startSec + durSec);
+    } else if (swell === 'diminuendo') {
+      filter.frequency.setValueAtTime(Math.min(7500, baseCutoff * 1.35), startSec);
+      filter.frequency.exponentialRampToValueAtTime(Math.max(200, baseCutoff * 0.5), startSec + durSec);
+    } else {
+      filter.frequency.setValueAtTime(baseCutoff, startSec);
+    }
 
     const osc1 = ctx.createOscillator();
     const osc2 = ctx.createOscillator();
@@ -381,12 +440,21 @@ export class StudioAudioEngine {
     const tSustain = Math.max(tAttack + 0.02, t0 + durSec);
     const release = isPad ? 0.2 : 0.08;
     const tEnd = tSustain + release;
-    const peak = Math.max(0.002, amp * (isSub ? 0.55 : isPad ? 0.28 : 0.34));
+    const voiceScale = isSub ? 0.55 : isPad ? 0.28 : 0.34;
 
     env.gain.setValueAtTime(0.0001, t0);
-    env.gain.linearRampToValueAtTime(peak, tAttack);
-    env.gain.exponentialRampToValueAtTime(Math.max(0.0005, peak * 0.7), tSustain);
-    env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    if (swell === 'crescendo' || swell === 'diminuendo') {
+      const sPeak = Math.max(0.002, (startAmp ?? amp) * voiceScale);
+      const ePeak = Math.max(0.002, (endAmp ?? amp) * voiceScale);
+      env.gain.linearRampToValueAtTime(sPeak, tAttack);
+      env.gain.linearRampToValueAtTime(ePeak, tSustain);
+      env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    } else {
+      const peak = Math.max(0.002, amp * voiceScale);
+      env.gain.linearRampToValueAtTime(peak, tAttack);
+      env.gain.exponentialRampToValueAtTime(Math.max(0.0005, peak * 0.7), tSustain);
+      env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    }
 
     const stopAt = tEnd + 0.015;
     osc1.start(t0);
@@ -696,18 +764,33 @@ export class StudioAudioEngine {
       const f1 = item.freq;
       const f2 = item.freq * (isPad ? 1.004 : 1.002);
 
+      const hasSwell = item.swell === 'crescendo' || item.swell === 'diminuendo';
+      const baseAmpScalar = hasSwell ? 1.0 : item.amp;
+
       for (let i = 0; i < noteFrames; i++) {
         const t = i / sampleRate;
         let env = 1.0;
-        if (t < attackSec) {
-          env = t / attackSec;
-        } else if (t <= item.durSec) {
-          const decayProgress = (t - attackSec) / Math.max(0.001, item.durSec - attackSec);
-          env = isPad ? 1.0 - 0.15 * decayProgress : 0.45 + 0.55 * Math.exp(-decayProgress * 2.2);
+        if (hasSwell) {
+          if (t < attackSec) {
+            env = (t / attackSec) * item.startAmp;
+          } else if (t <= item.durSec) {
+            const swellProgress = (t - attackSec) / Math.max(0.001, item.durSec - attackSec);
+            env = item.startAmp + (item.endAmp - item.startAmp) * swellProgress;
+          } else {
+            const relProgress = (t - item.durSec) / Math.max(0.001, releaseSec);
+            env = item.endAmp * Math.max(0, 1 - relProgress);
+          }
         } else {
-          const relProgress = (t - item.durSec) / Math.max(0.001, releaseSec);
-          const sustainEnd = isPad ? 0.85 : 0.45;
-          env = sustainEnd * Math.max(0, 1 - relProgress);
+          if (t < attackSec) {
+            env = t / attackSec;
+          } else if (t <= item.durSec) {
+            const decayProgress = (t - attackSec) / Math.max(0.001, item.durSec - attackSec);
+            env = isPad ? 1.0 - 0.15 * decayProgress : 0.45 + 0.55 * Math.exp(-decayProgress * 2.2);
+          } else {
+            const relProgress = (t - item.durSec) / Math.max(0.001, releaseSec);
+            const sustainEnd = isPad ? 0.85 : 0.45;
+            env = sustainEnd * Math.max(0, 1 - relProgress);
+          }
         }
 
         const ph1 = i * f1 * twoPiOverSr;
@@ -730,7 +813,7 @@ export class StudioAudioEngine {
             0.05 * Math.sin(ph1 * 4) * Math.exp(-t * 6.0);
         }
 
-        const sample = wave * env * item.amp * 0.55;
+        const sample = wave * env * baseAmpScalar * 0.55;
         left[startFrame + i] += sample * gainL;
         right[startFrame + i] += sample * gainR;
       }

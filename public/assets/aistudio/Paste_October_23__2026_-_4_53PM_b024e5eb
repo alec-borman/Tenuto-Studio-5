@@ -1,0 +1,642 @@
+Implementation Contract **`TDB-610`** adds continuous **`.crescendo` / `.cresc**` and **`.diminuendo` / `.dim**` support across the compiler, the live WebAudio synthesizer, the offline WAV renderer, the Piano Roll visualizer, and `TENUTO_GRAMMAR.md`.
+
+### What This Contract Adds
+
+1. **Single-Note & Held-Chord Continuous Swells (`.cresc` / `.dim`):**
+* Writing `soprano: [eb5 g5 bb5]:1.cresc` or `[eb5 g5 bb5]:1.cresc(30, 120)` smoothly ramps both the volume envelope and harmonic brightness from soft to loud across the full duration of the note or chord instead of decaying.
+* Writing `soprano: [eb5 g5 bb5]:1.dim` or `.dim(115, 25)` smoothly tapers the volume and filter envelope down across the held duration.
+
+
+2. **Multi-Note Phrase Hairpins:**
+* If you tag a sequence of moving notes with `.cresc` or `.dim` (e.g., `vln1: c4:8.cresc d4:8.cresc e4:8.cresc f4:8.cresc g4:4.cresc`), `DocumentParser` automatically interpolates the starting and ending velocities smoothly across the entire phrase so each consecutive note builds or fades seamlessly into the next.
+
+
+3. **Visual Hairpins on the Piano Roll (`<` and `>`):**
+* Note blocks with a crescendo or diminuendo display a tapered dynamic wedge and `<` / `>` hairpin indicator directly inside the Piano Roll on the right panel.
+
+
+
+Paste the contract below directly into Google AI Studio:
+
+```markdown
+# Implementation Contract: Continuous Crescendo & Diminuendo Swells Across Compiler, Audio Engine & Piano Roll (TDB-610)
+
+**Project:** Tenuto Studio 5
+**Scope:** Add `.cresc` / `.crescendo` and `.dim` / `.diminuendo` (with optional `(startVel, endVel)` bounds) to `src/parser/ASTSerializer.ts`, multi-note phrase velocity interpolation to `src/parser/DocumentParser.ts`, continuous WebAudio & WAV PCM swell envelopes to `src/audio/StudioAudioEngine.ts`, visual hairpin wedges to `src/components/WebGPUCanvas.tsx`, and grammar documentation to `TENUTO_GRAMMAR.md`.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+Currently, Tenuto Studio 5 only supports static per-note velocities (`.pp` through `.ff` and `.vol(N)`). If a score includes `.cresc`, `.crescendo`, `.dim`, or `.diminuendo`, the modifier is stored as a raw string in `physics.modifiers` and ignored by the audio engine, causing held chords and melodic runs to play at a flat volume.
+
+This contract implements full `.cresc` / `.crescendo` and `.dim` / `.diminuendo` support:
+1. `ASTSerializer.ts` parses `.cresc`, `.crescendo`, `.cresc(start, end)`, `.dim`, `.diminuendo`, and `.dim(start, end)` into `physics.swell`, `physics.startVelocity`, and `physics.endVelocity`.
+2. `DocumentParser.ts` detects consecutive notes tagged with `.cresc` or `.dim` in a voice and smoothly interpolates their `startVelocity` and `endVelocity` across the entire phrase.
+3. `StudioAudioEngine.ts` ramps both live WebAudio `GainNode` / `BiquadFilterNode` envelopes and offline WAV PCM samples continuously from `startAmp` to `endAmp` across the duration of crescendo and diminuendo events.
+4. `WebGPUCanvas.tsx` renders a visual dynamic wedge and `<` / `>` hairpin label on crescendo and diminuendo note blocks in the Piano Roll.
+
+---
+
+## 2. Root Cause
+1. `src/parser/ASTSerializer.ts` (`parseModifiersToPhysics`) does not parse `cresc`, `crescendo`, `dim`, or `diminuendo` modifiers into velocity ramp fields on `EventPhysics`.
+2. `src/audio/StudioAudioEngine.ts` (`scheduleAcousticPianoVoice`, `scheduleSynthVoice`, and `exportWavBlob`) assumes a standard attack-decay envelope on every note rather than ramping upward on crescendos or tapering downward on diminuendos.
+3. `src/components/WebGPUCanvas.tsx` renders all note blocks as flat rectangles without indicating dynamic swells.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/parser/ASTSerializer.ts` - Parse `.cresc` / `.crescendo` & `.dim` / `.diminuendo` Modifiers
+In `src/parser/ASTSerializer.ts`, update `EventPhysics` and `parseModifiersToPhysics` to support `swell`, `startVelocity`, and `endVelocity`:
+
+1. Update the `EventPhysics` interface:
+```typescript
+export interface EventPhysics {
+  articulation?: string;
+  modifiers?: string[];
+  velocity?: number;
+  swell?: 'crescendo' | 'diminuendo';
+  startVelocity?: number;
+  endVelocity?: number;
+  pan?: number;
+  pushMs?: number;
+  pullMs?: number;
+  glideMs?: number;
+  slice?: number;
+  reverse?: boolean;
+  stretch?: boolean;
+  tie?: boolean;
+  fx?: Array<{ type: string; params: Record<string, any> }>;
+  cc?: { controller: number; values: number[]; curve: string };
+}
+
+```
+
+2. Inside `parseModifiersToPhysics(modifiers: string[], defaultVelocity: number = 80)`, add handling for `cresc` / `crescendo` and `dim` / `diminuendo` inside the `for (const mod of modifiers)` loop (right after the `vol(...)` branch):
+
+```typescript
+      } else if (
+        mod === 'cresc' ||
+        mod === 'crescendo' ||
+        mod.startsWith('cresc(') ||
+        mod.startsWith('crescendo(')
+      ) {
+        physics.swell = 'crescendo';
+        const openIdx = mod.indexOf('(');
+        if (openIdx !== -1 && mod.endsWith(')')) {
+          const parts = mod
+            .slice(openIdx + 1, -1)
+            .split(',')
+            .map((s) => parseFloat(s.trim()));
+          if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            physics.startVelocity = Math.max(1, Math.min(127, Math.round(parts[0])));
+            physics.endVelocity = Math.max(1, Math.min(127, Math.round(parts[1])));
+            physics.velocity = Math.round((physics.startVelocity + physics.endVelocity) / 2);
+          }
+        }
+        if (physics.startVelocity === undefined || physics.endVelocity === undefined) {
+          const base = physics.velocity !== defaultVelocity ? physics.velocity! : 45;
+          physics.startVelocity = Math.max(20, Math.min(100, base));
+          physics.endVelocity = Math.min(124, physics.startVelocity + 55);
+          physics.velocity = Math.round((physics.startVelocity + physics.endVelocity) / 2);
+        }
+      } else if (
+        mod === 'dim' ||
+        mod === 'diminuendo' ||
+        mod === 'decresc' ||
+        mod === 'decrescendo' ||
+        mod.startsWith('dim(') ||
+        mod.startsWith('diminuendo(')
+      ) {
+        physics.swell = 'diminuendo';
+        const openIdx = mod.indexOf('(');
+        if (openIdx !== -1 && mod.endsWith(')')) {
+          const parts = mod
+            .slice(openIdx + 1, -1)
+            .split(',')
+            .map((s) => parseFloat(s.trim()));
+          if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            physics.startVelocity = Math.max(1, Math.min(127, Math.round(parts[0])));
+            physics.endVelocity = Math.max(1, Math.min(127, Math.round(parts[1])));
+            physics.velocity = Math.round((physics.startVelocity + physics.endVelocity) / 2);
+          }
+        }
+        if (physics.startVelocity === undefined || physics.endVelocity === undefined) {
+          const base = physics.velocity !== defaultVelocity ? physics.velocity! : 110;
+          physics.startVelocity = Math.max(50, Math.min(124, base));
+          physics.endVelocity = Math.max(20, physics.startVelocity - 55);
+          physics.velocity = Math.round((physics.startVelocity + physics.endVelocity) / 2);
+        }
+
+```
+
+### 3.2 `src/parser/DocumentParser.ts` - Interpolate Multi-Note Crescendo & Diminuendo Runs
+
+In `src/parser/DocumentParser.ts`:
+
+1. Update the fused-token regex in `tokenizeVoiceStream` so `.cresc`, `.crescendo`, `.dim`, and `.diminuendo` are also split if fused to a following note:
+
+```typescript
+      const fusedMatch = tok.match(
+        /^([a-gA-G][#b]*[0-9]*:[0-9.]+\.(?:pp|p|mp|mf|f|ff|sfz|stacc|ten|marc|cresc|crescendo|dim|diminuendo))([a-gA-G][#b]*[0-9]*:[0-9.].*)$/
+      );
+
+```
+
+2. Add a helper method `applyPhraseSwellInterpolation(events: AtomicEvent[]): void` to `DocumentParser` and call `this.applyPhraseSwellInterpolation(events);` right before `return { events, totalDuration: voiceDuration };` at the end of `parseVoiceTokensToEvents()`:
+
+```typescript
+  /**
+   * When multiple consecutive notes in a voice carry .cresc or .dim (without explicit (start,end) overrides),
+   * smoothly interpolates their startVelocity and endVelocity across the entire phrase run.
+   */
+  private applyPhraseSwellInterpolation(events: AtomicEvent[]): void {
+    let i = 0;
+    while (i < events.length) {
+      const swellType = events[i].physics?.swell;
+      if (!swellType) {
+        i++;
+        continue;
+      }
+
+      const startTime0 = events[i].startTime;
+      let j = i;
+      const timeSteps: Array<{ startNum: number; startDen: number; items: AtomicEvent[] }> = [];
+
+      while (j < events.length && events[j].physics?.swell === swellType) {
+        const st = events[j].startTime || { numerator: 0, denominator: 1 };
+        const lastStep = timeSteps[timeSteps.length - 1];
+        if (lastStep && lastStep.startNum === st.numerator && lastStep.startDen === st.denominator) {
+          lastStep.items.push(events[j]);
+        } else {
+          timeSteps.push({ startNum: st.numerator, startDen: st.denominator, items: [events[j]] });
+        }
+        j++;
+      }
+
+      void startTime0;
+      if (timeSteps.length > 1) {
+        const firstPhysics = timeSteps[0].items[0].physics!;
+        const overallStart =
+          swellType === 'crescendo'
+            ? Math.min(85, firstPhysics.startVelocity ?? 40)
+            : Math.max(65, firstPhysics.startVelocity ?? 112);
+        const overallEnd =
+          swellType === 'crescendo'
+            ? Math.max(overallStart + 25, firstPhysics.endVelocity ?? 116)
+            : Math.min(overallStart - 25, firstPhysics.endVelocity ?? 32);
+
+        const totalSteps = timeSteps.length;
+        for (let s = 0; s < totalSteps; s++) {
+          const segStart = Math.round(overallStart + ((overallEnd - overallStart) * s) / totalSteps);
+          const segEnd = Math.round(overallStart + ((overallEnd - overallStart) * (s + 1)) / totalSteps);
+          const segMid = Math.round((segStart + segEnd) / 2);
+          for (const ev of timeSteps[s].items) {
+            if (ev.physics) {
+              ev.physics.startVelocity = segStart;
+              ev.physics.endVelocity = segEnd;
+              ev.physics.velocity = segMid;
+            }
+          }
+        }
+      }
+
+      i = j;
+    }
+  }
+
+```
+
+### 3.3 `src/audio/StudioAudioEngine.ts` - Continuous Crescendo & Diminuendo Envelopes in WebAudio & WAV Export
+
+In `src/audio/StudioAudioEngine.ts`, update `ScheduledNoteEvent`, `buildScheduledTimeline`, `triggerRealtimeVoice`, `scheduleAcousticPianoVoice`, `scheduleSynthVoice`, and `exportWavBlob` so crescendo and diminuendo notes continuously ramp in volume and filter brightness:
+
+1. Update `ScheduledNoteEvent`:
+
+```typescript
+interface ScheduledNoteEvent {
+  event: AtomicEvent;
+  def?: TrackDefinition;
+  startSec: number;
+  durSec: number;
+  freq: number;
+  midi: number;
+  gridKey?: string;
+  style: string;
+  patch: string;
+  amp: number;
+  startAmp: number;
+  endAmp: number;
+  swell?: 'crescendo' | 'diminuendo';
+  pan: number;
+}
+
+```
+
+2. Inside `buildScheduledTimeline(score: CompiledScore)`, compute `startAmp`, `endAmp`, and `swell` right where `amp` is calculated:
+
+```typescript
+      const vel = ev.physics?.velocity ?? 85;
+      const swell = ev.physics?.swell;
+      const startVel = ev.physics?.startVelocity ?? (swell === 'crescendo' ? 40 : swell === 'diminuendo' ? 112 : vel);
+      const endVel = ev.physics?.endVelocity ?? (swell === 'crescendo' ? 116 : swell === 'diminuendo' ? 32 : vel);
+
+      const amp = Math.max(0.012, Math.min(0.55, (vel / 127) * trackGainScalar));
+      const startAmp = Math.max(0.008, Math.min(0.6, (startVel / 127) * trackGainScalar));
+      const endAmp = Math.max(0.008, Math.min(0.6, (endVel / 127) * trackGainScalar));
+      const pan = Math.max(-1, Math.min(1, ev.physics?.pan ?? def?.pan ?? 0));
+      const freq =
+        Number.isFinite(ev.pitch.frequency) && ev.pitch.frequency >= 20 && ev.pitch.frequency <= 10000
+          ? ev.pitch.frequency
+          : 440;
+
+      list.push({
+        event: ev,
+        def,
+        startSec,
+        durSec,
+        freq,
+        midi: ev.pitch.midi || 60,
+        gridKey: ev.pitch.gridKey,
+        style,
+        patch,
+        amp,
+        startAmp,
+        endAmp,
+        swell,
+        pan,
+      });
+
+```
+
+3. In `triggerRealtimeVoice`, pass `item.swell`, `item.startAmp`, and `item.endAmp` to `scheduleSynthVoice` and `scheduleAcousticPianoVoice`:
+
+```typescript
+    if (item.style === 'grid' || item.gridKey) {
+      this.scheduleDrumHit(ctx, voiceOut, pannerNode, item.gridKey || 'k', item.midi, safeStart, item.amp);
+    } else if (item.style === 'synth') {
+      this.scheduleSynthVoice(
+        ctx,
+        voiceOut,
+        pannerNode,
+        item.freq,
+        item.patch,
+        safeStart,
+        durSec,
+        item.amp,
+        item.swell,
+        item.startAmp,
+        item.endAmp
+      );
+    } else {
+      this.scheduleAcousticPianoVoice(
+        ctx,
+        voiceOut,
+        pannerNode,
+        item.freq,
+        safeStart,
+        durSec,
+        item.amp,
+        item.swell,
+        item.startAmp,
+        item.endAmp
+      );
+    }
+
+```
+
+4. In `scheduleAcousticPianoVoice`, update the signature and envelope ramps to support `swell`:
+
+```typescript
+  private scheduleAcousticPianoVoice(
+    ctx: BaseAudioContext,
+    output: AudioNode,
+    pannerNode: StereoPannerNode | null,
+    freq: number,
+    startSec: number,
+    durSec: number,
+    amp: number,
+    swell?: 'crescendo' | 'diminuendo',
+    startAmp?: number,
+    endAmp?: number
+  ): void {
+
+```
+
+And replace the envelope gain scheduling block in `scheduleAcousticPianoVoice` with:
+
+```typescript
+    const t0 = startSec;
+    const tAttack = t0 + 0.01;
+    const tDecay = Math.max(tAttack + 0.02, t0 + durSec);
+    const release = Math.min(0.2, durSec * 0.4);
+    const tEnd = tDecay + Math.max(0.03, release);
+
+    env.gain.setValueAtTime(0.0001, t0);
+    if (swell === 'crescendo' || swell === 'diminuendo') {
+      const sPeak = Math.max(0.002, (startAmp ?? amp) * 0.52);
+      const ePeak = Math.max(0.002, (endAmp ?? amp) * 0.52);
+      env.gain.linearRampToValueAtTime(sPeak, tAttack);
+      env.gain.linearRampToValueAtTime(ePeak, tDecay);
+      env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    } else {
+      const peak = Math.max(0.002, amp * 0.5);
+      env.gain.linearRampToValueAtTime(peak, tAttack);
+      env.gain.exponentialRampToValueAtTime(Math.max(0.0005, peak * 0.35), tDecay);
+      env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    }
+
+```
+
+5. In `scheduleSynthVoice`, update the signature, filter sweep, and envelope ramps to support `swell`:
+
+```typescript
+  private scheduleSynthVoice(
+    ctx: BaseAudioContext,
+    output: AudioNode,
+    pannerNode: StereoPannerNode | null,
+    freq: number,
+    patch: string,
+    startSec: number,
+    durSec: number,
+    amp: number,
+    swell?: 'crescendo' | 'diminuendo',
+    startAmp?: number,
+    endAmp?: number
+  ): void {
+
+```
+
+Inside `scheduleSynthVoice`, update the filter and envelope gain scheduling:
+
+```typescript
+    const baseCutoff = isSub ? 360 : isPad ? 1900 : 3000;
+    if (swell === 'crescendo') {
+      filter.frequency.setValueAtTime(Math.max(220, baseCutoff * 0.55), startSec);
+      filter.frequency.exponentialRampToValueAtTime(Math.min(7500, baseCutoff * 1.45), startSec + durSec);
+    } else if (swell === 'diminuendo') {
+      filter.frequency.setValueAtTime(Math.min(7500, baseCutoff * 1.35), startSec);
+      filter.frequency.exponentialRampToValueAtTime(Math.max(200, baseCutoff * 0.5), startSec + durSec);
+    } else {
+      filter.frequency.setValueAtTime(baseCutoff, startSec);
+    }
+
+```
+
+And for `env.gain` in `scheduleSynthVoice`:
+
+```typescript
+    const t0 = startSec;
+    const attack = isPad ? Math.min(0.06, durSec * 0.25) : 0.01;
+    const tAttack = t0 + Math.max(0.008, attack);
+    const tSustain = Math.max(tAttack + 0.02, t0 + durSec);
+    const release = isPad ? 0.2 : 0.08;
+    const tEnd = tSustain + release;
+    const voiceScale = isSub ? 0.55 : isPad ? 0.28 : 0.34;
+
+    env.gain.setValueAtTime(0.0001, t0);
+    if (swell === 'crescendo' || swell === 'diminuendo') {
+      const sPeak = Math.max(0.002, (startAmp ?? amp) * voiceScale);
+      const ePeak = Math.max(0.002, (endAmp ?? amp) * voiceScale);
+      env.gain.linearRampToValueAtTime(sPeak, tAttack);
+      env.gain.linearRampToValueAtTime(ePeak, tSustain);
+      env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    } else {
+      const peak = Math.max(0.002, amp * voiceScale);
+      env.gain.linearRampToValueAtTime(peak, tAttack);
+      env.gain.exponentialRampToValueAtTime(Math.max(0.0005, peak * 0.7), tSustain);
+      env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+    }
+
+```
+
+6. In `exportWavBlob`, update the per-sample envelope calculation inside `for (let i = 0; i < noteFrames; i++)` so WAV exports also render continuous crescendos and diminuendos:
+
+```typescript
+      const hasSwell = item.swell === 'crescendo' || item.swell === 'diminuendo';
+      const baseAmpScalar = hasSwell ? 1.0 : item.amp;
+
+      for (let i = 0; i < noteFrames; i++) {
+        const t = i / sampleRate;
+        let env = 1.0;
+        if (hasSwell) {
+          if (t < attackSec) {
+            env = (t / attackSec) * item.startAmp;
+          } else if (t <= item.durSec) {
+            const swellProgress = (t - attackSec) / Math.max(0.001, item.durSec - attackSec);
+            env = item.startAmp + (item.endAmp - item.startAmp) * swellProgress;
+          } else {
+            const relProgress = (t - item.durSec) / Math.max(0.001, releaseSec);
+            env = item.endAmp * Math.max(0, 1 - relProgress);
+          }
+        } else {
+          if (t < attackSec) {
+            env = t / attackSec;
+          } else if (t <= item.durSec) {
+            const decayProgress = (t - attackSec) / Math.max(0.001, item.durSec - attackSec);
+            env = isPad ? 1.0 - 0.15 * decayProgress : 0.45 + 0.55 * Math.exp(-decayProgress * 2.2);
+          } else {
+            const relProgress = (t - item.durSec) / Math.max(0.001, releaseSec);
+            const sustainEnd = isPad ? 0.85 : 0.45;
+            env = sustainEnd * Math.max(0, 1 - relProgress);
+          }
+        }
+
+```
+
+And update `const sample = ...` right below it to:
+
+```typescript
+        const sample = wave * env * baseAmpScalar * 0.55;
+
+```
+
+### 3.4 `src/components/WebGPUCanvas.tsx` - Render Visual Hairpin Wedges (`<` / `>`) on Piano Roll Note Blocks
+
+In `src/components/WebGPUCanvas.tsx`, inside `visibleEvents.map((ev, idx) => { ... })`, add a visual hairpin wedge overlay and `<` / `>` indicator when `ev.physics?.swell` is present:
+
+```typescript
+          const swell = ev.physics?.swell;
+          const noteH = Math.max(5, rowH - 3);
+          const label =
+            (ev.pitch?.noteName || `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`) +
+            (swell === 'crescendo' ? ' <' : swell === 'diminuendo' ? ' >' : '');
+
+          return (
+            <g
+              key={idx}
+              className="cursor-pointer transition-opacity"
+              onClick={() =>
+                onSelectRef.current?.({
+                  type: 'PitchLit',
+                  duration: `${ev.duration?.numerator || 1}/${ev.duration?.denominator || 4}`,
+                  velocity: ev.physics?.velocity ?? 80,
+                  line: ev.line ?? 1,
+                  col: ev.col ?? 1,
+                  rawToken: ev.rawToken,
+                  trackId: ev.trackId,
+                })
+              }
+            >
+              <rect
+                x={x}
+                y={y}
+                width={w}
+                height={noteH}
+                rx={Math.min(4, Math.max(2, rowH / 4))}
+                fill={baseColor}
+                fillOpacity={swell ? 0.65 : 1}
+                stroke="#F8FAFC"
+                strokeOpacity={0.35}
+                strokeWidth={0.8}
+              />
+              {swell === 'crescendo' && w > 12 && (
+                <polygon
+                  points={`${x + 2},${y + noteH / 2} ${x + w - 2},${y + 1.5} ${x + w - 2},${y + noteH - 1.5}`}
+                  fill="#F8FAFC"
+                  fillOpacity={0.32}
+                  className="pointer-events-none"
+                />
+              )}
+              {swell === 'diminuendo' && w > 12 && (
+                <polygon
+                  points={`${x + 2},${y + 1.5} ${x + 2},${y + noteH - 1.5} ${x + w - 2},${y + noteH / 2}`}
+                  fill="#F8FAFC"
+                  fillOpacity={0.32}
+                  className="pointer-events-none"
+                />
+              )}
+              {w > 26 && rowH >= 14 && (
+                <text
+                  x={x + 5}
+                  y={y + rowH - 5}
+                  className="fill-white font-mono text-[10px] font-semibold pointer-events-none"
+                >
+                  {label}
+                </text>
+              )}
+            </g>
+          );
+
+```
+
+### 3.5 `TENUTO_GRAMMAR.md` - Document `.cresc` / `.crescendo` & `.dim` / `.diminuendo`
+
+In `TENUTO_GRAMMAR.md`, under **Section 7 (Articulations, Dynamics, Micro-Timing & DSP Effects)**, add:
+
+```markdown
+* **Continuous Dynamic Swells (Crescendo & Diminuendo):**
+  * `.cresc` or `.crescendo` — Smoothly swells volume and harmonic brightness upward across a held note/chord (`[eb4 g4 bb4]:1.cresc`) or across a sequence of consecutive `.cresc` notes (`c4:8.cresc d:8.cresc e:8.cresc f:8.cresc`).
+  * `.cresc(startVel, endVel)` — Swells between exact MIDI velocities (e.g., `c4:1.cresc(30, 120)`).
+  * `.dim` or `.diminuendo` — Smoothly tapers volume and brightness downward across a held note/chord (`[eb4 g4 bb4]:1.dim`) or across a sequence of `.dim` notes.
+  * `.dim(startVel, endVel)` — Fades between exact MIDI velocities (e.g., `c5:1.dim(115, 25)`).
+
+```
+
+### 3.6 `tests/studio_engine_and_ui.test.tsx` - Add Unit Tests for Crescendo & Diminuendo Swells
+
+Append the following test case inside `tests/studio_engine_and_ui.test.tsx`:
+
+```typescript
+  it('parses .cresc, .cresc(30,120), and .dim modifiers and interpolates multi-note phrase swells', async () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+
+    const score = parser.compile(`
+      tenuto "5.0" {
+        meta @{ title: "Swell Test", tempo: 100, time: "4/4" }
+        def choir "Choir" style=synth patch="warm_pad"
+        def vln "Violin" style=synth patch="saw_lead"
+        measure 1 {
+          choir: [c4 e4 g4]:2.cresc(30, 120) [c4 e4 g4]:2.dim(120, 25) |
+          vln: c5:8.cresc d5:8.cresc e5:8.cresc f5:8.cresc g5:2.dim |
+        }
+      }
+    `);
+
+    const choirEvents = score.events.filter((e) => e.trackId === 'choir');
+    expect(choirEvents[0].physics?.swell).toBe('crescendo');
+    expect(choirEvents[0].physics?.startVelocity).toBe(30);
+    expect(choirEvents[0].physics?.endVelocity).toBe(120);
+
+    expect(choirEvents[3].physics?.swell).toBe('diminuendo');
+    expect(choirEvents[3].physics?.startVelocity).toBe(120);
+    expect(choirEvents[3].physics?.endVelocity).toBe(25);
+
+    // Multi-note phrase interpolation: each consecutive .cresc 8th note should step up in velocity
+    const vlnCresc = score.events.filter((e) => e.trackId === 'vln' && e.physics?.swell === 'crescendo');
+    expect(vlnCresc.length).toBe(4);
+    expect(vlnCresc[0].physics!.startVelocity!).toBeLessThan(vlnCresc[3].physics!.endVelocity!);
+
+    const wavBlob = await engine.exportWavBlob(score);
+    expect(wavBlob.size).toBeGreaterThan(44100);
+  });
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/PitchEngine.ts`, `src/parser/TemporalEngine.ts`, `src/parser/IncrementalCompiler.ts`
+* `src/audio/AudioContextManager.ts`, `src/audio/PlaybackOrchestrator.ts`, `src/audio/TenutoProcessor.ts`, `src/audio/TCALManager.ts`
+* `src/components/SplitWorkspace.tsx`, `src/components/Transport.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) completes with zero TypeScript errors.
+2. `npx vitest run tests/studio_engine_and_ui.test.tsx tests/ast_serializer.test.ts tests/document_compiler.test.ts` passes 100%.
+3. `npm run build` succeeds cleanly.
+4. Notes and chords tagged with `.cresc` / `.crescendo` or `.dim` / `.diminuendo` smoothly swell or taper in volume and brightness during playback and WAV export, and display a visual hairpin wedge on the Piano Roll.
+
+---
+
+## 6. Constraints
+
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 7. Manual Steps
+
+None required.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or restore `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, `src/audio/StudioAudioEngine.ts`, `src/components/WebGPUCanvas.tsx`, `TENUTO_GRAMMAR.md`, and `tests/studio_engine_and_ui.test.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* Modified file(s): `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, `src/audio/StudioAudioEngine.ts`, `src/components/WebGPUCanvas.tsx`, `TENUTO_GRAMMAR.md`, `tests/studio_engine_and_ui.test.tsx`
+* Commit message: `feat(dynamics): add continuous crescendo and diminuendo swells and piano roll hairpins`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Held Notes & Chords (`.cresc` / `.dim`)** | Ignored `.cresc` and `.dim`, playing at a static volume | Smoothly ramps amplitude and filter brightness upward (`.cresc`) or downward (`.dim`) over the held duration |
+| **Multi-Note Phrase Runs** | Required manually writing `.pp`, `.p`, `.mp`, `.mf`, `.f` on each note | Tagging consecutive notes with `.cresc` or `.dim` automatically interpolates the velocity curve across the phrase |
+| **Piano Roll Visuals** | Rendered flat rectangles for all notes | Renders a tapered hairpin wedge (`<` or `>`) inside crescendo and diminuendo note blocks |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-23
+Implementer: AI Agent
+
+```
+
+```

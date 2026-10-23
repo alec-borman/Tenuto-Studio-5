@@ -145,8 +145,74 @@ describe('TDB-603 & TDB-604: Syntax-Highlighted Code Editor, Scrolling Player & 
     `);
     expect(score.events.length).toBe(10);
   });
+
+  it('supports trackpad pinch-to-zoom, Fit All, and isolating individual instrument tracks on the Piano Roll', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(PRESET_SCORES.find((p) => p.id === 'neon_horizon')!.code);
+
+    render(<WebGPUCanvas events={score.events} />);
+
+    // Verify All Instruments button and individual track pills render
+    expect(screen.getByRole('button', { name: /Show All Instruments/i })).toBeInTheDocument();
+    const leadBtn = screen.getByRole('button', { name: /Isolate track lead/i });
+    const drumsBtn = screen.getByRole('button', { name: /Isolate track drums/i });
+    expect(leadBtn).toBeInTheDocument();
+    expect(drumsBtn).toBeInTheDocument();
+
+    // Click 'lead' pill to isolate just the lead synth track
+    fireEvent.click(leadBtn);
+
+    // Click 'All Instruments' to restore all tracks
+    fireEvent.click(screen.getByRole('button', { name: /Show All Instruments/i }));
+
+    // Test trackpad pinch-to-zoom (ctrlKey + wheel) on the scroll viewport
+    const viewport = screen.getByTestId('piano-roll-scroll-viewport');
+    expect(screen.getByRole('button', { name: /Reset Zoom/i })).toHaveTextContent('100%');
+
+    fireEvent.wheel(viewport, { deltaY: -100, ctrlKey: true });
+    expect(screen.getByRole('button', { name: /Reset Zoom/i })).not.toHaveTextContent('100%');
+
+    // Test Reset Zoom button returns to 100%
+    fireEvent.click(screen.getByRole('button', { name: /Reset Zoom/i }));
+    expect(screen.getByRole('button', { name: /Reset Zoom/i })).toHaveTextContent('100%');
+
+    // Test Fit All button scales down to fit multi-measure score
+    fireEvent.click(screen.getByRole('button', { name: /Fit All/i }));
+    expect(screen.getByRole('button', { name: /Reset Zoom/i })).not.toHaveTextContent('100%');
+  });
+
+  it('parses .cresc, .cresc(30,120), and .dim modifiers and interpolates multi-note phrase swells', async () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+
+    const score = parser.compile(`
+      tenuto "5.0" {
+        meta @{ title: "Swell Test", tempo: 100, time: "4/4" }
+        def choir "Choir" style=synth patch="warm_pad"
+        def vln "Violin" style=synth patch="saw_lead"
+        measure 1 {
+          choir: [c4 e4 g4]:2.cresc(30, 120) [c4 e4 g4]:2.dim(120, 25) |
+          vln: c5:8.cresc d5:8.cresc e5:8.cresc f5:8.cresc g5:2.dim |
+        }
+      }
+    `);
+
+    const choirEvents = score.events.filter((e) => e.trackId === 'choir');
+    expect(choirEvents[0].physics?.swell).toBe('crescendo');
+    expect(choirEvents[0].physics?.startVelocity).toBe(30);
+    expect(choirEvents[0].physics?.endVelocity).toBe(120);
+
+    expect(choirEvents[3].physics?.swell).toBe('diminuendo');
+    expect(choirEvents[3].physics?.startVelocity).toBe(120);
+    expect(choirEvents[3].physics?.endVelocity).toBe(25);
+
+    // Multi-note phrase interpolation: each consecutive .cresc 8th note should step up in velocity
+    const vlnCresc = score.events.filter((e) => e.trackId === 'vln' && e.physics?.swell === 'crescendo');
+    expect(vlnCresc.length).toBe(4);
+    expect(vlnCresc[0].physics!.startVelocity!).toBeLessThan(vlnCresc[3].physics!.endVelocity!);
+
+    const wavBlob = await engine.exportWavBlob(score);
+    expect(wavBlob.size).toBeGreaterThan(44100);
+  });
 });
-
-
-
 
