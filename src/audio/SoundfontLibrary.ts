@@ -466,41 +466,55 @@ export class SoundfontBankLoader {
    * into a seamless 4.8-second sustained buffer by cosine-crossfading the warm steady-state
    * body (0.38s..1.08s) so held notes never die out mid-phrase.
    */
+  /**
+   * For bowed strings, winds, brass, and choir, applies gentle decay-compensation gain
+   * across the natural recorded body and extends short buffers at exact zero-crossings
+   * without summing two simultaneous copies of the same waveform (preventing comb/phaser pulsing).
+   */
   private createSustainedOrchestralBuffer(
     ctx: BaseAudioContext,
     srcBuf: AudioBuffer,
     instrumentName: string
   ): AudioBuffer {
-    if (!isSustainingOrchestralInstrument(instrumentName) || srcBuf.duration < 0.9 || srcBuf.duration >= 4.2) {
+    if (!isSustainingOrchestralInstrument(instrumentName) || srcBuf.duration < 0.7) {
       return srcBuf;
     }
 
     const sr = srcBuf.sampleRate;
-    const targetDuration = 4.8;
+    const targetDuration = Math.max(srcBuf.duration, 4.5);
     const targetLen = Math.floor(sr * targetDuration);
     const numCh = srcBuf.numberOfChannels;
     const outBuf = ctx.createBuffer(numCh, targetLen, sr);
 
-    const loopStartSec = Math.min(0.36, srcBuf.duration * 0.28);
-    const loopEndSec = Math.min(1.08, srcBuf.duration * 0.72);
-    const loopStartIdx = Math.floor(loopStartSec * sr);
-    const loopEndIdx = Math.floor(loopEndSec * sr);
-    const loopSpan = Math.max(1024, loopEndIdx - loopStartIdx);
+    const refData = srcBuf.getChannelData(0);
+    let loopStartIdx = Math.floor(Math.min(0.32, srcBuf.duration * 0.25) * sr);
+    let loopEndIdx = Math.floor(Math.min(srcBuf.duration - 0.12, srcBuf.duration * 0.78) * sr);
+
+    // Snap loopStartIdx and loopEndIdx to rising zero-crossings on channel 0 for phase continuity
+    for (let i = loopStartIdx; i < Math.min(refData.length - 2, loopStartIdx + 1200); i++) {
+      if (refData[i] <= 0 && refData[i + 1] > 0) {
+        loopStartIdx = i;
+        break;
+      }
+    }
+    for (let i = loopEndIdx; i > Math.max(loopStartIdx + 2048, loopEndIdx - 1200); i--) {
+      if (refData[i] <= 0 && refData[i + 1] > 0) {
+        loopEndIdx = i;
+        break;
+      }
+    }
+
+    const loopSpan = Math.max(2048, loopEndIdx - loopStartIdx);
+    const xfadeSamples = 256; // Short 5.8ms boundary splice so two copies never overlap across the body
 
     for (let ch = 0; ch < numCh; ch++) {
       const inData = srcBuf.getChannelData(ch);
       const outData = outBuf.getChannelData(ch);
 
-      // Copy initial attack and steady body up to loopEndIdx
-      const initialCopy = Math.min(loopEndIdx, inData.length, targetLen);
-      for (let i = 0; i < initialCopy; i++) {
-        outData[i] = inData[i];
-      }
-
-      // Measure RMS energy at loopStartIdx vs loopEndIdx to normalize out natural sample decay
+      // Measure RMS at loopStartIdx vs loopEndIdx to flatten natural decay inside the steady body
       let rmsStart = 0;
       let rmsEnd = 0;
-      const win = Math.min(1024, Math.floor(loopSpan / 4));
+      const win = Math.min(2048, Math.floor(loopSpan / 3));
       for (let k = 0; k < win; k++) {
         const sA = inData[loopStartIdx + k] || 0;
         const sB = inData[loopEndIdx - win + k] || 0;
@@ -509,22 +523,34 @@ export class SoundfontBankLoader {
       }
       rmsStart = Math.sqrt(rmsStart / Math.max(1, win));
       rmsEnd = Math.sqrt(rmsEnd / Math.max(1, win));
-      const decayComp = rmsEnd > 0.0005 && rmsStart > rmsEnd ? Math.min(2.2, rmsStart / rmsEnd) : 1.0;
+      const decayComp = rmsEnd > 0.0005 && rmsStart > rmsEnd ? Math.min(1.85, rmsStart / rmsEnd) : 1.0;
 
-      // Ping-pong / cosine crossfade loop across the steady-state core for the remainder of the buffer
+      // 1. Copy original attack and decay-compensated body up to loopEndIdx
+      const initialCopy = Math.min(loopEndIdx, inData.length, targetLen);
+      for (let i = 0; i < initialCopy; i++) {
+        if (i <= loopStartIdx) {
+          outData[i] = inData[i];
+        } else {
+          const progress = (i - loopStartIdx) / loopSpan;
+          const compGain = 1.0 + (decayComp - 1.0) * progress;
+          outData[i] = inData[i] * compGain;
+        }
+      }
+
+      // 2. Extend past loopEndIdx using single-stream zero-crossing cycles with a tiny boundary splice
       for (let i = initialCopy; i < targetLen; i++) {
-        const rel = i - initialCopy;
-        const cyclePos = (rel % loopSpan) / loopSpan;
-        // Blend forward and offset-forward windows with a raised cosine window so there is zero loop click
-        const posA = loopStartIdx + Math.floor(cyclePos * loopSpan);
-        const posB = loopStartIdx + Math.floor(((cyclePos + 0.5) % 1.0) * loopSpan);
-        const weightA = 0.5 - 0.5 * Math.cos(2 * Math.PI * cyclePos);
-        const weightB = 1.0 - weightA;
+        const rel = (i - initialCopy) % loopSpan;
+        const srcIdx = loopStartIdx + rel;
+        const progress = rel / loopSpan;
+        const compGain = 1.0 + (decayComp - 1.0) * progress;
+        let sample = (inData[srcIdx] || 0) * compGain;
 
-        const gainA = 1.0 + (decayComp - 1.0) * cyclePos;
-        const gainB = 1.0 + (decayComp - 1.0) * ((cyclePos + 0.5) % 1.0);
-
-        outData[i] = (inData[posA] || 0) * gainA * weightA + (inData[posB] || 0) * gainB * weightB;
+        if (rel < xfadeSamples && loopEndIdx + rel < inData.length) {
+          const alpha = rel / xfadeSamples;
+          const tailSample = (inData[loopEndIdx + rel] || 0) * decayComp;
+          sample = tailSample * (1 - alpha) + sample * alpha;
+        }
+        outData[i] = sample;
       }
     }
 
@@ -614,12 +640,18 @@ export class SoundfontBankLoader {
       if (!requiredNotesByInstrument.has(sfInstrument)) {
         requiredNotesByInstrument.set(sfInstrument, new Set());
       }
+      const noteSet = requiredNotesByInstrument.get(sfInstrument)!;
       if (sfInstrument === 'timpani') {
-        requiredNotesByInstrument.get(sfInstrument)!.add(45);
-        requiredNotesByInstrument.get(sfInstrument)!.add(48);
-        requiredNotesByInstrument.get(sfInstrument)!.add(52);
+        noteSet.add(45);
+        noteSet.add(48);
+        noteSet.add(52);
       }
-      requiredNotesByInstrument.get(sfInstrument)!.add(Math.max(21, Math.min(108, Math.round(ev.pitch.midi || 60))));
+      const clampedMidi = Math.max(21, Math.min(108, Math.round(ev.pitch.midi || 60)));
+      noteSet.add(clampedMidi);
+      // Prewarm an adjacent neighbor sample for ensemble sections so Desk 2 uses an independent recording
+      if (isEnsembleSectionTrack(ev.trackId, def?.name, sfInstrument)) {
+        noteSet.add(clampedMidi < 96 ? clampedMidi + 2 : clampedMidi - 2);
+      }
     }
 
     // 1. Fetch all required instrument banks in parallel
@@ -668,4 +700,45 @@ export class SoundfontBankLoader {
     const playbackRate = Math.pow(2, (clampedMidi - closestMidi) / 12);
     return { buffer: buf, playbackRate };
   }
+
+  /**
+   * Retrieves an independent neighbor-key AudioBuffer (±1..3 semitones) pitched to `midiNote`
+   * for Desk 2 section unison so Desk 1 and Desk 2 never play the exact same waveform (zero comb-filtering).
+   */
+  public getIndependentDeskSampleForNote(
+    instrumentName: string,
+    midiNote: number
+  ): { buffer: AudioBuffer; playbackRate: number } | null {
+    const instBuffers = this.decodedBufferCache.get(instrumentName);
+    if (!instBuffers || instBuffers.size < 2) return null;
+
+    const clampedMidi = Math.max(21, Math.min(108, Math.round(midiNote)));
+    let primaryMidi = clampedMidi;
+    let minPrimaryDist = Infinity;
+    for (const k of instBuffers.keys()) {
+      const dist = Math.abs(k - clampedMidi);
+      if (dist < minPrimaryDist) {
+        minPrimaryDist = dist;
+        primaryMidi = k;
+      }
+    }
+
+    let neighborMidi: number | null = null;
+    let minNeighborDist = Infinity;
+    for (const k of instBuffers.keys()) {
+      if (k === primaryMidi) continue;
+      const dist = Math.abs(k - clampedMidi);
+      if (dist >= 1 && dist <= 4 && dist < minNeighborDist) {
+        minNeighborDist = dist;
+        neighborMidi = k;
+      }
+    }
+
+    if (neighborMidi === null) return null;
+    const buf = instBuffers.get(neighborMidi);
+    if (!buf) return null;
+    const playbackRate = Math.pow(2, (clampedMidi - neighborMidi) / 12);
+    return { buffer: buf, playbackRate };
+  }
 }
+

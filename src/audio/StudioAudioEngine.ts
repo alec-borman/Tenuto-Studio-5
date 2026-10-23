@@ -586,14 +586,19 @@ export class StudioAudioEngine {
     if (item.sfInstrument) {
       const cachedSample = this.soundfontLoader.getCachedSampleForNote(item.sfInstrument, item.midi);
       if (cachedSample) {
-        if (item.isEnsembleSection && this.activeVoices.size < 44) {
+        const independentDesk2 =
+          item.isEnsembleSection && this.activeVoices.size < 44
+            ? this.soundfontLoader.getIndependentDeskSampleForNote(item.sfInstrument, item.midi)
+            : null;
+
+        if (independentDesk2) {
           const desk1Sample = {
             buffer: cachedSample.buffer,
-            playbackRate: cachedSample.playbackRate * Math.pow(2, -3.2 / 1200),
+            playbackRate: cachedSample.playbackRate * Math.pow(2, -2.5 / 1200),
           };
           const desk2Sample = {
-            buffer: cachedSample.buffer,
-            playbackRate: cachedSample.playbackRate * Math.pow(2, 3.5 / 1200),
+            buffer: independentDesk2.buffer,
+            playbackRate: independentDesk2.playbackRate * Math.pow(2, 3.0 / 1200),
           };
 
           let desk1Out: AudioNode = targetBus;
@@ -608,7 +613,7 @@ export class StudioAudioEngine {
             desk1Out = desk1Panner;
 
             desk2Panner = ctx.createStereoPanner();
-            desk2Panner.pan.setValueAtTime(Math.max(-1, Math.min(1, item.pan + 0.08)), safeStart + 0.014);
+            desk2Panner.pan.setValueAtTime(Math.max(-1, Math.min(1, item.pan + 0.08)), safeStart + 0.018);
             desk2Panner.connect(targetBus);
             desk2Out = desk2Panner;
           }
@@ -621,10 +626,10 @@ export class StudioAudioEngine {
             item.sfInstrument,
             safeStart,
             durSec,
-            item.amp * 0.62,
+            item.amp * 0.7,
             item.swell,
-            item.startAmp * 0.62,
-            item.endAmp * 0.62,
+            item.startAmp * 0.7,
+            item.endAmp * 0.7,
             item.event.physics,
             item.isPhraseContinuation,
             item.noteIndexInTrack,
@@ -637,12 +642,12 @@ export class StudioAudioEngine {
             desk2Panner,
             desk2Sample,
             item.sfInstrument,
-            safeStart + 0.014,
+            safeStart + 0.018,
             durSec,
-            item.amp * 0.62,
+            item.amp * 0.48,
             item.swell,
-            item.startAmp * 0.62,
-            item.endAmp * 0.62,
+            item.startAmp * 0.48,
+            item.endAmp * 0.48,
             item.event.physics,
             true,
             (item.noteIndexInTrack ?? 0) + 1,
@@ -1774,20 +1779,38 @@ export class StudioAudioEngine {
         const ch1 = buf.numberOfChannels > 1 ? buf.getChannelData(1) : ch0;
         const bufLen = ch0.length;
         const rateRatio = (buf.sampleRate / sampleRate) * cachedSample.playbackRate;
+
+        // Fetch an independent neighbor-key recording for Desk 2 so Desk 1 + Desk 2 never comb-filter
+        const desk2Sample =
+          item.isEnsembleSection && item.sfInstrument
+            ? this.soundfontLoader.getIndependentDeskSampleForNote(item.sfInstrument, item.midi)
+            : null;
+        const desk2Buf = desk2Sample ? desk2Sample.buffer : null;
+        const desk2Ch0 = desk2Buf ? desk2Buf.getChannelData(0) : null;
+        const desk2Ch1 = desk2Buf ? (desk2Buf.numberOfChannels > 1 ? desk2Buf.getChannelData(1) : desk2Ch0) : null;
+        const desk2Len = desk2Ch0 ? desk2Ch0.length : 0;
+        const rateRatio2 =
+          desk2Buf && desk2Sample
+            ? (desk2Buf.sampleRate / sampleRate) * desk2Sample.playbackRate * Math.pow(2, 3.0 / 1200)
+            : 0;
+
         const hasSwell = item.swell === 'crescendo' || item.swell === 'diminuendo';
         const baseAmpScalar = hasSwell ? 1.0 : item.amp;
         const attackSec = Math.min(profile.attackSec, Math.max(0.01, item.durSec * 0.45));
         const phys = item.event.physics;
+        const isSustainingSample = isSustainingOrchestralInstrument(item.sfInstrument, item.patch);
 
         const offsetSamples = Math.min(
           Math.max(0, bufLen - 2),
           Math.floor(profile.sampleOffsetSec * (buf.sampleRate || sampleRate))
         );
         let readPos1 = offsetSamples;
-        let readPos2 = Math.min(
-          Math.max(0, bufLen - 2),
-          offsetSamples + Math.floor(0.014 * (buf.sampleRate || sampleRate))
-        );
+        let readPos2 = desk2Buf
+          ? Math.min(
+              Math.max(0, desk2Len - 2),
+              Math.floor(Math.max(0.09, profile.sampleOffsetSec) * (desk2Buf.sampleRate || sampleRate))
+            )
+          : 0;
         let lpState0 = 0;
         let lpState1 = 0;
 
@@ -1800,15 +1823,15 @@ export class StudioAudioEngine {
           let s1 = ch1[idx1] + (ch1[idx1 + 1] - ch1[idx1]) * frac1;
 
           const t = i / sampleRate;
-          if (item.isEnsembleSection && t >= 0.014) {
+          if (desk2Ch0 && desk2Ch1 && t >= 0.018) {
             const idx2 = Math.floor(readPos2);
-            if (idx2 < bufLen - 1) {
+            if (idx2 < desk2Len - 1) {
               const frac2 = readPos2 - idx2;
-              const d0 = ch0[idx2] + (ch0[idx2 + 1] - ch0[idx2]) * frac2;
-              const d1 = ch1[idx2] + (ch1[idx2 + 1] - ch1[idx2]) * frac2;
-              const desk2Fade = Math.min(1, (t - 0.014) / 0.035);
-              s0 = s0 * 0.64 + d0 * 0.58 * desk2Fade;
-              s1 = s1 * 0.58 + d1 * 0.64 * desk2Fade;
+              const d0 = desk2Ch0[idx2] + (desk2Ch0[idx2 + 1] - desk2Ch0[idx2]) * frac2;
+              const d1 = desk2Ch1[idx2] + (desk2Ch1[idx2 + 1] - desk2Ch1[idx2]) * frac2;
+              const desk2Fade = Math.min(1, (t - 0.018) / 0.045);
+              s0 = s0 * 0.72 + d0 * 0.45 * desk2Fade;
+              s1 = s1 * 0.68 + d1 * 0.48 * desk2Fade;
             }
           }
 
@@ -1848,19 +1871,20 @@ export class StudioAudioEngine {
           lpState0 += alpha * (s0 - lpState0);
           lpState1 += alpha * (s1 - lpState1);
 
-          let stepRatio = rateRatio;
+          let modScalar = 1.0;
           if (phys?.mordent && t >= 0.025 && t < 0.065) {
-            stepRatio *= Math.pow(2, 2 / 12);
+            modScalar = Math.pow(2, 2 / 12);
           } else if (phys?.trill && Math.floor(t / 0.065) % 2 === 1) {
-            stepRatio *= Math.pow(2, 2 / 12);
+            modScalar = Math.pow(2, 2 / 12);
+          } else if ((phys?.vibrato || (isSustainingSample && item.durSec >= 0.45)) && t > 0.18) {
+            const vibRamp = Math.min(1.0, (t - 0.18) / 0.22);
+            const vibDepth = phys?.vibrato ? 0.0032 : 0.0016;
+            modScalar = 1.0 + Math.sin(2 * Math.PI * 5.4 * (t - 0.18)) * vibDepth * vibRamp;
           }
-          if (item.isEnsembleSection) {
-            readPos1 += stepRatio * 0.9982;
-            if (t >= 0.014) {
-              readPos2 += stepRatio * 1.002;
-            }
-          } else {
-            readPos1 += stepRatio;
+
+          readPos1 += rateRatio * modScalar;
+          if (desk2Buf && t >= 0.018) {
+            readPos2 += rateRatio2 * modScalar;
           }
 
           const gain = env * baseAmpScalar * 2.1;

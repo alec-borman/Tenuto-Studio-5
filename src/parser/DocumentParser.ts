@@ -305,18 +305,26 @@ export class DocumentParser {
           continue;
         }
 
-        // 2. Tuplet syntax: (c4:8 d e):3/2
+        // 2. Tuplet syntax: (c4:8 d e):3/2 or (c4:8 d e):2/3
         const tupletMatch = token.match(/^\((.+)\):(\d+)\/(\d+)((?:\.[a-zA-Z_].*)?)$/);
         if (tupletMatch) {
           const innerStream = tupletMatch[1];
-          const num = parseInt(tupletMatch[2], 10);
-          const den = parseInt(tupletMatch[3], 10);
+          const rawNum = parseInt(tupletMatch[2], 10);
+          const rawDen = parseInt(tupletMatch[3], 10);
+          const modSuffix = tupletMatch[4] || '';
           const innerTokens = this.tokenizeVoiceStream(innerStream);
 
-          for (const innerTok of innerTokens) {
+          // In standard music notation (and Tenuto presets), `:3/2` on a 3-note group means
+          // "3 notes in the time of 2" (compress duration by 2/3), whereas `:2/3` is already a 2/3 multiplier.
+          const isStandardTupletRatio = rawNum > rawDen && innerTokens.length === rawNum;
+          const scaleNum = isStandardTupletRatio ? rawDen : rawNum;
+          const scaleDen = isStandardTupletRatio ? rawNum : rawDen;
+
+          for (let i = 0; i < innerTokens.length; i++) {
+            const innerTok = i === 0 && modSuffix ? `${innerTokens[i]}${modSuffix}` : innerTokens[i];
             const ev = serializer.parseToken(innerTok, trackDef.style);
-            const scaledNum = ev.duration.numerator * den;
-            const scaledDen = ev.duration.denominator * num;
+            const scaledNum = ev.duration.numerator * scaleNum;
+            const scaledDen = ev.duration.denominator * scaleDen;
             const div = this.gcd(scaledNum, scaledDen);
             ev.duration = {
               numerator: scaledNum / div,

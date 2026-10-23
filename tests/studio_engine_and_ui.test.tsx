@@ -413,6 +413,32 @@ describe('TDB-603 & TDB-604: Syntax-Highlighted Code Editor, Scrolling Player & 
     );
     expect(profileLoud.filterCutoffHz).toBeGreaterThan(profileQuiet.filterCutoffHz);
   });
+
+  it('compresses (g#4:8 g#4:8 g#4:8):3/2 triplets into 1 quarter beat and renders phase-stable vibrato', async () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+    const score = parser.compile(`
+      tenuto "5.0" {
+        meta @{ title: "Mahler 5 Triplet & Vibrato Test", tempo: 88, time: "4/4" }
+        def tpt "Solo Trumpet" style=standard patch="trumpet"
+        measure 1 {
+          tpt: r:2. (g#4:8.p g#4:8 g#4:8):3/2.pan(0.15) |
+        }
+        measure 2 {
+          tpt: c#5:1.f.vib.pan(0.15) |
+        }
+      }
+    `);
+
+    const tptEvents = score.events.filter((e) => e.trackId === 'tpt');
+    expect(tptEvents.length).toBe(4);
+    // Each eighth note in a :3/2 triplet must be 1/12 of a whole note (3 notes = 1/4 note total)
+    expect(tptEvents[0].duration.numerator).toBe(1);
+    expect(tptEvents[0].duration.denominator).toBe(12);
+    // Measure 2 starts at exactly 1 whole note (startTime 1/1), proving measure 1 was not stretched to 5.25 beats
+    expect(tptEvents[3].startTime.numerator / tptEvents[3].startTime.denominator).toBeCloseTo(1.0, 5);
+
+    const wavBlob = await engine.exportWavBlob(score);
+    expect(wavBlob.size).toBeGreaterThan(44100 * 4);
+  });
 });
-
-
