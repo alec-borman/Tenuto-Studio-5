@@ -291,7 +291,6 @@ export default function WebGPUCanvas({
   const numRows = maxMidi - minMidi + 1;
   const svgHeight = numRows * rowH;
   const playheadX = keyWidth + (playheadBeat / 4) * wholeNoteScale;
-  const currentWholeTime = playheadBeat / 4;
 
   // Smoothly auto-scroll container horizontally to follow playhead during playback
   useEffect(() => {
@@ -308,18 +307,10 @@ export default function WebGPUCanvas({
     }
   }, [playheadX, isPlaying, playheadBeat]);
 
-  return (
-    <div
-      ref={containerRef}
-      className="w-full h-full bg-slate-950 overflow-auto relative select-none"
-      data-testid="webgpu-canvas-container"
-    >
-      <svg
-        width={totalWidthPx}
-        height={Math.max(360, svgHeight)}
-        className="block min-w-full"
-        aria-label="Tenuto Piano Roll"
-      >
+  // Memoize the static grid and note blocks so 60 FPS playhead updates never re-render 1,000+ SVG nodes
+  const staticPianoRollContent = useMemo(() => {
+    return (
+      <>
         {/* Horizontal Pitch Rows & Left Piano Keys */}
         {Array.from({ length: numRows }).map((_, idx) => {
           const midi = maxMidi - idx;
@@ -387,7 +378,7 @@ export default function WebGPUCanvas({
           );
         })}
 
-        {/* Projected Note Blocks (Illuminate when crossed by the playhead) */}
+        {/* Projected Note Blocks */}
         {events.map((ev, idx) => {
           const midi = ev.pitch?.midi ?? 60;
           if (midi <= 0) return null;
@@ -399,8 +390,6 @@ export default function WebGPUCanvas({
           const clampedMidi = Math.max(minMidi, Math.min(maxMidi, midi));
           const y = (maxMidi - clampedMidi) * rowH + 2;
           const baseColor = getTrackColor(ev.trackId, ev.style);
-          const isNoteActive =
-            isPlaying && currentWholeTime >= startWhole && currentWholeTime < startWhole + durWhole;
           const label = ev.pitch?.noteName || `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
 
           return (
@@ -425,10 +414,10 @@ export default function WebGPUCanvas({
                 width={w}
                 height={rowH - 4}
                 rx={4}
-                fill={isNoteActive ? '#38BDF8' : baseColor}
-                stroke={isNoteActive ? '#FFFFFF' : '#F8FAFC'}
-                strokeOpacity={isNoteActive ? 1 : 0.35}
-                strokeWidth={isNoteActive ? 2 : 1}
+                fill={baseColor}
+                stroke="#F8FAFC"
+                strokeOpacity={0.35}
+                strokeWidth={1}
               />
               {w > 26 && (
                 <text
@@ -442,6 +431,23 @@ export default function WebGPUCanvas({
             </g>
           );
         })}
+      </>
+    );
+  }, [events, minMidi, maxMidi, totalWidthPx, numRows, svgHeight]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="w-full h-full bg-slate-950 overflow-auto relative select-none"
+      data-testid="webgpu-canvas-container"
+    >
+      <svg
+        width={totalWidthPx}
+        height={Math.max(360, svgHeight)}
+        className="block min-w-full"
+        aria-label="Tenuto Piano Roll"
+      >
+        {staticPianoRollContent}
 
         {/* Glowing Scrolling Playhead */}
         {(isPlaying || playheadBeat > 0) && (
@@ -457,3 +463,4 @@ export default function WebGPUCanvas({
     </div>
   );
 }
+

@@ -23,12 +23,20 @@ interface ScheduledNoteEvent {
   pan: number;
 }
 
+interface ActiveVoiceCleanup {
+  stopAndDisconnect: () => void;
+}
+
 export class StudioAudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
+  private reverbSendBus: GainNode | null = null;
   private reverbNode: ConvolverNode | null = null;
-  private activeNodes: Set<AudioNode> = new Set();
+  private reverbWetGain: GainNode | null = null;
+  private compressorNode: DynamicsCompressorNode | null = null;
+  private activeVoices: Set<ActiveVoiceCleanup> = new Set();
   private rafId: number | null = null;
+  private schedulerIntervalId: number | null = null;
   private startContextTime: number = 0;
   private scoreDurationSec: number = 0;
   private totalQuarterBeats: number = 4;
@@ -38,6 +46,7 @@ export class StudioAudioEngine {
   private trackVolumes: Map<string, number> = new Map();
   private mutedTracks: Set<string> = new Set();
   private soloedTracks: Set<string> = new Set();
+  private polyphonyScalar: number = 1.0;
 
   private scheduledTimeline: ScheduledNoteEvent[] = [];
   private nextScheduleIndex: number = 0;
@@ -45,31 +54,62 @@ export class StudioAudioEngine {
   public onProgress?: (progress: PlaybackProgress) => void;
 
   private ensureContext(): AudioContext {
-    if (!this.ctx) {
+    if (!this.ctx || (this.ctx.state as string) === 'closed') {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       this.ctx = new AudioCtx();
-      this.masterGain = this.ctx.createGain();
-      this.masterGain.gain.value = 0.8;
-
-      if (typeof (this.ctx as any).createDynamicsCompressor === 'function') {
-        const comp = this.ctx.createDynamicsCompressor();
-        comp.threshold?.setValueAtTime?.(-12, this.ctx.currentTime || 0);
-        comp.ratio?.setValueAtTime?.(4, this.ctx.currentTime || 0);
-        comp.connect(this.ctx.destination);
-        this.masterGain.connect(comp);
-      } else {
-        this.masterGain.connect(this.ctx.destination);
-      }
-
-      if (typeof (this.ctx as any).createConvolver === 'function') {
-        this.reverbNode = this.createImpulseReverb(this.ctx, 1.8, 2.8);
-        const wet = this.ctx.createGain();
-        wet.gain.value = 0.22;
-        this.reverbNode.connect(wet);
-        wet.connect(this.masterGain);
-      }
     }
+    this.rebuildMasterChain(this.ctx);
     return this.ctx;
+  }
+
+  /**
+   * Rebuilds a clean master bus before playback so no residual ConvolverNode
+   * or DynamicsCompressorNode state can ever poison subsequent plays.
+   */
+  private rebuildMasterChain(ctx: AudioContext): void {
+    try {
+      this.reverbSendBus?.disconnect();
+      this.reverbNode?.disconnect();
+      this.reverbWetGain?.disconnect();
+      this.masterGain?.disconnect();
+      this.compressorNode?.disconnect();
+    } catch {
+      // Ignore disconnect errors on old nodes
+    }
+
+    this.masterGain = ctx.createGain();
+    this.masterGain.gain.value = 0.7;
+
+    if (typeof (ctx as any).createDynamicsCompressor === 'function') {
+      const comp = ctx.createDynamicsCompressor();
+      const now = ctx.currentTime || 0;
+      comp.threshold?.setValueAtTime?.(-10, now);
+      comp.knee?.setValueAtTime?.(12, now);
+      comp.ratio?.setValueAtTime?.(6, now);
+      comp.attack?.setValueAtTime?.(0.003, now);
+      comp.release?.setValueAtTime?.(0.15, now);
+      comp.connect(ctx.destination);
+      this.masterGain.connect(comp);
+      this.compressorNode = comp;
+    } else {
+      this.masterGain.connect(ctx.destination);
+      this.compressorNode = null;
+    }
+
+    this.reverbSendBus = ctx.createGain();
+    this.reverbSendBus.gain.value = 0.12;
+
+    if (typeof (ctx as any).createConvolver === 'function') {
+      this.reverbNode = this.createImpulseReverb(ctx, 1.35, 3.6);
+      this.reverbWetGain = ctx.createGain();
+      this.reverbWetGain.gain.value = 0.16;
+      this.reverbSendBus.connect(this.reverbNode);
+      this.reverbNode.connect(this.reverbWetGain);
+      this.reverbWetGain.connect(this.masterGain);
+    } else {
+      this.reverbNode = null;
+      this.reverbWetGain = null;
+    }
   }
 
   private createImpulseReverb(ctx: BaseAudioContext, seconds: number, decay: number): ConvolverNode {
@@ -77,10 +117,11 @@ export class StudioAudioEngine {
     const rate = ctx.sampleRate || 44100;
     const length = Math.floor(rate * seconds);
     const impulse = ctx.createBuffer(2, length, rate);
+    const norm = 0.16;
     for (let ch = 0; ch < 2; ch++) {
       const data = impulse.getChannelData(ch);
       for (let i = 0; i < length; i++) {
-        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay);
+        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay) * norm;
       }
     }
     convolver.buffer = impulse;
@@ -123,6 +164,9 @@ export class StudioAudioEngine {
       defsById.set(d.id, d);
     }
 
+    const numTracks = Math.max(1, score.defs.length);
+    this.polyphonyScalar = numTracks >= 8 ? 0.42 : numTracks >= 5 ? 0.52 : numTracks >= 3 ? 0.68 : 0.85;
+
     const list: ScheduledNoteEvent[] = [];
 
     for (const ev of score.events) {
@@ -137,7 +181,7 @@ export class StudioAudioEngine {
       const patch = (ev.patch || def?.patch || 'salamander_grand').toLowerCase();
 
       const trackVolMidi = this.trackVolumes.get(trackId) ?? def?.volume ?? 100;
-      const trackGainScalar = (trackVolMidi / 100) * 0.45;
+      const trackGainScalar = (trackVolMidi / 100) * 0.26 * this.polyphonyScalar;
 
       const startWhole = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
       const durWhole = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
@@ -147,14 +191,17 @@ export class StudioAudioEngine {
       if (ev.physics?.pullMs) startSec += ev.physics.pullMs / 1000;
       if (ev.physics?.pushMs) startSec = Math.max(0, startSec - ev.physics.pushMs / 1000);
 
-      let durSec = Math.max(0.045, durWhole * secPerWholeNote);
+      let durSec = Math.max(0.05, durWhole * secPerWholeNote);
       if (ev.physics?.articulation === 'stacc' || ev.physics?.articulation === 'staccato') {
-        durSec = Math.max(0.04, durSec * 0.45);
+        durSec = Math.max(0.045, durSec * 0.48);
       }
 
-      const amp = Math.max(0.02, Math.min(1.0, ((ev.physics?.velocity ?? 85) / 127) * trackGainScalar));
+      const amp = Math.max(0.012, Math.min(0.55, ((ev.physics?.velocity ?? 85) / 127) * trackGainScalar));
       const pan = Math.max(-1, Math.min(1, ev.physics?.pan ?? def?.pan ?? 0));
-      const freq = Number.isFinite(ev.pitch.frequency) && ev.pitch.frequency > 15 ? ev.pitch.frequency : 440;
+      const freq =
+        Number.isFinite(ev.pitch.frequency) && ev.pitch.frequency >= 20 && ev.pitch.frequency <= 10000
+          ? ev.pitch.frequency
+          : 440;
 
       list.push({
         event: ev,
@@ -177,36 +224,45 @@ export class StudioAudioEngine {
 
   private triggerRealtimeVoice(ctx: AudioContext, item: ScheduledNoteEvent, absStartSec: number): void {
     if (!this.masterGain) return;
-    const safeStart = Math.max(ctx.currentTime + 0.005, absStartSec);
-    const durSec = Math.max(0.04, item.durSec);
 
-    let voiceOut: AudioNode = this.masterGain;
-    if (typeof ctx.createStereoPanner === 'function' && item.pan !== 0) {
-      const panner = ctx.createStereoPanner();
-      panner.pan.setValueAtTime(item.pan, safeStart);
-      panner.connect(this.masterGain);
-      voiceOut = panner;
+    // Cap simultaneous live voices at 48 to prevent WebAudio thread saturation on dense scores
+    while (this.activeVoices.size >= 48) {
+      const oldest = this.activeVoices.values().next().value;
+      if (!oldest) break;
+      oldest.stopAndDisconnect();
+      this.activeVoices.delete(oldest);
     }
 
-    if (this.reverbNode && item.style !== 'grid' && !item.gridKey) {
-      const send = ctx.createGain();
-      send.gain.value = 0.22;
-      voiceOut.connect(send);
-      send.connect(this.reverbNode);
+    const safeStart = Math.max(ctx.currentTime + 0.008, absStartSec);
+    const durSec = Math.max(0.05, item.durSec);
+
+    let voiceOut: AudioNode = this.masterGain;
+    let pannerNode: StereoPannerNode | null = null;
+
+    if (typeof ctx.createStereoPanner === 'function' && item.pan !== 0) {
+      pannerNode = ctx.createStereoPanner();
+      pannerNode.pan.setValueAtTime(item.pan, safeStart);
+      pannerNode.connect(this.masterGain);
+      voiceOut = pannerNode;
+    }
+
+    if (this.reverbSendBus && item.style !== 'grid' && !item.gridKey) {
+      voiceOut.connect(this.reverbSendBus);
     }
 
     if (item.style === 'grid' || item.gridKey) {
-      this.scheduleDrumHit(ctx, voiceOut, item.gridKey || 'k', item.midi, safeStart, item.amp);
+      this.scheduleDrumHit(ctx, voiceOut, pannerNode, item.gridKey || 'k', item.midi, safeStart, item.amp);
     } else if (item.style === 'synth') {
-      this.scheduleSynthVoice(ctx, voiceOut, item.freq, item.patch, safeStart, durSec, item.amp);
+      this.scheduleSynthVoice(ctx, voiceOut, pannerNode, item.freq, item.patch, safeStart, durSec, item.amp);
     } else {
-      this.scheduleAcousticPianoVoice(ctx, voiceOut, item.freq, safeStart, durSec, item.amp);
+      this.scheduleAcousticPianoVoice(ctx, voiceOut, pannerNode, item.freq, safeStart, durSec, item.amp);
     }
   }
 
   private scheduleAcousticPianoVoice(
     ctx: BaseAudioContext,
     output: AudioNode,
+    pannerNode: StereoPannerNode | null,
     freq: number,
     startSec: number,
     durSec: number,
@@ -219,7 +275,7 @@ export class StudioAudioEngine {
     oscFund.type = 'triangle';
     oscHarm.type = 'sine';
     oscFund.frequency.setValueAtTime(freq, startSec);
-    oscHarm.frequency.setValueAtTime(freq * 2, startSec);
+    oscHarm.frequency.setValueAtTime(Math.min(12000, freq * 2), startSec);
 
     const gFund = ctx.createGain();
     const gHarm = ctx.createGain();
@@ -232,35 +288,57 @@ export class StudioAudioEngine {
     gHarm.connect(env);
     env.connect(output);
 
-    const peak = Math.max(0.002, amp * 0.55);
-    const release = Math.min(0.22, durSec * 0.4);
-    env.gain.setValueAtTime(0.0001, startSec);
-    env.gain.linearRampToValueAtTime(peak, startSec + 0.01);
-    env.gain.exponentialRampToValueAtTime(Math.max(0.001, peak * 0.4), startSec + durSec);
-    env.gain.exponentialRampToValueAtTime(0.0001, startSec + durSec + release);
+    const peak = Math.max(0.002, amp * 0.5);
+    const t0 = startSec;
+    const tAttack = t0 + 0.01;
+    const tDecay = Math.max(tAttack + 0.02, t0 + durSec);
+    const release = Math.min(0.2, durSec * 0.4);
+    const tEnd = tDecay + Math.max(0.03, release);
 
-    const stopAt = startSec + durSec + release + 0.02;
-    oscFund.start(startSec);
-    oscHarm.start(startSec);
+    env.gain.setValueAtTime(0.0001, t0);
+    env.gain.linearRampToValueAtTime(peak, tAttack);
+    env.gain.exponentialRampToValueAtTime(Math.max(0.0005, peak * 0.35), tDecay);
+    env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+
+    const stopAt = tEnd + 0.015;
+    oscFund.start(t0);
+    oscHarm.start(t0);
     oscFund.stop(stopAt);
     oscHarm.stop(stopAt);
 
-    this.activeNodes.add(oscFund);
-    this.activeNodes.add(oscHarm);
-    oscFund.onended = () => {
-      this.activeNodes.delete(oscFund);
-      this.activeNodes.delete(oscHarm);
-      try {
-        env.disconnect();
-      } catch {
-        // Ignore
-      }
+    let cleaned = false;
+    const cleanup: ActiveVoiceCleanup = {
+      stopAndDisconnect: () => {
+        if (cleaned) return;
+        cleaned = true;
+        this.activeVoices.delete(cleanup);
+        try {
+          oscFund.stop();
+          oscHarm.stop();
+        } catch {
+          // Ignore if already stopped
+        }
+        try {
+          oscFund.disconnect();
+          oscHarm.disconnect();
+          gFund.disconnect();
+          gHarm.disconnect();
+          env.disconnect();
+          pannerNode?.disconnect();
+        } catch {
+          // Ignore
+        }
+      },
     };
+
+    this.activeVoices.add(cleanup);
+    oscFund.onended = () => cleanup.stopAndDisconnect();
   }
 
   private scheduleSynthVoice(
     ctx: BaseAudioContext,
     output: AudioNode,
+    pannerNode: StereoPannerNode | null,
     freq: number,
     patch: string,
     startSec: number,
@@ -273,21 +351,22 @@ export class StudioAudioEngine {
     const env = ctx.createGain();
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(isSub ? 450 : isPad ? 2200 : 3800, startSec);
+    filter.Q.setValueAtTime(0.707, startSec);
+    filter.frequency.setValueAtTime(isSub ? 360 : isPad ? 1900 : 3000, startSec);
 
     const osc1 = ctx.createOscillator();
     const osc2 = ctx.createOscillator();
     osc1.type = isSub ? 'sine' : 'sawtooth';
-    osc2.type = isSub ? 'triangle' : isPad ? 'sawtooth' : 'square';
+    osc2.type = isSub ? 'triangle' : isPad ? 'triangle' : 'square';
 
     osc1.frequency.setValueAtTime(freq, startSec);
     osc2.frequency.setValueAtTime(freq, startSec);
-    osc2.detune.setValueAtTime(isPad ? 8 : 5, startSec);
+    osc2.detune.setValueAtTime(isPad ? 6 : 4, startSec);
 
     const mix1 = ctx.createGain();
     const mix2 = ctx.createGain();
     mix1.gain.value = 0.6;
-    mix2.gain.value = 0.4;
+    mix2.gain.value = 0.35;
 
     osc1.connect(mix1);
     osc2.connect(mix2);
@@ -296,37 +375,59 @@ export class StudioAudioEngine {
     filter.connect(env);
     env.connect(output);
 
-    const attack = isPad ? Math.min(0.08, durSec * 0.25) : 0.01;
-    const release = isPad ? 0.25 : 0.1;
-    const peak = Math.max(0.002, amp * (isSub ? 0.65 : isPad ? 0.35 : 0.42));
+    const t0 = startSec;
+    const attack = isPad ? Math.min(0.06, durSec * 0.25) : 0.01;
+    const tAttack = t0 + Math.max(0.008, attack);
+    const tSustain = Math.max(tAttack + 0.02, t0 + durSec);
+    const release = isPad ? 0.2 : 0.08;
+    const tEnd = tSustain + release;
+    const peak = Math.max(0.002, amp * (isSub ? 0.55 : isPad ? 0.28 : 0.34));
 
-    env.gain.setValueAtTime(0.0001, startSec);
-    env.gain.linearRampToValueAtTime(peak, startSec + attack);
-    env.gain.exponentialRampToValueAtTime(Math.max(0.001, peak * 0.7), startSec + durSec);
-    env.gain.exponentialRampToValueAtTime(0.0001, startSec + durSec + release);
+    env.gain.setValueAtTime(0.0001, t0);
+    env.gain.linearRampToValueAtTime(peak, tAttack);
+    env.gain.exponentialRampToValueAtTime(Math.max(0.0005, peak * 0.7), tSustain);
+    env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
 
-    const stopAt = startSec + durSec + release + 0.02;
-    osc1.start(startSec);
-    osc2.start(startSec);
+    const stopAt = tEnd + 0.015;
+    osc1.start(t0);
+    osc2.start(t0);
     osc1.stop(stopAt);
     osc2.stop(stopAt);
 
-    this.activeNodes.add(osc1);
-    this.activeNodes.add(osc2);
-    osc1.onended = () => {
-      this.activeNodes.delete(osc1);
-      this.activeNodes.delete(osc2);
-      try {
-        env.disconnect();
-      } catch {
-        // Ignore
-      }
+    let cleaned = false;
+    const cleanup: ActiveVoiceCleanup = {
+      stopAndDisconnect: () => {
+        if (cleaned) return;
+        cleaned = true;
+        this.activeVoices.delete(cleanup);
+        try {
+          osc1.stop();
+          osc2.stop();
+        } catch {
+          // Ignore
+        }
+        try {
+          osc1.disconnect();
+          osc2.disconnect();
+          mix1.disconnect();
+          mix2.disconnect();
+          filter.disconnect();
+          env.disconnect();
+          pannerNode?.disconnect();
+        } catch {
+          // Ignore
+        }
+      },
     };
+
+    this.activeVoices.add(cleanup);
+    osc1.onended = () => cleanup.stopAndDisconnect();
   }
 
   private scheduleDrumHit(
     ctx: BaseAudioContext,
     output: AudioNode,
+    pannerNode: StereoPannerNode | null,
     gridKey: string,
     midi: number,
     startSec: number,
@@ -338,32 +439,48 @@ export class StudioAudioEngine {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(140, startSec);
+      osc.frequency.setValueAtTime(135, startSec);
       osc.frequency.exponentialRampToValueAtTime(38, startSec + 0.12);
-      gain.gain.setValueAtTime(Math.max(0.002, amp * 0.85), startSec);
-      gain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.25);
+      gain.gain.setValueAtTime(Math.max(0.002, amp * 0.78), startSec);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.24);
       osc.connect(gain);
       gain.connect(output);
       osc.start(startSec);
-      osc.stop(startSec + 0.27);
-      this.activeNodes.add(osc);
-      osc.onended = () => {
-        this.activeNodes.delete(osc);
-        try {
-          gain.disconnect();
-        } catch {
-          // Ignore
-        }
+      osc.stop(startSec + 0.26);
+
+      let cleaned = false;
+      const cleanup: ActiveVoiceCleanup = {
+        stopAndDisconnect: () => {
+          if (cleaned) return;
+          cleaned = true;
+          this.activeVoices.delete(cleanup);
+          try {
+            osc.stop();
+          } catch {
+            // Ignore
+          }
+          try {
+            osc.disconnect();
+            gain.disconnect();
+            pannerNode?.disconnect();
+          } catch {
+            // Ignore
+          }
+        },
       };
+
+      this.activeVoices.add(cleanup);
+      osc.onended = () => cleanup.stopAndDisconnect();
       return;
     }
 
     const isSnare =
       key === 's' || key === 'sd' || key === 'snare' || key === 'cp' || key === 'clap' || midi === 38 || midi === 39;
-    const isOpenHat = key === 'oh' || midi === 46;
-    const dur = isSnare ? 0.18 : isOpenHat ? 0.24 : 0.06;
-    const len = Math.floor((ctx.sampleRate || 44100) * dur);
-    const buf = ctx.createBuffer(1, len, ctx.sampleRate || 44100);
+    const isOpenHat = key === 'oh' || key === 'cr' || key === 'rd' || midi === 46 || midi === 49 || midi === 51;
+    const dur = isSnare ? 0.16 : isOpenHat ? 0.22 : 0.055;
+    const sr = ctx.sampleRate || 44100;
+    const len = Math.floor(sr * dur);
+    const buf = ctx.createBuffer(1, len, sr);
     const data = buf.getChannelData(0);
     for (let i = 0; i < len; i++) {
       data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, isSnare ? 1.8 : 2.8);
@@ -373,25 +490,42 @@ export class StudioAudioEngine {
     src.buffer = buf;
     const filter = ctx.createBiquadFilter();
     filter.type = 'highpass';
-    filter.frequency.setValueAtTime(isSnare ? 550 : 6000, startSec);
+    filter.Q.setValueAtTime(0.707, startSec);
+    filter.frequency.setValueAtTime(isSnare ? 550 : 5500, startSec);
 
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(Math.max(0.002, amp * (isSnare ? 0.6 : 0.4)), startSec);
+    gain.gain.setValueAtTime(Math.max(0.002, amp * (isSnare ? 0.48 : 0.3)), startSec);
     gain.gain.exponentialRampToValueAtTime(0.0001, startSec + dur);
 
     src.connect(filter);
     filter.connect(gain);
     gain.connect(output);
     src.start(startSec);
-    this.activeNodes.add(src);
-    src.onended = () => {
-      this.activeNodes.delete(src);
-      try {
-        gain.disconnect();
-      } catch {
-        // Ignore
-      }
+
+    let cleaned = false;
+    const cleanup: ActiveVoiceCleanup = {
+      stopAndDisconnect: () => {
+        if (cleaned) return;
+        cleaned = true;
+        this.activeVoices.delete(cleanup);
+        try {
+          src.stop();
+        } catch {
+          // Ignore
+        }
+        try {
+          src.disconnect();
+          filter.disconnect();
+          gain.disconnect();
+          pannerNode?.disconnect();
+        } catch {
+          // Ignore
+        }
+      },
     };
+
+    this.activeVoices.add(cleanup);
+    src.onended = () => cleanup.stopAndDisconnect();
   }
 
   public async playScore(score: CompiledScore): Promise<void> {
@@ -410,27 +544,28 @@ export class StudioAudioEngine {
     this.nextScheduleIndex = 0;
     this.isPlaying = true;
 
-    const baseStart = ctx.currentTime + 0.05;
+    const baseStart = ctx.currentTime + 0.06;
     this.startContextTime = baseStart;
 
-    const LOOKAHEAD_SEC = 0.28;
+    const LOOKAHEAD_SEC = 0.22;
 
-    const tickProgress = () => {
+    const scheduleLookaheadSlice = () => {
       if (!this.isPlaying || !this.ctx) return;
       const now = this.ctx.currentTime;
       const elapsed = Math.max(0, now - this.startContextTime);
 
-      // Schedule notes falling within the rolling 280ms lookahead window
       while (
         this.nextScheduleIndex < this.scheduledTimeline.length &&
         this.scheduledTimeline[this.nextScheduleIndex].startSec <= elapsed + LOOKAHEAD_SEC
       ) {
         const item = this.scheduledTimeline[this.nextScheduleIndex];
-        this.triggerRealtimeVoice(this.ctx, item, this.startContextTime + item.startSec);
+        // Only schedule notes that are in the future or within 25ms of now
+        // so lagged UI frames never pile up overdue notes on the same sample
+        if (item.startSec >= elapsed - 0.025) {
+          this.triggerRealtimeVoice(this.ctx, item, this.startContextTime + item.startSec);
+        }
         this.nextScheduleIndex++;
       }
-
-      const currentBeat = (elapsed / 60) * this.tempoBpm;
 
       if (elapsed >= this.scoreDurationSec) {
         if (this.isLooping) {
@@ -438,8 +573,17 @@ export class StudioAudioEngine {
           return;
         }
         this.stop(true);
-        return;
       }
+    };
+
+    // Run audio lookahead immediately and on a steady 25ms timer independent of UI rendering
+    scheduleLookaheadSlice();
+    this.schedulerIntervalId = window.setInterval(scheduleLookaheadSlice, 25);
+
+    const tickVisualProgress = () => {
+      if (!this.isPlaying || !this.ctx) return;
+      const elapsed = Math.max(0, this.ctx.currentTime - this.startContextTime);
+      const currentBeat = (elapsed / 60) * this.tempoBpm;
 
       this.onProgress?.({
         isPlaying: true,
@@ -449,28 +593,27 @@ export class StudioAudioEngine {
         totalDurationSec: this.scoreDurationSec,
       });
 
-      this.rafId = requestAnimationFrame(tickProgress);
+      this.rafId = requestAnimationFrame(tickVisualProgress);
     };
 
-    this.rafId = requestAnimationFrame(tickProgress);
+    this.rafId = requestAnimationFrame(tickVisualProgress);
   }
 
   public stop(notify: boolean = true): void {
     this.isPlaying = false;
+    if (this.schedulerIntervalId !== null) {
+      window.clearInterval(this.schedulerIntervalId);
+      this.schedulerIntervalId = null;
+    }
     if (this.rafId !== null) {
       cancelAnimationFrame(this.rafId);
       this.rafId = null;
     }
 
-    for (const node of this.activeNodes) {
-      try {
-        (node as any).stop?.();
-        node.disconnect();
-      } catch {
-        // Ignore already stopped nodes
-      }
+    for (const voice of Array.from(this.activeVoices)) {
+      voice.stopAndDisconnect();
     }
-    this.activeNodes.clear();
+    this.activeVoices.clear();
 
     if (notify) {
       this.onProgress?.({
@@ -485,7 +628,7 @@ export class StudioAudioEngine {
 
   /**
    * Synthesizes the entire multi-track score directly into stereo Float32 PCM buffers
-   * with zero WebAudio node limits and strict NaN protection so 60+ measure scores
+   * with zero WebAudio node limits and strict feed-forward reflections so 60+ measure scores
    * render completely from measure 1 to the final reverb tail.
    */
   public async exportWavBlob(score: CompiledScore): Promise<Blob> {
@@ -580,7 +723,6 @@ export class StudioAudioEngine {
             0.12 * Math.sin(ph1 * 3) +
             0.05 * Math.sin(ph2 * 4);
         } else {
-          // Acoustic Piano harmonic series
           wave =
             0.62 * Math.sin(ph1) +
             0.22 * Math.sin(ph1 * 2) * Math.exp(-t * 2.5) +
@@ -588,18 +730,20 @@ export class StudioAudioEngine {
             0.05 * Math.sin(ph1 * 4) * Math.exp(-t * 6.0);
         }
 
-        const sample = wave * env * item.amp * 0.45;
+        const sample = wave * env * item.amp * 0.55;
         left[startFrame + i] += sample * gainL;
         right[startFrame + i] += sample * gainR;
       }
     }
 
-    // Apply lightweight stereo room reflections & soft-knee mastering limiter
+    // Apply strictly feed-forward stereo early reflections (feedback is mathematically impossible)
+    const dryL = new Float32Array(left);
+    const dryR = new Float32Array(right);
     const delay1 = Math.floor(0.037 * sampleRate);
     const delay2 = Math.floor(0.073 * sampleRate);
     for (let i = delay2; i < totalFrames; i++) {
-      left[i] += right[i - delay1] * 0.14 + left[i - delay2] * 0.09;
-      right[i] += left[i - delay1] * 0.14 + right[i - delay2] * 0.09;
+      left[i] = dryL[i] + dryR[i - delay1] * 0.14 + dryL[i - delay2] * 0.08;
+      right[i] = dryR[i] + dryL[i - delay1] * 0.14 + dryR[i - delay2] * 0.08;
     }
 
     for (let i = 0; i < totalFrames; i++) {

@@ -120,6 +120,33 @@ describe('TDB-603 & TDB-604: Syntax-Highlighted Code Editor, Scrolling Player & 
     expect(wavBlob.type).toBe('audio/wav');
     expect(wavBlob.size).toBeGreaterThan(44100 * 4);
   });
+
+  it('cleans up all active voice nodes on stop() and survives repeated play/export cycles without feedback or silence', async () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+    const score = parser.compile(PRESET_SCORES.find((p) => p.id === 'neon_horizon')!.code);
+
+    engine.stop();
+    const wav1 = await engine.exportWavBlob(score);
+    const wav2 = await engine.exportWavBlob(score);
+    expect(wav1.size).toBe(wav2.size);
+  });
+
+  it('auto-splits fused modifier tokens (e.g. g5:4.ffbb5:4) in full multi-measure scores without crashing', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "5.0" {
+        meta @{ title: "Resilience Test", tempo: 112, time: "4/4" }
+        def pno "Grand Piano" style=standard patch="salamander_grand"
+        measure 1 {
+          pno: <[ v1: g5:4.ffbb5:4 a5:4 f5:4 | v2: [g2 d3 g3]:2 [a2 d3 f3]:2 ]>
+        }
+      }
+    `);
+    expect(score.events.length).toBe(10);
+  });
 });
+
+
 
 

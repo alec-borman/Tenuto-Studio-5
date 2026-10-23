@@ -195,7 +195,19 @@ export class DocumentParser {
       }
     }
 
-    return merged;
+    const finalTokens: string[] = [];
+    for (const tok of merged) {
+      const fusedMatch = tok.match(
+        /^([a-gA-G][#b]*[0-9]*:[0-9.]+\.(?:pp|p|mp|mf|f|ff|sfz|stacc|ten|marc))([a-gA-G][#b]*[0-9]*:[0-9.].*)$/
+      );
+      if (fusedMatch) {
+        finalTokens.push(fusedMatch[1], fusedMatch[2]);
+      } else {
+        finalTokens.push(tok);
+      }
+    }
+
+    return finalTokens;
   }
 
   private expandEuclideanPattern(hits: number, steps: number): boolean[] {
@@ -217,7 +229,8 @@ export class DocumentParser {
     measureNumber: number,
     voiceId: string,
     measureStartTime: { numerator: number; denominator: number },
-    macros: Map<string, string[]>
+    macros: Map<string, string[]>,
+    skipInvalidTokens: boolean = false
   ): { events: AtomicEvent[]; totalDuration: { numerator: number; denominator: number } } {
     const events: AtomicEvent[] = [];
     let cursorTime = { ...measureStartTime };
@@ -370,8 +383,10 @@ export class DocumentParser {
           cursorTime = this.addFractions(cursorTime, ev.duration);
           voiceDuration = this.addFractions(voiceDuration, ev.duration);
         }
-      } catch {
-        // Resiliently skip unrecognized token without aborting multi-measure compilation
+      } catch (err) {
+        if (!skipInvalidTokens) {
+          throw err;
+        }
       }
     }
 
@@ -616,7 +631,8 @@ export class DocumentParser {
                 mNum,
                 voiceId,
                 measureStartTime,
-                macros
+                macros,
+                true
               );
               allEvents.push(...events);
               if (
@@ -637,7 +653,8 @@ export class DocumentParser {
               mNum,
               'v1',
               measureStartTime,
-              macros
+              macros,
+              true
             );
             allEvents.push(...events);
             if (

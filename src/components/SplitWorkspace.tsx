@@ -86,6 +86,40 @@ export default function SplitWorkspace() {
     }
   }, [sourceCode, incrementalCompiler]);
 
+  const handleTogglePlay = async () => {
+    if (!isAudioInitialized.current) {
+      isAudioInitialized.current = true;
+      try {
+        await audioManager.initialize();
+      } catch {
+        // Continue to StudioAudioEngine when legacy worklet file is absent
+      }
+    }
+
+    const nextPlaying = !isPlaying;
+    setIsPlaying(nextPlaying);
+
+    if (nextPlaying) {
+      try {
+        await playbackOrchestrator.compileAndPlay(compiledEvents);
+      } catch {
+        // Ignore legacy buffer limit
+      }
+      try {
+        const compiledScore =
+          incrementalCompiler.getLastCompiledScore() || incrementalCompiler.compileDocument(sourceCode);
+        await studioAudio.playScore(compiledScore);
+      } catch (err) {
+        console.warn('Playback warning:', err);
+      }
+    } else {
+      studioAudio.stop();
+    }
+  };
+
+  const togglePlayRef = useRef(handleTogglePlay);
+  togglePlayRef.current = handleTogglePlay;
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const activeTag = document.activeElement?.tagName.toLowerCase();
@@ -101,44 +135,12 @@ export default function SplitWorkspace() {
       }
       if (e.code === 'Space' && !isEditingText) {
         e.preventDefault();
-        handleTogglePlay();
+        togglePlayRef.current();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [commandManager, isPlaying, compiledEvents, sourceCode]);
-
-  const handleTogglePlay = async () => {
-    if (!isAudioInitialized.current) {
-      isAudioInitialized.current = true;
-      try {
-        await audioManager.initialize();
-      } catch {
-        // In live browser / Electron environments without a root TenutoProcessor.js file,
-        // continue seamlessly to StudioAudioEngine playback.
-      }
-    }
-
-    const nextPlaying = !isPlaying;
-    setIsPlaying(nextPlaying);
-
-    if (nextPlaying) {
-      try {
-        await playbackOrchestrator.compileAndPlay(compiledEvents);
-      } catch {
-        // Fallback if >255 events or uninitialized worklet in legacy buffer
-      }
-      const compiledScore =
-        incrementalCompiler.getLastCompiledScore() || incrementalCompiler.compileDocument(sourceCode);
-      try {
-        await studioAudio.playScore(compiledScore);
-      } catch {
-        // Ignore WebAudio mock absence in headless JSDOM tests
-      }
-    } else {
-      studioAudio.stop();
-    }
-  };
+  }, [commandManager]);
 
   const handleStop = () => {
     studioAudio.stop();
