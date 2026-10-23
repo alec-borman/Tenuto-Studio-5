@@ -292,5 +292,36 @@ describe('TDB-603 & TDB-604: Syntax-Highlighted Code Editor, Scrolling Player & 
     expect(parsedMap.get(60)).toBe('AAAA');
     expect(parsedMap.get(63)).toBe('BBBB');
   });
+
+  it('resolves timp tracks to sampled orchestral timpani and renders normalized studio percussion in WAV export', async () => {
+    expect(resolveSoundfontInstrument('timp', 'Timpani & Orchestral Perc', 'tenuto_808_kit', 'grid')).toBe('timpani');
+
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+    engine.setMasterVolume(1.5);
+    expect(engine.getMasterVolume()).toBe(1.5);
+
+    const drumScore = parser.compile(`
+      tenuto "5.0" {
+        meta @{ title: "Studio Drum Test", tempo: 120, time: "4/4" }
+        def drums "Studio Kit" style=grid patch="tenuto_808_kit"
+        measure 1 {
+          drums: k:4 s:4 cp:8 h:8 oh:8 lt:8 |
+        }
+      }
+    `);
+
+    const wavBlob = await engine.exportWavBlob(drumScore);
+    const arrayBuffer = await wavBlob.arrayBuffer();
+    const view = new DataView(arrayBuffer);
+
+    let maxSampleInt16 = 0;
+    for (let offset = 44; offset < view.byteLength; offset += 2) {
+      const sample = Math.abs(view.getInt16(offset, true));
+      if (sample > maxSampleInt16) maxSampleInt16 = sample;
+    }
+
+    expect(maxSampleInt16).toBeGreaterThan(16383);
+  });
 });
 

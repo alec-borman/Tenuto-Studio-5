@@ -52,12 +52,24 @@ export class StudioAudioEngine {
   private mutedTracks: Set<string> = new Set();
   private soloedTracks: Set<string> = new Set();
   private polyphonyScalar: number = 1.0;
+  private masterVolumeScalar: number = 1.25;
 
   private scheduledTimeline: ScheduledNoteEvent[] = [];
   private nextScheduleIndex: number = 0;
 
   public soundfontLoader = new SoundfontBankLoader();
   public onProgress?: (progress: PlaybackProgress) => void;
+
+  public setMasterVolume(scalar: number): void {
+    this.masterVolumeScalar = Math.max(0, Math.min(2.5, scalar));
+    if (this.masterGain && this.ctx) {
+      this.masterGain.gain.setValueAtTime(1.45 * this.masterVolumeScalar, this.ctx.currentTime || 0);
+    }
+  }
+
+  public getMasterVolume(): number {
+    return this.masterVolumeScalar;
+  }
 
   private ensureContext(): AudioContext {
     if (!this.ctx || (this.ctx.state as string) === 'closed') {
@@ -84,16 +96,16 @@ export class StudioAudioEngine {
     }
 
     this.masterGain = ctx.createGain();
-    this.masterGain.gain.value = 0.7;
+    this.masterGain.gain.value = 1.45 * this.masterVolumeScalar;
 
     if (typeof (ctx as any).createDynamicsCompressor === 'function') {
       const comp = ctx.createDynamicsCompressor();
       const now = ctx.currentTime || 0;
-      comp.threshold?.setValueAtTime?.(-10, now);
-      comp.knee?.setValueAtTime?.(12, now);
-      comp.ratio?.setValueAtTime?.(6, now);
-      comp.attack?.setValueAtTime?.(0.003, now);
-      comp.release?.setValueAtTime?.(0.15, now);
+      comp.threshold?.setValueAtTime?.(-3, now);
+      comp.knee?.setValueAtTime?.(6, now);
+      comp.ratio?.setValueAtTime?.(12, now);
+      comp.attack?.setValueAtTime?.(0.002, now);
+      comp.release?.setValueAtTime?.(0.12, now);
       comp.connect(ctx.destination);
       this.masterGain.connect(comp);
       this.compressorNode = comp;
@@ -103,12 +115,12 @@ export class StudioAudioEngine {
     }
 
     this.reverbSendBus = ctx.createGain();
-    this.reverbSendBus.gain.value = 0.12;
+    this.reverbSendBus.gain.value = 0.22;
 
     if (typeof (ctx as any).createConvolver === 'function') {
-      this.reverbNode = this.createImpulseReverb(ctx, 1.35, 3.6);
+      this.reverbNode = this.createImpulseReverb(ctx, 1.5, 3.2);
       this.reverbWetGain = ctx.createGain();
-      this.reverbWetGain.gain.value = 0.16;
+      this.reverbWetGain.gain.value = 0.28;
       this.reverbSendBus.connect(this.reverbNode);
       this.reverbNode.connect(this.reverbWetGain);
       this.reverbWetGain.connect(this.masterGain);
@@ -171,7 +183,7 @@ export class StudioAudioEngine {
     }
 
     const numTracks = Math.max(1, score.defs.length);
-    this.polyphonyScalar = numTracks >= 8 ? 0.42 : numTracks >= 5 ? 0.52 : numTracks >= 3 ? 0.68 : 0.85;
+    this.polyphonyScalar = numTracks >= 10 ? 0.78 : numTracks >= 6 ? 0.85 : numTracks >= 3 ? 0.92 : 1.0;
 
     const list: ScheduledNoteEvent[] = [];
 
@@ -185,16 +197,9 @@ export class StudioAudioEngine {
       const def = defsById.get(trackId);
       const style = (ev.style || def?.style || 'standard').toLowerCase();
       const patch = (ev.patch || def?.patch || 'salamander_grand').toLowerCase();
-      const sfInstrument = resolveSoundfontInstrument(
-        trackId,
-        def?.name,
-        ev.patch || def?.patch,
-        style,
-        ev.physics?.pizz
-      );
 
       const trackVolMidi = this.trackVolumes.get(trackId) ?? def?.volume ?? 100;
-      const trackGainScalar = (trackVolMidi / 100) * 0.26 * this.polyphonyScalar;
+      const trackGainScalar = (trackVolMidi / 100) * 0.95 * this.polyphonyScalar;
 
       const startWhole = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
       const durWhole = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
@@ -224,19 +229,30 @@ export class StudioAudioEngine {
         durSec = durSec * 1.65;
       }
 
-      const vel = ev.physics?.velocity ?? 85;
-      const swell = ev.physics?.swell;
-      const startVel = ev.physics?.startVelocity ?? (swell === 'crescendo' ? 40 : swell === 'diminuendo' ? 112 : vel);
-      const endVel = ev.physics?.endVelocity ?? (swell === 'crescendo' ? 116 : swell === 'diminuendo' ? 32 : vel);
+      // Map MIDI velocity (1..127) onto an audible studio dynamic curve (0.28..1.0)
+      const velToAudibleCurve = (v: number) => 0.25 + 0.75 * Math.pow(Math.max(1, Math.min(127, v)) / 127, 0.85);
 
-      const amp = Math.max(0.012, Math.min(0.55, (vel / 127) * trackGainScalar));
-      const startAmp = Math.max(0.008, Math.min(0.6, (startVel / 127) * trackGainScalar));
-      const endAmp = Math.max(0.008, Math.min(0.6, (endVel / 127) * trackGainScalar));
+      const vel = ev.physics?.velocity ?? 90;
+      const swell = ev.physics?.swell;
+      const startVel = ev.physics?.startVelocity ?? (swell === 'crescendo' ? 40 : swell === 'diminuendo' ? 116 : vel);
+      const endVel = ev.physics?.endVelocity ?? (swell === 'crescendo' ? 120 : swell === 'diminuendo' ? 35 : vel);
+
+      const amp = Math.max(0.15, Math.min(1.35, velToAudibleCurve(vel) * trackGainScalar));
+      const startAmp = Math.max(0.1, Math.min(1.4, velToAudibleCurve(startVel) * trackGainScalar));
+      const endAmp = Math.max(0.1, Math.min(1.4, velToAudibleCurve(endVel) * trackGainScalar));
       const pan = Math.max(-1, Math.min(1, ev.physics?.pan ?? def?.pan ?? 0));
       const freq =
         Number.isFinite(ev.pitch.frequency) && ev.pitch.frequency >= 20 && ev.pitch.frequency <= 10000
           ? ev.pitch.frequency
           : 440;
+
+      const sfInstrument = resolveSoundfontInstrument(
+        trackId,
+        def?.name,
+        ev.patch || def?.patch,
+        style,
+        ev.physics?.pizz
+      );
 
       list.push({
         event: ev,
@@ -285,11 +301,43 @@ export class StudioAudioEngine {
       voiceOut = pannerNode;
     }
 
-    if (this.reverbSendBus && item.style !== 'grid' && !item.gridKey) {
-      voiceOut.connect(this.reverbSendBus);
+    if (this.reverbSendBus) {
+      if (item.style === 'grid' || item.gridKey) {
+        const drumRoomSend = ctx.createGain();
+        drumRoomSend.gain.value = 0.14;
+        voiceOut.connect(drumRoomSend);
+        drumRoomSend.connect(this.reverbSendBus);
+      } else {
+        voiceOut.connect(this.reverbSendBus);
+      }
     }
 
     if (item.style === 'grid' || item.gridKey) {
+      const key = (item.gridKey || '').toLowerCase();
+      const isTimpaniStrike =
+        item.sfInstrument === 'timpani' &&
+        (key === 'k' || key === 'bd' || key === 'kick' || key === 'lt' || key === 'mt' || key === 'ht' || !key);
+
+      if (isTimpaniStrike) {
+        const timpMidi = key === 'ht' ? 52 : key === 'mt' ? 48 : 45;
+        const timpSample = this.soundfontLoader.getCachedSampleForNote('timpani', timpMidi);
+        if (timpSample) {
+          this.scheduleSoundfontBufferVoice(
+            ctx,
+            voiceOut,
+            pannerNode,
+            timpSample,
+            safeStart,
+            Math.max(0.45, durSec),
+            item.amp * 1.1,
+            item.swell,
+            item.startAmp,
+            item.endAmp,
+            item.event.physics
+          );
+        }
+      }
+
       this.scheduleDrumHit(ctx, voiceOut, pannerNode, item.gridKey || 'k', item.midi, safeStart, item.amp);
       return;
     }
@@ -386,7 +434,7 @@ export class StudioAudioEngine {
     const tSustain = Math.max(tAttack + 0.02, t0 + durSec);
     const release = physics?.pizz ? 0.08 : Math.min(0.32, Math.max(0.12, durSec * 0.35));
     const tEnd = tSustain + release;
-    const sampleScale = 0.85;
+    const sampleScale = 2.6;
 
     env.gain.setValueAtTime(0.0001, t0);
     if (physics?.fp) {
@@ -542,19 +590,19 @@ export class StudioAudioEngine {
 
     env.gain.setValueAtTime(0.0001, t0);
     if (physics?.fp) {
-      const fpPeak = Math.max(0.004, amp * 0.65);
+      const fpPeak = Math.max(0.004, amp * 1.15);
       const fpDrop = Math.max(0.001, fpPeak * 0.25);
       env.gain.linearRampToValueAtTime(fpPeak, t0 + 0.008);
       env.gain.exponentialRampToValueAtTime(fpDrop, Math.min(tDecay, t0 + 0.07));
       env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
     } else if (swell === 'crescendo' || swell === 'diminuendo') {
-      const sPeak = Math.max(0.002, (startAmp ?? amp) * 0.52);
-      const ePeak = Math.max(0.002, (endAmp ?? amp) * 0.52);
+      const sPeak = Math.max(0.002, (startAmp ?? amp) * 0.95);
+      const ePeak = Math.max(0.002, (endAmp ?? amp) * 0.95);
       env.gain.linearRampToValueAtTime(sPeak, tAttack);
       env.gain.linearRampToValueAtTime(ePeak, tDecay);
       env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
     } else {
-      const peak = Math.max(0.002, amp * 0.5);
+      const peak = Math.max(0.002, amp * 0.95);
       env.gain.linearRampToValueAtTime(peak, tAttack);
       env.gain.exponentialRampToValueAtTime(Math.max(0.0005, peak * 0.35), tDecay);
       env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
@@ -664,7 +712,7 @@ export class StudioAudioEngine {
     const tSustain = Math.max(tAttack + 0.02, t0 + durSec);
     const release = physics?.pizz ? 0.06 : isPad ? 0.2 : 0.08;
     const tEnd = tSustain + release;
-    const voiceScale = isSub ? 0.55 : isPad ? 0.28 : 0.34;
+    const voiceScale = isSub ? 0.95 : isPad ? 0.65 : 0.75;
 
     env.gain.setValueAtTime(0.0001, t0);
     if (physics?.fp) {
@@ -737,19 +785,42 @@ export class StudioAudioEngine {
     amp: number
   ): void {
     const key = gridKey.toLowerCase();
+    const sr = ctx.sampleRate || 44100;
 
+    // 1. STUDIO KICK DRUM (k / bd / kick / 36): Sub Membrane + Punch Body + Beater Click
     if (key === 'k' || key === 'bd' || key === 'kick' || midi === 36) {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(135, startSec);
-      osc.frequency.exponentialRampToValueAtTime(38, startSec + 0.12);
-      gain.gain.setValueAtTime(Math.max(0.002, amp * 0.78), startSec);
-      gain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.24);
-      osc.connect(gain);
-      gain.connect(output);
-      osc.start(startSec);
-      osc.stop(startSec + 0.26);
+      const subOsc = ctx.createOscillator();
+      const bodyOsc = ctx.createOscillator();
+      const subGain = ctx.createGain();
+      const bodyGain = ctx.createGain();
+
+      subOsc.type = 'sine';
+      subOsc.frequency.setValueAtTime(155, startSec);
+      subOsc.frequency.exponentialRampToValueAtTime(52, startSec + 0.022);
+      subOsc.frequency.exponentialRampToValueAtTime(34, startSec + 0.28);
+
+      bodyOsc.type = 'triangle';
+      bodyOsc.frequency.setValueAtTime(220, startSec);
+      bodyOsc.frequency.exponentialRampToValueAtTime(62, startSec + 0.035);
+
+      const peak = Math.max(0.01, amp * 1.15);
+      subGain.gain.setValueAtTime(0.001, startSec);
+      subGain.gain.linearRampToValueAtTime(peak, startSec + 0.004);
+      subGain.gain.exponentialRampToValueAtTime(peak * 0.55, startSec + 0.08);
+      subGain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.32);
+
+      bodyGain.gain.setValueAtTime(peak * 0.5, startSec);
+      bodyGain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.045);
+
+      subOsc.connect(subGain);
+      bodyOsc.connect(bodyGain);
+      subGain.connect(output);
+      bodyGain.connect(output);
+
+      subOsc.start(startSec);
+      bodyOsc.start(startSec);
+      subOsc.stop(startSec + 0.34);
+      bodyOsc.stop(startSec + 0.055);
 
       let cleaned = false;
       const cleanup: ActiveVoiceCleanup = {
@@ -758,12 +829,76 @@ export class StudioAudioEngine {
           cleaned = true;
           this.activeVoices.delete(cleanup);
           try {
-            osc.stop();
+            subOsc.stop();
+            bodyOsc.stop();
           } catch {
             // Ignore
           }
           try {
-            osc.disconnect();
+            subOsc.disconnect();
+            bodyOsc.disconnect();
+            subGain.disconnect();
+            bodyGain.disconnect();
+            pannerNode?.disconnect();
+          } catch {
+            // Ignore
+          }
+        },
+      };
+      this.activeVoices.add(cleanup);
+      subOsc.onended = () => cleanup.stopAndDisconnect();
+      return;
+    }
+
+    // 2. STUDIO HAND CLAP (cp / clap / 39): 4-Burst Human Flam Envelope + Warm 1.35kHz Bandpass
+    if (key === 'cp' || key === 'clap' || midi === 39) {
+      const dur = 0.24;
+      const len = Math.floor(sr * dur);
+      const buf = ctx.createBuffer(1, len, sr);
+      const data = buf.getChannelData(0);
+
+      // 4 staggered micro-clap transients at 0ms, 11ms, 21ms, and 32ms + diffused tail
+      for (let i = 0; i < len; i++) {
+        const t = i / sr;
+        let env = 0;
+        if (t < 0.011) env = Math.exp(-(t / 0.0035));
+        else if (t < 0.021) env = Math.exp(-((t - 0.011) / 0.0035));
+        else if (t < 0.032) env = Math.exp(-((t - 0.021) / 0.004));
+        else env = Math.exp(-((t - 0.032) / 0.055)) * 0.75;
+        data[i] = (Math.random() * 2 - 1) * env;
+      }
+
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(1350, startSec);
+      bp.Q.setValueAtTime(1.4, startSec);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(Math.max(0.01, amp * 0.9), startSec);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startSec + dur);
+
+      src.connect(bp);
+      bp.connect(gain);
+      gain.connect(output);
+      src.start(startSec);
+
+      let cleaned = false;
+      const cleanup: ActiveVoiceCleanup = {
+        stopAndDisconnect: () => {
+          if (cleaned) return;
+          cleaned = true;
+          this.activeVoices.delete(cleanup);
+          try {
+            src.stop();
+          } catch {
+            // Ignore
+          }
+          try {
+            src.disconnect();
+            bp.disconnect();
             gain.disconnect();
             pannerNode?.disconnect();
           } catch {
@@ -771,37 +906,184 @@ export class StudioAudioEngine {
           }
         },
       };
-
       this.activeVoices.add(cleanup);
-      osc.onended = () => cleanup.stopAndDisconnect();
+      src.onended = () => cleanup.stopAndDisconnect();
       return;
     }
 
-    const isSnare =
-      key === 's' || key === 'sd' || key === 'snare' || key === 'cp' || key === 'clap' || midi === 38 || midi === 39;
-    const isOpenHat = key === 'oh' || key === 'cr' || key === 'rd' || midi === 46 || midi === 49 || midi === 51;
-    const dur = isSnare ? 0.16 : isOpenHat ? 0.22 : 0.055;
-    const sr = ctx.sampleRate || 44100;
+    // 3. ACOUSTIC STUDIO SNARE (s / sd / snare / rim / 37 / 38): Dual Drumhead Modes + Bandpass Snare Wires
+    if (key === 's' || key === 'sd' || key === 'snare' || key === 'rim' || midi === 38 || midi === 37) {
+      const mode1 = ctx.createOscillator();
+      const mode2 = ctx.createOscillator();
+      const modeGain = ctx.createGain();
+
+      mode1.type = 'triangle';
+      mode2.type = 'sine';
+      mode1.frequency.setValueAtTime(210, startSec);
+      mode1.frequency.exponentialRampToValueAtTime(118, startSec + 0.075);
+      mode2.frequency.setValueAtTime(345, startSec);
+      mode2.frequency.exponentialRampToValueAtTime(185, startSec + 0.055);
+
+      const peak = Math.max(0.01, amp * 0.85);
+      modeGain.gain.setValueAtTime(peak * 0.7, startSec);
+      modeGain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.11);
+
+      mode1.connect(modeGain);
+      mode2.connect(modeGain);
+      modeGain.connect(output);
+      mode1.start(startSec);
+      mode2.start(startSec);
+      mode1.stop(startSec + 0.12);
+      mode2.stop(startSec + 0.12);
+
+      // Snare wires: bandpass-filtered shell rattle + crisp stick snap
+      const dur = 0.21;
+      const len = Math.floor(sr * dur);
+      const buf = ctx.createBuffer(1, len, sr);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) {
+        const t = i / sr;
+        const snap = t < 0.006 ? 1.0 : 0.65 * Math.exp(-(t - 0.006) * 16);
+        data[i] = (Math.random() * 2 - 1) * snap;
+      }
+
+      const noiseSrc = ctx.createBufferSource();
+      noiseSrc.buffer = buf;
+
+      const wireFilter = ctx.createBiquadFilter();
+      wireFilter.type = 'bandpass';
+      wireFilter.frequency.setValueAtTime(2450, startSec);
+      wireFilter.Q.setValueAtTime(0.9, startSec);
+
+      const wireGain = ctx.createGain();
+      wireGain.gain.setValueAtTime(peak * 0.8, startSec);
+      wireGain.gain.exponentialRampToValueAtTime(0.0001, startSec + dur);
+
+      noiseSrc.connect(wireFilter);
+      wireFilter.connect(wireGain);
+      wireGain.connect(output);
+      noiseSrc.start(startSec);
+
+      let cleaned = false;
+      const cleanup: ActiveVoiceCleanup = {
+        stopAndDisconnect: () => {
+          if (cleaned) return;
+          cleaned = true;
+          this.activeVoices.delete(cleanup);
+          try {
+            mode1.stop();
+            mode2.stop();
+            noiseSrc.stop();
+          } catch {
+            // Ignore
+          }
+          try {
+            mode1.disconnect();
+            mode2.disconnect();
+            modeGain.disconnect();
+            noiseSrc.disconnect();
+            wireFilter.disconnect();
+            wireGain.disconnect();
+            pannerNode?.disconnect();
+          } catch {
+            // Ignore
+          }
+        },
+      };
+      this.activeVoices.add(cleanup);
+      noiseSrc.onended = () => cleanup.stopAndDisconnect();
+      return;
+    }
+
+    // 4. TUNED ACOUSTIC TOMS (lt / mt / ht / 45 / 47 / 50)
+    if (key === 'lt' || key === 'mt' || key === 'ht' || midi === 45 || midi === 47 || midi === 50) {
+      const baseTomFreq = key === 'ht' || midi === 50 ? 165 : key === 'mt' || midi === 47 ? 125 : 92;
+      const tomOsc = ctx.createOscillator();
+      const tomGain = ctx.createGain();
+      tomOsc.type = 'sine';
+      tomOsc.frequency.setValueAtTime(baseTomFreq * 1.45, startSec);
+      tomOsc.frequency.exponentialRampToValueAtTime(baseTomFreq, startSec + 0.06);
+      tomOsc.frequency.exponentialRampToValueAtTime(baseTomFreq * 0.78, startSec + 0.28);
+
+      const peak = Math.max(0.01, amp * 0.9);
+      tomGain.gain.setValueAtTime(peak, startSec);
+      tomGain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.29);
+
+      tomOsc.connect(tomGain);
+      tomGain.connect(output);
+      tomOsc.start(startSec);
+      tomOsc.stop(startSec + 0.31);
+
+      let cleaned = false;
+      const cleanup: ActiveVoiceCleanup = {
+        stopAndDisconnect: () => {
+          if (cleaned) return;
+          cleaned = true;
+          this.activeVoices.delete(cleanup);
+          try {
+            tomOsc.stop();
+          } catch {
+            // Ignore
+          }
+          try {
+            tomOsc.disconnect();
+            tomGain.disconnect();
+            pannerNode?.disconnect();
+          } catch {
+            // Ignore
+          }
+        },
+      };
+      this.activeVoices.add(cleanup);
+      tomOsc.onended = () => cleanup.stopAndDisconnect();
+      return;
+    }
+
+    // 5. METALLIC BRONZE HI-HATS & CYMBALS (h / hh / oh / cr / rd / 42 / 46 / 49 / 51)
+    const isCrashOrRide = key === 'cr' || key === 'rd' || midi === 49 || midi === 51;
+    const isOpenHat = key === 'oh' || midi === 46 || isCrashOrRide;
+    const dur = isCrashOrRide ? 0.65 : isOpenHat ? 0.28 : 0.058;
     const len = Math.floor(sr * dur);
     const buf = ctx.createBuffer(1, len, sr);
     const data = buf.getChannelData(0);
+
+    // Synthesize 6 inharmonic metallic cymbal modes + crisp air shimmer (eliminating flat white-noise hiss)
+    const w1 = (2 * Math.PI * 3171) / sr;
+    const w2 = (2 * Math.PI * 4483) / sr;
+    const w3 = (2 * Math.PI * 5869) / sr;
+    const w4 = (2 * Math.PI * 7331) / sr;
+    const w5 = (2 * Math.PI * 8923) / sr;
+    const w6 = (2 * Math.PI * 10459) / sr;
+
     for (let i = 0; i < len; i++) {
-      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, isSnare ? 1.8 : 2.8);
+      const t = i / sr;
+      const env = Math.exp(-t / (isCrashOrRide ? 0.22 : isOpenHat ? 0.095 : 0.015));
+      const metallic =
+        (Math.sin(i * w1) +
+          Math.sin(i * w2) +
+          Math.sin(i * w3) +
+          Math.sin(i * w4) +
+          Math.sin(i * w5) +
+          Math.sin(i * w6)) *
+        0.11;
+      const air = (Math.random() * 2 - 1) * 0.34;
+      data[i] = (metallic + air) * env;
     }
 
     const src = ctx.createBufferSource();
     src.buffer = buf;
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'highpass';
-    filter.Q.setValueAtTime(0.707, startSec);
-    filter.frequency.setValueAtTime(isSnare ? 550 : 5500, startSec);
+
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.Q.setValueAtTime(0.707, startSec);
+    hp.frequency.setValueAtTime(isCrashOrRide ? 4800 : 7800, startSec);
 
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(Math.max(0.002, amp * (isSnare ? 0.48 : 0.3)), startSec);
+    gain.gain.setValueAtTime(Math.max(0.005, amp * (isOpenHat ? 0.52 : 0.42)), startSec);
     gain.gain.exponentialRampToValueAtTime(0.0001, startSec + dur);
 
-    src.connect(filter);
-    filter.connect(gain);
+    src.connect(hp);
+    hp.connect(gain);
     gain.connect(output);
     src.start(startSec);
 
@@ -818,7 +1100,7 @@ export class StudioAudioEngine {
         }
         try {
           src.disconnect();
-          filter.disconnect();
+          hp.disconnect();
           gain.disconnect();
           pannerNode?.disconnect();
         } catch {
@@ -826,7 +1108,6 @@ export class StudioAudioEngine {
         }
       },
     };
-
     this.activeVoices.add(cleanup);
     src.onended = () => cleanup.stopAndDisconnect();
   }
@@ -970,31 +1251,118 @@ export class StudioAudioEngine {
 
       if (isDrum) {
         const key = (item.gridKey || 'k').toLowerCase();
+
+        // If this is an orchestral Timpani track with a cached timpani SoundFont sample, render the real sample!
+        if (
+          item.sfInstrument === 'timpani' &&
+          (key === 'k' || key === 'bd' || key === 'kick' || key === 'lt' || key === 'mt' || key === 'ht')
+        ) {
+          const timpMidi = key === 'ht' ? 52 : key === 'mt' ? 48 : 45;
+          const timpSample = this.soundfontLoader.getCachedSampleForNote('timpani', timpMidi);
+          if (timpSample) {
+            const buf = timpSample.buffer;
+            const ch0 = buf.getChannelData(0);
+            const ch1 = buf.numberOfChannels > 1 ? buf.getChannelData(1) : ch0;
+            const rateRatio = (buf.sampleRate / sampleRate) * timpSample.playbackRate;
+            const maxFrames = Math.min(totalFrames - startFrame, Math.floor(0.85 * sampleRate));
+            let rPos = 0;
+            for (let i = 0; i < maxFrames; i++) {
+              const idx0 = Math.floor(rPos);
+              if (idx0 >= ch0.length - 1) break;
+              const frac = rPos - idx0;
+              const s0 = ch0[idx0] + (ch0[idx0 + 1] - ch0[idx0]) * frac;
+              const s1 = ch1[idx0] + (ch1[idx0 + 1] - ch1[idx0]) * frac;
+              const env = Math.exp(-(i / sampleRate) * 3.5);
+              left[startFrame + i] += s0 * env * item.amp * 2.2 * gainL;
+              right[startFrame + i] += s1 * env * item.amp * 2.2 * gainR;
+              rPos += rateRatio;
+            }
+            continue;
+          }
+        }
+
         const isKick = key === 'k' || key === 'bd' || key === 'kick' || item.midi === 36;
-        const isSnare =
-          key === 's' || key === 'sd' || key === 'snare' || key === 'cp' || key === 'clap' || item.midi === 38;
-        const drumFrames = Math.min(
-          totalFrames - startFrame,
-          Math.floor((isKick ? 0.26 : isSnare ? 0.18 : 0.08) * sampleRate)
-        );
-        let phase = 0;
+        const isClap = key === 'cp' || key === 'clap' || item.midi === 39;
+        const isSnare = key === 's' || key === 'sd' || key === 'snare' || key === 'rim' || item.midi === 38;
+        const isTom = key === 'lt' || key === 'mt' || key === 'ht' || item.midi === 45 || item.midi === 47 || item.midi === 50;
+        const isOpenHat = key === 'oh' || key === 'cr' || key === 'rd' || item.midi === 46 || item.midi === 49;
+
+        const durSec = isKick ? 0.32 : isClap ? 0.24 : isSnare ? 0.21 : isTom ? 0.28 : isOpenHat ? 0.28 : 0.058;
+        const drumFrames = Math.min(totalFrames - startFrame, Math.floor(durSec * sampleRate));
+
+        let phase1 = 0;
+        let phase2 = 0;
+        let lpState = 0;
+        let prevIn = 0;
+        let hpState = 0;
+
+        const w1 = (2 * Math.PI * 3171) / sampleRate;
+        const w2 = (2 * Math.PI * 4483) / sampleRate;
+        const w3 = (2 * Math.PI * 5869) / sampleRate;
+        const w4 = (2 * Math.PI * 7331) / sampleRate;
+        const w5 = (2 * Math.PI * 8923) / sampleRate;
+        const w6 = (2 * Math.PI * 10459) / sampleRate;
 
         for (let i = 0; i < drumFrames; i++) {
           const t = i / sampleRate;
           let sample = 0;
+
           if (isKick) {
-            const instFreq = 38 + 110 * Math.exp(-t * 28);
-            phase += (2 * Math.PI * instFreq) / sampleRate;
-            sample = Math.sin(phase) * Math.exp(-t * 11) * item.amp * 0.9;
+            const subFreq = 34 + 120 * Math.exp(-t * 42);
+            const bodyFreq = 60 + 160 * Math.exp(-t * 55);
+            phase1 += (2 * Math.PI * subFreq) / sampleRate;
+            phase2 += (2 * Math.PI * bodyFreq) / sampleRate;
+            const sub = Math.sin(phase1) * Math.exp(-t * 9.5);
+            const body = Math.sin(phase2) * Math.exp(-t * 32) * 0.45;
+            const click = (Math.random() * 2 - 1) * Math.exp(-t * 240) * 0.25;
+            sample = Math.tanh((sub + body + click) * 1.4) * item.amp * 0.95;
+          } else if (isClap) {
+            let env = 0;
+            if (t < 0.011) env = Math.exp(-(t / 0.0035));
+            else if (t < 0.021) env = Math.exp(-((t - 0.011) / 0.0035));
+            else if (t < 0.032) env = Math.exp(-((t - 0.021) / 0.004));
+            else env = Math.exp(-((t - 0.032) / 0.055)) * 0.75;
+            const rawNoise = Math.random() * 2 - 1;
+            // Bandpass filter around 1.35kHz
+            lpState += 0.18 * (rawNoise - lpState);
+            hpState = 0.92 * (hpState + lpState - prevIn);
+            prevIn = lpState;
+            sample = hpState * env * item.amp * 0.85;
           } else if (isSnare) {
-            phase += (2 * Math.PI * 160) / sampleRate;
-            const tone = Math.sin(phase) * Math.exp(-t * 22) * 0.4;
-            const noise = ((Math.sin(i * 12.9898) * 43758.5453) % 1) * Math.exp(-t * 16) * 0.6;
-            sample = (tone + noise) * item.amp * 0.7;
+            const f1 = 118 + 92 * Math.exp(-t * 38);
+            const f2 = 185 + 160 * Math.exp(-t * 45);
+            phase1 += (2 * Math.PI * f1) / sampleRate;
+            phase2 += (2 * Math.PI * f2) / sampleRate;
+            const shell = (Math.sin(phase1) * 0.65 + Math.sin(phase2) * 0.35) * Math.exp(-t * 24);
+
+            const rawNoise = Math.random() * 2 - 1;
+            lpState += 0.32 * (rawNoise - lpState);
+            hpState = 0.88 * (hpState + lpState - prevIn);
+            prevIn = lpState;
+            const wires = hpState * Math.exp(-t * 15) * 0.75;
+            sample = (shell * 0.65 + wires) * item.amp * 0.85;
+          } else if (isTom) {
+            const baseTom = key === 'ht' ? 165 : key === 'mt' ? 125 : 92;
+            const instFreq = baseTom + baseTom * 0.45 * Math.exp(-t * 28);
+            phase1 += (2 * Math.PI * instFreq) / sampleRate;
+            sample = Math.sin(phase1) * Math.exp(-t * 11) * item.amp * 0.85;
           } else {
-            const noise = ((Math.sin(i * 78.233) * 43758.5453) % 1) * Math.exp(-t * 35);
-            sample = noise * item.amp * 0.45;
+            // Metallic Bronze Hi-Hat / Cymbal with steep highpass filter
+            const env = Math.exp(-t / (isOpenHat ? 0.095 : 0.015));
+            const metallic =
+              (Math.sin(i * w1) +
+                Math.sin(i * w2) +
+                Math.sin(i * w3) +
+                Math.sin(i * w4) +
+                Math.sin(i * w5) +
+                Math.sin(i * w6)) *
+              0.11;
+            const raw = metallic + (Math.random() * 2 - 1) * 0.32;
+            hpState = 0.72 * (hpState + raw - prevIn);
+            prevIn = raw;
+            sample = hpState * env * item.amp * (isOpenHat ? 0.48 : 0.38);
           }
+
           left[startFrame + i] += sample * gainL;
           right[startFrame + i] += sample * gainR;
         }
@@ -1058,7 +1426,7 @@ export class StudioAudioEngine {
           }
           readPos += stepRatio;
 
-          const gain = env * baseAmpScalar * 0.85;
+          const gain = env * baseAmpScalar * 2.4;
           left[startFrame + i] += s0 * gain * gainL;
           right[startFrame + i] += s1 * gain * gainR;
         }
@@ -1144,7 +1512,7 @@ export class StudioAudioEngine {
             0.05 * Math.sin(ph1 * 4) * Math.exp(-t * 6.0);
         }
 
-        const sample = wave * env * baseAmpScalar * 0.55;
+        const sample = wave * env * baseAmpScalar * 0.85;
         left[startFrame + i] += sample * gainL;
         right[startFrame + i] += sample * gainR;
       }
@@ -1160,9 +1528,20 @@ export class StudioAudioEngine {
       right[i] = dryR[i] + dryL[i - delay1] * 0.14 + dryR[i - delay2] * 0.08;
     }
 
+    // Peak-normalize the rendered stereo mix to 0.90 (-0.9 dBFS) so WAV exports are always full studio volume
+    let maxPeak = 0;
     for (let i = 0; i < totalFrames; i++) {
-      const l = Number.isFinite(left[i]) ? Math.tanh(left[i]) : 0;
-      const r = Number.isFinite(right[i]) ? Math.tanh(right[i]) : 0;
+      const absL = Number.isFinite(left[i]) ? Math.abs(left[i]) : 0;
+      const absR = Number.isFinite(right[i]) ? Math.abs(right[i]) : 0;
+      if (absL > maxPeak) maxPeak = absL;
+      if (absR > maxPeak) maxPeak = absR;
+    }
+
+    const normGain = maxPeak > 0.0001 ? (0.90 / maxPeak) * Math.min(1.5, Math.max(0.5, this.masterVolumeScalar)) : 1.0;
+
+    for (let i = 0; i < totalFrames; i++) {
+      const l = Number.isFinite(left[i]) ? Math.tanh(left[i] * normGain) : 0;
+      const r = Number.isFinite(right[i]) ? Math.tanh(right[i] * normGain) : 0;
       left[i] = l;
       right[i] = r;
     }

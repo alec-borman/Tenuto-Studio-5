@@ -11,6 +11,8 @@ interface TransportProps {
   timeSignature?: string;
   title?: string;
   currentBeat?: number;
+  masterVolume?: number;
+  onMasterVolumeChange?: (newVolume: number) => void;
   onSelectPreset?: (code: string) => void;
   onExportWav?: () => void;
 }
@@ -25,6 +27,8 @@ export default function Transport({
   timeSignature = '4/4',
   title = 'Untitled Score',
   currentBeat = 0,
+  masterVolume = 125,
+  onMasterVolumeChange,
   onSelectPreset,
   onExportWav,
 }: TransportProps) {
@@ -107,8 +111,27 @@ export default function Transport({
         </div>
       </div>
 
-      {/* Right: Export WAV */}
-      <div className="flex items-center gap-2.5">
+      {/* Right: Master Volume Boost & Export WAV */}
+      <div className="flex items-center gap-3">
+        {onMasterVolumeChange && (
+          <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-md px-2.5 py-1">
+            <label htmlFor="master-volume-slider" className="text-[11px] font-mono text-slate-400">
+              Vol
+            </label>
+            <input
+              id="master-volume-slider"
+              type="range"
+              aria-label="Master Volume"
+              min="0"
+              max="200"
+              value={masterVolume}
+              onChange={(e) => onMasterVolumeChange(parseInt(e.target.value, 10))}
+              className="w-20 accent-blue-500 cursor-pointer"
+            />
+            <span className="text-[11px] font-mono text-slate-300 w-9 text-right">{masterVolume}%</span>
+          </div>
+        )}
+
         {onExportWav && (
           <button
             onClick={onExportWav}

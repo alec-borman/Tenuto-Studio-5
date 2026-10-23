@@ -232,14 +232,18 @@ export function resolveSoundfontInstrument(
   style?: string,
   isPizz?: boolean
 ): string | null {
-  const cleanStyle = (style || 'standard').toLowerCase();
-  if (cleanStyle === 'grid') return null;
-
-  if (isPizz) return 'pizzicato_strings';
-
   const id = (trackId || '').toLowerCase();
   const name = (trackName || '').toLowerCase();
   const cleanPatch = (patch || '').toLowerCase().replace(/^"|"$/g, '');
+  const cleanStyle = (style || 'standard').toLowerCase();
+
+  if (id === 'timp' || id.includes('timp') || name.includes('timpani') || cleanPatch === 'timpani') {
+    return 'timpani';
+  }
+
+  if (cleanStyle === 'grid') return null;
+
+  if (isPizz) return 'pizzicato_strings';
 
   // Check if track ID or display name explicitly names an orchestral/acoustic instrument
   if (id.startsWith('vln1') || name.includes('first violin') || name.includes('solo violin')) return 'violin';
@@ -468,6 +472,11 @@ export class SoundfontBankLoader {
 
       if (!requiredNotesByInstrument.has(sfInstrument)) {
         requiredNotesByInstrument.set(sfInstrument, new Set());
+      }
+      if (sfInstrument === 'timpani') {
+        requiredNotesByInstrument.get(sfInstrument)!.add(45);
+        requiredNotesByInstrument.get(sfInstrument)!.add(48);
+        requiredNotesByInstrument.get(sfInstrument)!.add(52);
       }
       requiredNotesByInstrument.get(sfInstrument)!.add(Math.max(21, Math.min(108, Math.round(ev.pitch.midi || 60))));
     }

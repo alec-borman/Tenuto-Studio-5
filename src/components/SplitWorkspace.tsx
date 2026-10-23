@@ -20,6 +20,7 @@ export default function SplitWorkspace() {
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isLooping, setIsLooping] = useState<boolean>(false);
   const [playheadBeat, setPlayheadBeat] = useState<number>(0);
+  const [masterVolume, setMasterVolume] = useState<number>(125);
   const isAudioInitialized = useRef<boolean>(false);
 
   const [astState, setAstState] = useState<ASTState>({
@@ -154,6 +155,11 @@ export default function SplitWorkspace() {
     studioAudio.setLoop(next);
   };
 
+  const handleMasterVolumeChange = (volPercent: number) => {
+    setMasterVolume(volPercent);
+    studioAudio.setMasterVolume(volPercent / 100);
+  };
+
   const handleExportWav = async () => {
     try {
       const compiledScore =
@@ -220,6 +226,8 @@ export default function SplitWorkspace() {
         currentBeat={playheadBeat}
         onSelectPreset={(presetCode) => handleCodeEdit(presetCode)}
         onExportWav={handleExportWav}
+        masterVolume={masterVolume}
+        onMasterVolumeChange={handleMasterVolumeChange}
       />
 
       {/* Main Pure 50/50 Split: Left = Syntax-Highlighted Tenuto Code, Right = Scrolling Player */}

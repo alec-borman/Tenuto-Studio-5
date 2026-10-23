@@ -1,0 +1,852 @@
+### Why the Percussion Sounded Like a GameBoy
+
+Two things in `StudioAudioEngine.ts` and `SoundfontLibrary.ts` caused that 8-bit GameBoy sound:
+
+1. **Unfiltered Periodic Noise in WAV Export (`exportWavBlob`):**
+* In `exportWavBlob()`, the snare and hi-hat used `((Math.sin(i * 12.9898) * 43758.5453) % 1)` with **zero audio filtering**—writing raw, unipolar pseudo-random numbers directly to the output buffer. In digital audio, unfiltered periodic white noise with an exponential decay is literally how the 1989 GameBoy / NES noise channel works.
+
+
+2. **No Drum Shell Modes, No Metallic Cymbal Filters & Bypassed Timpani SoundFonts:**
+* In `SoundfontLibrary.ts`, `if (cleanStyle === 'grid') return null;` blocked `timp` (Timpani) tracks from loading the real **MusyngKite `timpani` SoundFont**.
+* In `scheduleDrumHit()`, the kick was a bare sine wave with no beater transient, the snare had no resonant drumhead shell frequencies (`185 Hz` / `330 Hz`) or snare-wire bandpass filter, the clap lacked the multi-burst human flam, and the hi-hats lacked a metallic bronze frequency bank.
+
+
+
+---
+
+### Unified Implementation Contract (`TDB-614`): Full Studio Volume + Real Sampled Timpani & Multi-Layer Studio Percussion Engine
+
+This single contract combines **all the volume boosts, Master Volume slider, and WAV normalization from `TDB-613**` with a **complete overhaul of the percussion engine (`TDB-614`)** so you only need to run one contract in AI Studio:
+
+* **Real Sampled Orchestral Timpani (`SoundfontLibrary.ts`):** Tracks named `timp` / `"Timpani"` load the real **MusyngKite `timpani` SoundFont** recordings for deep orchestral timpani strikes and rolls.
+* **Multi-Layer Studio Drum Synthesis (Live WebAudio & WAV Export):**
+* **Kick (`k` / `bd`):** 3-layer studio kick combining a saturating sub-membrane sweep (`155 Hz` $\rightarrow$ `46 Hz` $\rightarrow$ `34 Hz`), a mid-bass punch body, and a filtered wooden beater click.
+* **Snare (`s` / `sd`):** Dual tuned drumhead membrane resonators (`185 Hz` + `330 Hz`) + stick attack transient + bandpass-filtered (`2.2 kHz`) stereo snare wires.
+* **Clap (`cp`):** Authentic 4-burst human hand-clap flam (`0ms`, `11ms`, `21ms`, `32ms` micro-strikes) through a `1.35 kHz` resonant bandpass filter.
+* **Hi-Hats & Cymbals (`h`, `oh`, `cr`, `rd`):** 6-frequency metallic bronze shimmer bank + true 2-pole state-variable highpass/bandpass filtering (`8.5 kHz`–`11 kHz`) in both live playback and WAV export.
+
+
+
+Paste the contract below directly into Google AI Studio:
+
+```markdown
+# Implementation Contract: High-Output Studio Volume, Sampled Orchestral Timpani & Multi-Layer Studio Percussion Engine (TDB-614)
+
+**Project:** Tenuto Studio 5
+**Scope:** Fix quiet audio output and replace the 8-bit/GameBoy noise percussion in `src/audio/StudioAudioEngine.ts` and `src/audio/SoundfontLibrary.ts` with real MusyngKite `timpani` SoundFont support, a multi-layer studio drum synthesizer (3-layer kick, dual-membrane snare with bandpass wires, 4-burst flam clap, and 6-oscillator state-variable-filtered metallic cymbals), +15 dB makeup gain, WAV peak normalization, and a live Master Volume slider in `src/components/Transport.tsx` and `src/components/SplitWorkspace.tsx`.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+Currently, audio playback is too quiet (`~-38 dBFS`) and percussion tracks (`drums`, `perc`, `timp`) sound like 8-bit GameBoy noise because:
+1. `exportWavBlob()` generates snares and hi-hats using unfiltered `((Math.sin(i * 12.9898) * 43758.5453) % 1)` periodic noise without any bandpass or highpass filtering.
+2. `scheduleDrumHit()` uses a single bare sine wave for kicks and single-stage white noise for snares, claps, and hi-hats without drumhead shell modes, flam bursts, or metallic cymbal partials.
+3. `resolveSoundfontInstrument()` returns `null` for all `style=grid` tracks, preventing `timp` (Timpani) tracks from loading the MusyngKite `timpani` SoundFont bank.
+4. Triple gain attenuation in `buildScheduledTimeline()` leaves SoundFont and synth voices far below commercial loudness.
+
+This contract upgrades both the volume staging and the percussion engine across live WebAudio playback and `.wav` export.
+
+---
+
+## 2. Root Cause
+1. In `src/audio/StudioAudioEngine.ts` (`exportWavBlob`), drum synthesis writes raw unfiltered trig-modulo noise directly into the stereo PCM buffer.
+2. In `src/audio/StudioAudioEngine.ts` (`scheduleDrumHit`), snare, clap, kick, tom, and hi-hat voices lack multi-modal drumhead bodies, flam envelopes, and metallic bandpass filtering.
+3. In `src/audio/SoundfontLibrary.ts`, `if (cleanStyle === 'grid') return null;` blocks `timp` tracks from resolving to `'timpani'`.
+4. In `src/audio/StudioAudioEngine.ts`, low per-voice gain scalars (`0.26 * 0.42`) and un-normalized WAV buffers produce quiet output.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/audio/SoundfontLibrary.ts` - Enable Sampled Orchestral Timpani on `timp` Tracks
+In `src/audio/SoundfontLibrary.ts`:
+
+1. Update `resolveSoundfontInstrument` so `timp` / `"Timpani"` tracks resolve to `'timpani'` even when `style=grid`:
+```typescript
+export function resolveSoundfontInstrument(
+  trackId?: string,
+  trackName?: string,
+  patch?: string,
+  style?: string,
+  isPizz?: boolean
+): string | null {
+  const id = (trackId || '').toLowerCase();
+  const name = (trackName || '').toLowerCase();
+  const cleanPatch = (patch || '').toLowerCase().replace(/^"|"$/g, '');
+  const cleanStyle = (style || 'standard').toLowerCase();
+
+  if (id === 'timp' || id.includes('timp') || name.includes('timpani') || cleanPatch === 'timpani') {
+    return 'timpani';
+  }
+
+  if (cleanStyle === 'grid') return null;
+
+  if (isPizz) return 'pizzicato_strings';
+
+```
+
+*(Keep the rest of `resolveSoundfontInstrument` unchanged).*
+
+2. Inside `prewarmScoreSamples(ctx: BaseAudioContext, score: CompiledScore)`, when `sfInstrument === 'timpani'`, ensure standard timpani pitches (`41, 45, 48, 50, 52`) are added to `requiredNotesByInstrument` so `k` / `bd` and tom hits on `timp` tracks have rich sampled timpani buffers ready:
+
+```typescript
+      if (!requiredNotesByInstrument.has(sfInstrument)) {
+        requiredNotesByInstrument.set(sfInstrument, new Set());
+      }
+      const noteSet = requiredNotesByInstrument.get(sfInstrument)!;
+      noteSet.add(Math.max(21, Math.min(108, Math.round(ev.pitch.midi || 60))));
+      if (sfInstrument === 'timpani') {
+        noteSet.add(45);
+        noteSet.add(48);
+        noteSet.add(52);
+      }
+
+```
+
+### 3.2 `src/audio/StudioAudioEngine.ts` - High-Output Gain Staging, Sampled Timpani & Multi-Layer Studio Drum Engine
+
+In `src/audio/StudioAudioEngine.ts`, apply the following upgrades:
+
+1. Add `private masterVolumeScalar: number = 1.25;` to `StudioAudioEngine` along with `setMasterVolume` and `getMasterVolume`:
+
+```typescript
+  public setMasterVolume(scalar: number): void {
+    this.masterVolumeScalar = Math.max(0, Math.min(2.5, scalar));
+    if (this.masterGain && this.ctx) {
+      this.masterGain.gain.setValueAtTime(1.45 * this.masterVolumeScalar, this.ctx.currentTime || 0);
+    }
+  }
+
+  public getMasterVolume(): number {
+    return this.masterVolumeScalar;
+  }
+
+```
+
+2. Update `rebuildMasterChain(ctx: AudioContext)` for high-output studio loudness with a `-3 dBFS` brickwall limiter:
+
+```typescript
+  private rebuildMasterChain(ctx: AudioContext): void {
+    try {
+      this.reverbSendBus?.disconnect();
+      this.reverbNode?.disconnect();
+      this.reverbWetGain?.disconnect();
+      this.masterGain?.disconnect();
+      this.compressorNode?.disconnect();
+    } catch {
+      // Ignore disconnect errors on old nodes
+    }
+
+    this.masterGain = ctx.createGain();
+    this.masterGain.gain.value = 1.45 * this.masterVolumeScalar;
+
+    if (typeof (ctx as any).createDynamicsCompressor === 'function') {
+      const comp = ctx.createDynamicsCompressor();
+      const now = ctx.currentTime || 0;
+      comp.threshold?.setValueAtTime?.(-3, now);
+      comp.knee?.setValueAtTime?.(6, now);
+      comp.ratio?.setValueAtTime?.(12, now);
+      comp.attack?.setValueAtTime?.(0.002, now);
+      comp.release?.setValueAtTime?.(0.12, now);
+      comp.connect(ctx.destination);
+      this.masterGain.connect(comp);
+      this.compressorNode = comp;
+    } else {
+      this.masterGain.connect(ctx.destination);
+      this.compressorNode = null;
+    }
+
+    this.reverbSendBus = ctx.createGain();
+    this.reverbSendBus.gain.value = 0.22;
+
+    if (typeof (ctx as any).createConvolver === 'function') {
+      this.reverbNode = this.createImpulseReverb(ctx, 1.5, 3.2);
+      this.reverbWetGain = ctx.createGain();
+      this.reverbWetGain.value = 0.28;
+      this.reverbSendBus.connect(this.reverbNode);
+      this.reverbNode.connect(this.reverbWetGain);
+      this.reverbWetGain.connect(this.masterGain);
+    } else {
+      this.reverbNode = null;
+      this.reverbWetGain = null;
+    }
+  }
+
+```
+
+3. In `buildScheduledTimeline(score: CompiledScore)`, use the high-output dynamic curve:
+
+```typescript
+    const numTracks = Math.max(1, score.defs.length);
+    this.polyphonyScalar = numTracks >= 10 ? 0.78 : numTracks >= 6 ? 0.85 : numTracks >= 3 ? 0.92 : 1.0;
+
+```
+
+And inside the loop:
+
+```typescript
+      const trackVolMidi = this.trackVolumes.get(trackId) ?? def?.volume ?? 100;
+      const trackGainScalar = (trackVolMidi / 100) * 0.95 * this.polyphonyScalar;
+
+```
+
+And for `amp`, `startAmp`, and `endAmp`:
+
+```typescript
+      const velToAudibleCurve = (v: number) => 0.25 + 0.75 * Math.pow(Math.max(1, Math.min(127, v)) / 127, 0.85);
+
+      const vel = ev.physics?.velocity ?? 90;
+      const swell = ev.physics?.swell;
+      const startVel = ev.physics?.startVelocity ?? (swell === 'crescendo' ? 40 : swell === 'diminuendo' ? 116 : vel);
+      const endVel = ev.physics?.endVelocity ?? (swell === 'crescendo' ? 120 : swell === 'diminuendo' ? 35 : vel);
+
+      const amp = Math.max(0.15, Math.min(1.35, velToAudibleCurve(vel) * trackGainScalar));
+      const startAmp = Math.max(0.1, Math.min(1.4, velToAudibleCurve(startVel) * trackGainScalar));
+      const endAmp = Math.max(0.1, Math.min(1.4, velToAudibleCurve(endVel) * trackGainScalar));
+
+```
+
+4. In `scheduleSoundfontBufferVoice`, set `const sampleScale = 2.6;`. In `scheduleAcousticPianoVoice`, use `0.95` peak scalar. In `scheduleSynthVoice`, use `const voiceScale = isSub ? 0.95 : isPad ? 0.65 : 0.75;`.
+5. In `triggerRealtimeVoice`, route `timp` bass hits (`k`, `bd`, `lt`, `mt`, `ht`, or pitched notes when `item.sfInstrument === 'timpani'`) to use the sampled `timpani` SoundFont buffer layered with the studio drum synthesizer, and send a subtle room send (`0.12`) from percussion to `this.reverbSendBus` so drums sit in an acoustic space instead of sounding bone-dry:
+
+```typescript
+    if (this.reverbSendBus) {
+      if (item.style === 'grid' || item.gridKey) {
+        const drumRoomSend = ctx.createGain();
+        drumRoomSend.gain.value = 0.14;
+        voiceOut.connect(drumRoomSend);
+        drumRoomSend.connect(this.reverbSendBus);
+      } else {
+        voiceOut.connect(this.reverbSendBus);
+      }
+    }
+
+    if (item.style === 'grid' || item.gridKey) {
+      const key = (item.gridKey || '').toLowerCase();
+      const isTimpaniStrike =
+        item.sfInstrument === 'timpani' &&
+        (key === 'k' || key === 'bd' || key === 'kick' || key === 'lt' || key === 'mt' || key === 'ht' || !key);
+
+      if (isTimpaniStrike) {
+        const timpMidi = key === 'ht' ? 52 : key === 'mt' ? 48 : 45;
+        const timpSample = this.soundfontLoader.getCachedSampleForNote('timpani', timpMidi);
+        if (timpSample) {
+          this.scheduleSoundfontBufferVoice(
+            ctx,
+            voiceOut,
+            pannerNode,
+            timpSample,
+            safeStart,
+            Math.max(0.45, durSec),
+            item.amp * 1.1,
+            item.swell,
+            item.startAmp,
+            item.endAmp,
+            item.event.physics
+          );
+        }
+      }
+
+      this.scheduleDrumHit(ctx, voiceOut, pannerNode, item.gridKey || 'k', item.midi, safeStart, item.amp);
+      return;
+    }
+
+```
+
+6. Replace `scheduleDrumHit` in `src/audio/StudioAudioEngine.ts` with the **Multi-Layer Studio Acoustic/808 Drum Synthesizer**:
+
+```typescript
+  private scheduleDrumHit(
+    ctx: BaseAudioContext,
+    output: AudioNode,
+    pannerNode: StereoPannerNode | null,
+    gridKey: string,
+    midi: number,
+    startSec: number,
+    amp: number
+  ): void {
+    const key = gridKey.toLowerCase();
+    const sr = ctx.sampleRate || 44100;
+
+    // 1. STUDIO KICK DRUM (k / bd / kick / 36): Sub Membrane + Punch Body + Beater Click
+    if (key === 'k' || key === 'bd' || key === 'kick' || midi === 36) {
+      const subOsc = ctx.createOscillator();
+      const bodyOsc = ctx.createOscillator();
+      const subGain = ctx.createGain();
+      const bodyGain = ctx.createGain();
+
+      subOsc.type = 'sine';
+      subOsc.frequency.setValueAtTime(155, startSec);
+      subOsc.frequency.exponentialRampToValueAtTime(52, startSec + 0.022);
+      subOsc.frequency.exponentialRampToValueAtTime(34, startSec + 0.28);
+
+      bodyOsc.type = 'triangle';
+      bodyOsc.frequency.setValueAtTime(220, startSec);
+      bodyOsc.frequency.exponentialRampToValueAtTime(62, startSec + 0.035);
+
+      const peak = Math.max(0.01, amp * 1.15);
+      subGain.gain.setValueAtTime(0.001, startSec);
+      subGain.gain.linearRampToValueAtTime(peak, startSec + 0.004);
+      subGain.gain.exponentialRampToValueAtTime(peak * 0.55, startSec + 0.08);
+      subGain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.32);
+
+      bodyGain.gain.setValueAtTime(peak * 0.5, startSec);
+      bodyGain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.045);
+
+      subOsc.connect(subGain);
+      bodyOsc.connect(bodyGain);
+      subGain.connect(output);
+      bodyGain.connect(output);
+
+      subOsc.start(startSec);
+      bodyOsc.start(startSec);
+      subOsc.stop(startSec + 0.34);
+      bodyOsc.stop(startSec + 0.055);
+
+      let cleaned = false;
+      const cleanup: ActiveVoiceCleanup = {
+        stopAndDisconnect: () => {
+          if (cleaned) return;
+          cleaned = true;
+          this.activeVoices.delete(cleanup);
+          try {
+            subOsc.stop();
+            bodyOsc.stop();
+          } catch {
+            // Ignore
+          }
+          try {
+            subOsc.disconnect();
+            bodyOsc.disconnect();
+            subGain.disconnect();
+            bodyGain.disconnect();
+            pannerNode?.disconnect();
+          } catch {
+            // Ignore
+          }
+        },
+      };
+      this.activeVoices.add(cleanup);
+      subOsc.onended = () => cleanup.stopAndDisconnect();
+      return;
+    }
+
+    // 2. STUDIO HAND CLAP (cp / clap / 39): 4-Burst Human Flam Envelope + Warm 1.35kHz Bandpass
+    if (key === 'cp' || key === 'clap' || midi === 39) {
+      const dur = 0.24;
+      const len = Math.floor(sr * dur);
+      const buf = ctx.createBuffer(1, len, sr);
+      const data = buf.getChannelData(0);
+
+      // 4 staggered micro-clap transients at 0ms, 11ms, 21ms, and 32ms + diffused tail
+      for (let i = 0; i < len; i++) {
+        const t = i / sr;
+        let env = 0;
+        if (t < 0.011) env = Math.exp(-(t / 0.0035));
+        else if (t < 0.021) env = Math.exp(-((t - 0.011) / 0.0035));
+        else if (t < 0.032) env = Math.exp(-((t - 0.021) / 0.004));
+        else env = Math.exp(-((t - 0.032) / 0.055)) * 0.75;
+        data[i] = (Math.random() * 2 - 1) * env;
+      }
+
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(1350, startSec);
+      bp.Q.setValueAtTime(1.4, startSec);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(Math.max(0.01, amp * 0.9), startSec);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startSec + dur);
+
+      src.connect(bp);
+      bp.connect(gain);
+      gain.connect(output);
+      src.start(startSec);
+
+      let cleaned = false;
+      const cleanup: ActiveVoiceCleanup = {
+        stopAndDisconnect: () => {
+          if (cleaned) return;
+          cleaned = true;
+          this.activeVoices.delete(cleanup);
+          try {
+            src.stop();
+          } catch {
+            // Ignore
+          }
+          try {
+            src.disconnect();
+            bp.disconnect();
+            gain.disconnect();
+            pannerNode?.disconnect();
+          } catch {
+            // Ignore
+          }
+        },
+      };
+      this.activeVoices.add(cleanup);
+      src.onended = () => cleanup.stopAndDisconnect();
+      return;
+    }
+
+    // 3. ACOUSTIC STUDIO SNARE (s / sd / snare / rim / 37 / 38): Dual Drumhead Modes + Bandpass Snare Wires
+    if (key === 's' || key === 'sd' || key === 'snare' || key === 'rim' || midi === 38 || midi === 37) {
+      const mode1 = ctx.createOscillator();
+      const mode2 = ctx.createOscillator();
+      const modeGain = ctx.createGain();
+
+      mode1.type = 'triangle';
+      mode2.type = 'sine';
+      mode1.frequency.setValueAtTime(210, startSec);
+      mode1.frequency.exponentialRampToValueAtTime(118, startSec + 0.075);
+      mode2.frequency.setValueAtTime(345, startSec);
+      mode2.frequency.exponentialRampToValueAtTime(185, startSec + 0.055);
+
+      const peak = Math.max(0.01, amp * 0.85);
+      modeGain.gain.setValueAtTime(peak * 0.7, startSec);
+      modeGain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.11);
+
+      mode1.connect(modeGain);
+      mode2.connect(modeGain);
+      modeGain.connect(output);
+      mode1.start(startSec);
+      mode2.start(startSec);
+      mode1.stop(startSec + 0.12);
+      mode2.stop(startSec + 0.12);
+
+      // Snare wires: bandpass-filtered shell rattle + crisp stick snap
+      const dur = 0.21;
+      const len = Math.floor(sr * dur);
+      const buf = ctx.createBuffer(1, len, sr);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) {
+        const t = i / sr;
+        const snap = t < 0.006 ? 1.0 : 0.65 * Math.exp(-(t - 0.006) * 16);
+        data[i] = (Math.random() * 2 - 1) * snap;
+      }
+
+      const noiseSrc = ctx.createBufferSource();
+      noiseSrc.buffer = buf;
+
+      const wireFilter = ctx.createBiquadFilter();
+      wireFilter.type = 'bandpass';
+      wireFilter.frequency.setValueAtTime(2450, startSec);
+      wireFilter.Q.setValueAtTime(0.9, startSec);
+
+      const wireGain = ctx.createGain();
+      wireGain.gain.setValueAtTime(peak * 0.8, startSec);
+      wireGain.gain.exponentialRampToValueAtTime(0.0001, startSec + dur);
+
+      noiseSrc.connect(wireFilter);
+      wireFilter.connect(wireGain);
+      wireGain.connect(output);
+      noiseSrc.start(startSec);
+
+      let cleaned = false;
+      const cleanup: ActiveVoiceCleanup = {
+        stopAndDisconnect: () => {
+          if (cleaned) return;
+          cleaned = true;
+          this.activeVoices.delete(cleanup);
+          try {
+            mode1.stop();
+            mode2.stop();
+            noiseSrc.stop();
+          } catch {
+            // Ignore
+          }
+          try {
+            mode1.disconnect();
+            mode2.disconnect();
+            modeGain.disconnect();
+            noiseSrc.disconnect();
+            wireFilter.disconnect();
+            wireGain.disconnect();
+            pannerNode?.disconnect();
+          } catch {
+            // Ignore
+          }
+        },
+      };
+      this.activeVoices.add(cleanup);
+      noiseSrc.onended = () => cleanup.stopAndDisconnect();
+      return;
+    }
+
+    // 4. TUNED ACOUSTIC TOMS (lt / mt / ht / 45 / 47 / 50)
+    if (key === 'lt' || key === 'mt' || key === 'ht' || midi === 45 || midi === 47 || midi === 50) {
+      const baseTomFreq = key === 'ht' || midi === 50 ? 165 : key === 'mt' || midi === 47 ? 125 : 92;
+      const tomOsc = ctx.createOscillator();
+      const tomGain = ctx.createGain();
+      tomOsc.type = 'sine';
+      tomOsc.frequency.setValueAtTime(baseTomFreq * 1.45, startSec);
+      tomOsc.frequency.exponentialRampToValueAtTime(baseTomFreq, startSec + 0.06);
+      tomOsc.frequency.exponentialRampToValueAtTime(baseTomFreq * 0.78, startSec + 0.28);
+
+      const peak = Math.max(0.01, amp * 0.9);
+      tomGain.gain.setValueAtTime(peak, startSec);
+      tomGain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.29);
+
+      tomOsc.connect(tomGain);
+      tomGain.connect(output);
+      tomOsc.start(startSec);
+      tomOsc.stop(startSec + 0.31);
+
+      let cleaned = false;
+      const cleanup: ActiveVoiceCleanup = {
+        stopAndDisconnect: () => {
+          if (cleaned) return;
+          cleaned = true;
+          this.activeVoices.delete(cleanup);
+          try {
+            tomOsc.stop();
+          } catch {
+            // Ignore
+          }
+          try {
+            tomOsc.disconnect();
+            tomGain.disconnect();
+            pannerNode?.disconnect();
+          } catch {
+            // Ignore
+          }
+        },
+      };
+      this.activeVoices.add(cleanup);
+      tomOsc.onended = () => cleanup.stopAndDisconnect();
+      return;
+    }
+
+    // 5. METALLIC BRONZE HI-HATS & CYMBALS (h / hh / oh / cr / rd / 42 / 46 / 49 / 51)
+    const isCrashOrRide = key === 'cr' || key === 'rd' || midi === 49 || midi === 51;
+    const isOpenHat = key === 'oh' || midi === 46 || isCrashOrRide;
+    const dur = isCrashOrRide ? 0.65 : isOpenHat ? 0.28 : 0.058;
+    const len = Math.floor(sr * dur);
+    const buf = ctx.createBuffer(1, len, sr);
+    const data = buf.getChannelData(0);
+
+    // Synthesize 6 inharmonic metallic cymbal modes + crisp air shimmer (eliminating flat white-noise hiss)
+    const w1 = (2 * Math.PI * 3171) / sr;
+    const w2 = (2 * Math.PI * 4483) / sr;
+    const w3 = (2 * Math.PI * 5869) / sr;
+    const w4 = (2 * Math.PI * 7331) / sr;
+    const w5 = (2 * Math.PI * 8923) / sr;
+    const w6 = (2 * Math.PI * 10459) / sr;
+
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      const env = Math.exp(-t / (isCrashOrRide ? 0.22 : isOpenHat ? 0.095 : 0.015));
+      const metallic =
+        (Math.sin(i * w1) +
+          Math.sin(i * w2) +
+          Math.sin(i * w3) +
+          Math.sin(i * w4) +
+          Math.sin(i * w5) +
+          Math.sin(i * w6)) *
+        0.11;
+      const air = (Math.random() * 2 - 1) * 0.34;
+      data[i] = (metallic + air) * env;
+    }
+
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.Q.setValueAtTime(0.707, startSec);
+    hp.frequency.setValueAtTime(isCrashOrRide ? 4800 : 7800, startSec);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(Math.max(0.005, amp * (isOpenHat ? 0.52 : 0.42)), startSec);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startSec + dur);
+
+    src.connect(hp);
+    hp.connect(gain);
+    gain.connect(output);
+    src.start(startSec);
+
+    let cleaned = false;
+    const cleanup: ActiveVoiceCleanup = {
+      stopAndDisconnect: () => {
+        if (cleaned) return;
+        cleaned = true;
+        this.activeVoices.delete(cleanup);
+        try {
+          src.stop();
+        } catch {
+          // Ignore
+        }
+        try {
+          src.disconnect();
+          hp.disconnect();
+          gain.disconnect();
+          pannerNode?.disconnect();
+        } catch {
+          // Ignore
+        }
+      },
+    };
+    this.activeVoices.add(cleanup);
+    src.onended = () => cleanup.stopAndDisconnect();
+  }
+
+```
+
+7. In `exportWavBlob(score: CompiledScore)`:
+* Replace the `if (isDrum) { ... }` block with the **Filtered Multi-Layer Studio Drum PCM Renderer** (which uses sampled `timpani` buffers on `timp` tracks and state-variable highpass/bandpass filters + dual drumhead modes on `drums` tracks so exported WAVs never contain unfiltered GameBoy noise):
+
+
+
+```typescript
+      if (isDrum) {
+        const key = (item.gridKey || 'k').toLowerCase();
+
+        // If this is an orchestral Timpani track with a cached timpani SoundFont sample, render the real sample!
+        if (
+          item.sfInstrument === 'timpani' &&
+          (key === 'k' || key === 'bd' || key === 'kick' || key === 'lt' || key === 'mt' || key === 'ht')
+        ) {
+          const timpMidi = key === 'ht' ? 52 : key === 'mt' ? 48 : 45;
+          const timpSample = this.soundfontLoader.getCachedSampleForNote('timpani', timpMidi);
+          if (timpSample) {
+            const buf = timpSample.buffer;
+            const ch0 = buf.getChannelData(0);
+            const ch1 = buf.numberOfChannels > 1 ? buf.getChannelData(1) : ch0;
+            const rateRatio = (buf.sampleRate / sampleRate) * timpSample.playbackRate;
+            const maxFrames = Math.min(totalFrames - startFrame, Math.floor(0.85 * sampleRate));
+            let rPos = 0;
+            for (let i = 0; i < maxFrames; i++) {
+              const idx0 = Math.floor(rPos);
+              if (idx0 >= ch0.length - 1) break;
+              const frac = rPos - idx0;
+              const s0 = ch0[idx0] + (ch0[idx0 + 1] - ch0[idx0]) * frac;
+              const s1 = ch1[idx0] + (ch1[idx0 + 1] - ch1[idx0]) * frac;
+              const env = Math.exp(-(i / sampleRate) * 3.5);
+              left[startFrame + i] += s0 * env * item.amp * 1.4 * gainL;
+              right[startFrame + i] += s1 * env * item.amp * 1.4 * gainR;
+              rPos += rateRatio;
+            }
+            continue;
+          }
+        }
+
+        const isKick = key === 'k' || key === 'bd' || key === 'kick' || item.midi === 36;
+        const isClap = key === 'cp' || key === 'clap' || item.midi === 39;
+        const isSnare = key === 's' || key === 'sd' || key === 'snare' || key === 'rim' || item.midi === 38;
+        const isTom = key === 'lt' || key === 'mt' || key === 'ht' || item.midi === 45 || item.midi === 47 || item.midi === 50;
+        const isOpenHat = key === 'oh' || key === 'cr' || key === 'rd' || item.midi === 46 || item.midi === 49;
+
+        const durSec = isKick ? 0.32 : isClap ? 0.24 : isSnare ? 0.21 : isTom ? 0.28 : isOpenHat ? 0.28 : 0.058;
+        const drumFrames = Math.min(totalFrames - startFrame, Math.floor(durSec * sampleRate));
+
+        let phase1 = 0;
+        let phase2 = 0;
+        let lpState = 0;
+        let prevIn = 0;
+        let hpState = 0;
+
+        const w1 = (2 * Math.PI * 3171) / sampleRate;
+        const w2 = (2 * Math.PI * 4483) / sampleRate;
+        const w3 = (2 * Math.PI * 5869) / sampleRate;
+        const w4 = (2 * Math.PI * 7331) / sampleRate;
+        const w5 = (2 * Math.PI * 8923) / sampleRate;
+        const w6 = (2 * Math.PI * 10459) / sampleRate;
+
+        for (let i = 0; i < drumFrames; i++) {
+          const t = i / sampleRate;
+          let sample = 0;
+
+          if (isKick) {
+            const subFreq = 34 + 120 * Math.exp(-t * 42);
+            const bodyFreq = 60 + 160 * Math.exp(-t * 55);
+            phase1 += (2 * Math.PI * subFreq) / sampleRate;
+            phase2 += (2 * Math.PI * bodyFreq) / sampleRate;
+            const sub = Math.sin(phase1) * Math.exp(-t * 9.5);
+            const body = Math.sin(phase2) * Math.exp(-t * 32) * 0.45;
+            const click = (Math.random() * 2 - 1) * Math.exp(-t * 240) * 0.25;
+            sample = Math.tanh((sub + body + click) * 1.4) * item.amp * 0.95;
+          } else if (isClap) {
+            let env = 0;
+            if (t < 0.011) env = Math.exp(-(t / 0.0035));
+            else if (t < 0.021) env = Math.exp(-((t - 0.011) / 0.0035));
+            else if (t < 0.032) env = Math.exp(-((t - 0.021) / 0.004));
+            else env = Math.exp(-((t - 0.032) / 0.055)) * 0.75;
+            const rawNoise = Math.random() * 2 - 1;
+            // Bandpass filter around 1.35kHz
+            lpState += 0.18 * (rawNoise - lpState);
+            hpState = 0.92 * (hpState + lpState - prevIn);
+            prevIn = lpState;
+            sample = hpState * env * item.amp * 0.85;
+          } else if (isSnare) {
+            const f1 = 118 + 92 * Math.exp(-t * 38);
+            const f2 = 185 + 160 * Math.exp(-t * 45);
+            phase1 += (2 * Math.PI * f1) / sampleRate;
+            phase2 += (2 * Math.PI * f2) / sampleRate;
+            const shell = (Math.sin(phase1) * 0.65 + Math.sin(phase2) * 0.35) * Math.exp(-t * 24);
+
+            const rawNoise = Math.random() * 2 - 1;
+            lpState += 0.32 * (rawNoise - lpState);
+            hpState = 0.88 * (hpState + lpState - prevIn);
+            prevIn = lpState;
+            const wires = hpState * Math.exp(-t * 15) * 0.75;
+            sample = (shell * 0.65 + wires) * item.amp * 0.85;
+          } else if (isTom) {
+            const baseTom = key === 'ht' ? 165 : key === 'mt' ? 125 : 92;
+            const instFreq = baseTom + baseTom * 0.45 * Math.exp(-t * 28);
+            phase1 += (2 * Math.PI * instFreq) / sampleRate;
+            sample = Math.sin(phase1) * Math.exp(-t * 11) * item.amp * 0.85;
+          } else {
+            // Metallic Bronze Hi-Hat / Cymbal with steep highpass filter
+            const env = Math.exp(-t / (isOpenHat ? 0.095 : 0.015));
+            const metallic =
+              (Math.sin(i * w1) +
+                Math.sin(i * w2) +
+                Math.sin(i * w3) +
+                Math.sin(i * w4) +
+                Math.sin(i * w5) +
+                Math.sin(i * w6)) *
+              0.11;
+            const raw = metallic + (Math.random() * 2 - 1) * 0.32;
+            hpState = 0.72 * (hpState + raw - prevIn);
+            prevIn = raw;
+            sample = hpState * env * item.amp * (isOpenHat ? 0.48 : 0.38);
+          }
+
+          left[startFrame + i] += sample * gainL;
+          right[startFrame + i] += sample * gainR;
+        }
+        continue;
+      }
+
+```
+
+* And at the bottom of `exportWavBlob(score: CompiledScore)`, normalize the stereo mix to `-0.9 dBFS` (`0.90` peak) before encoding to 16-bit PCM:
+
+```typescript
+    let maxPeak = 0;
+    for (let i = 0; i < totalFrames; i++) {
+      const absL = Number.isFinite(left[i]) ? Math.abs(left[i]) : 0;
+      const absR = Number.isFinite(right[i]) ? Math.abs(right[i]) : 0;
+      if (absL > maxPeak) maxPeak = absL;
+      if (absR > maxPeak) maxPeak = absR;
+    }
+
+    const normGain = maxPeak > 0.0001 ? (0.90 / maxPeak) * Math.min(1.5, Math.max(0.5, this.masterVolumeScalar)) : 1.0;
+
+    for (let i = 0; i < totalFrames; i++) {
+      const l = Number.isFinite(left[i]) ? Math.tanh(left[i] * normGain) : 0;
+      const r = Number.isFinite(right[i]) ? Math.tanh(right[i] * normGain) : 0;
+      left[i] = l;
+      right[i] = r;
+    }
+
+```
+
+### 3.3 `src/components/Transport.tsx` & `src/components/SplitWorkspace.tsx` - Add Live Master Volume Slider (`0%–200%`)
+
+Ensure `Transport.tsx` includes the `masterVolume` (`0`–`200`, default `125`) and `onMasterVolumeChange` props and slider, and `SplitWorkspace.tsx` binds `masterVolume` (`125%` default) to `studioAudio.setMasterVolume(nextVolPercent / 100)`.
+
+### 3.4 `tests/studio_engine_and_ui.test.tsx` - Verify Sampled Timpani Resolution, Studio Drum Synthesis & Peak-Normalized WAV Output
+
+In `tests/studio_engine_and_ui.test.tsx`, update or add a test verifying that `timp` tracks resolve to `'timpani'` and that `exportWavBlob` renders full-scale normalized audio for both melodic and percussion tracks:
+
+```typescript
+  it('resolves timp tracks to sampled orchestral timpani and renders normalized studio percussion in WAV export', async () => {
+    expect(resolveSoundfontInstrument('timp', 'Timpani & Orchestral Perc', 'tenuto_808_kit', 'grid')).toBe('timpani');
+
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+    const drumScore = parser.compile(`
+      tenuto "5.0" {
+        meta @{ title: "Studio Drum Test", tempo: 120, time: "4/4" }
+        def drums "Studio Kit" style=grid patch="tenuto_808_kit"
+        measure 1 {
+          drums: k:4 s:4 cp:8 h:8 oh:8 lt:8 |
+        }
+      }
+    `);
+
+    const wavBlob = await engine.exportWavBlob(drumScore);
+    const arrayBuffer = await wavBlob.arrayBuffer();
+    const view = new DataView(arrayBuffer);
+
+    let maxSampleInt16 = 0;
+    for (let offset = 44; offset < view.byteLength; offset += 2) {
+      const sample = Math.abs(view.getInt16(offset, true));
+      if (sample > maxSampleInt16) maxSampleInt16 = sample;
+    }
+
+    expect(maxSampleInt16).toBeGreaterThan(16383);
+  });
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/`
+* `src/audio/AudioContextManager.ts`, `src/audio/PlaybackOrchestrator.ts`, `src/audio/TenutoProcessor.ts`, `src/audio/TCALManager.ts`
+* `src/components/WebGPUCanvas.tsx`, `src/components/CodeEditor.tsx`, `src/components/Mixer.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) completes with zero TypeScript errors.
+2. `npx vitest run tests/studio_engine_and_ui.test.tsx tests/transport_binding.test.tsx` passes 100%.
+3. `npm run build` succeeds cleanly.
+4. Both live playback and WAV export play at full studio volume (`-0.9 dBFS` normalized peak), `timp` tracks load the MusyngKite `timpani` SoundFont, and `drums` tracks synthesize multi-layer acoustic kicks, dual-membrane bandpass snares, 4-burst flam claps, and metallic bronze hi-hats.
+
+---
+
+## 6. Constraints
+
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 7. Manual Steps
+
+After AI Studio completes this contract and you push to GitHub, run `git pull && npm run electron:build:mac` on your Mac to update your installed `.pkg`.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or restore `src/audio/SoundfontLibrary.ts`, `src/audio/StudioAudioEngine.ts`, `src/components/Transport.tsx`, `src/components/SplitWorkspace.tsx`, and `tests/studio_engine_and_ui.test.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* Modified file(s): `src/audio/SoundfontLibrary.ts`, `src/audio/StudioAudioEngine.ts`, `src/components/Transport.tsx`, `src/components/SplitWorkspace.tsx`, `tests/studio_engine_and_ui.test.tsx`
+* Commit message: `feat(percussion): add sampled timpani, multi-layer studio drum DSP, and high-output master volume`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Orchestral Timpani (`timp`)** | Bypassed SoundFonts and played 8-bit white noise | Loads and plays real **MusyngKite `timpani` SoundFont** samples layered with warm sub-membrane punch |
+| **Drums (`k`, `s`, `cp`, `h`, `oh`, `lt`)** | Unfiltered `(sin % 1)` GameBoy noise and bare sine waves | 3-layer saturating kick, dual-membrane (`185Hz`/`345Hz`) + bandpass snare, 4-burst flam clap, tuned toms, and 6-ratio metallic bronze hi-hats |
+| **Volume & Loudness** | Quiet (`~-38 dBFS`) in both live playback and WAV export | +15 dB live output boost, live `0%–200%` Master Volume slider in Transport, and `-0.9 dBFS` peak normalization on all exported `.wav` files |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-23
+Implementer: AI Agent
+
+```
+
+```
