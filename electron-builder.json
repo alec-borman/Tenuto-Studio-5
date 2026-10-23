@@ -1,0 +1,29 @@
+{
+  "appId": "com.tenuto.studio5",
+  "productName": "Tenuto Studio 5",
+  "directories": {
+    "output": "release"
+  },
+  "extraMetadata": {
+    "main": "electron/main.cjs",
+    "version": "5.0.0"
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*"
+  ],
+  "mac": {
+    "category": "public.app-category.music",
+    "target": [
+      "pkg"
+    ],
+    "darkModeSupport": true
+  },
+  "pkg": {
+    "installLocation": "/Applications",
+    "allowAnywhere": false,
+    "allowCurrentUserHome": false,
+    "allowRootDirectory": true,
+    "isRelocatable": false
+  }
+}

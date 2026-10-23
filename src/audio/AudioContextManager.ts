@@ -4,7 +4,7 @@ export class AudioContextManager {
 
   public async initialize(): Promise<void> {
     this.context = new AudioContext();
-    await this.context.audioWorklet.addModule('TenutoProcessor.js');
+    await this.context.audioWorklet.addModule('/src/audio/TenutoProcessor.ts');
     this.workletNode = new AudioWorkletNode(this.context, 'TenutoProcessor');
   }
 
@@ -12,8 +12,8 @@ export class AudioContextManager {
     return this.context?.sampleRate || 48000;
   }
 
-  public allocateSharedMemory(numEvents: number): SharedArrayBuffer {
-    const totalBytes = 8 + numEvents * 32; // 8 bytes for header alignment
+  public allocateSharedMemory(numEventsOrBytes: number): SharedArrayBuffer {
+    const totalBytes = numEventsOrBytes > 255 ? numEventsOrBytes : 8 + numEventsOrBytes * 32;
     const sharedBuffer = new SharedArrayBuffer(totalBytes);
     if (this.workletNode) {
       this.workletNode.port.postMessage({

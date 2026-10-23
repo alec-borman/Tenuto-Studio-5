@@ -1,124 +1,159 @@
 import { ASTSerializer, AtomicEvent } from './ASTSerializer';
-import { Lexer, TokenType } from './lexer';
-import { Parser, Score, TopLevel, Measure, Assignment, EventNode, Chord, Tuplet, MacroCall, VoiceEvent, Euclidean } from './Parser';
-
-function gcd(a: number, b: number): number {
-  a = Math.abs(a);
-  b = Math.abs(b);
-  while (b !== 0) {
-    const temp = b;
-    b = a % b;
-    a = temp;
-  }
-  return a;
-}
-
-function addFractions(f1: { numerator: number, denominator: number }, f2: { numerator: number, denominator: number }) {
-  const num = f1.numerator * f2.denominator + f2.numerator * f1.denominator;
-  const den = f1.denominator * f2.denominator;
-  const divisor = gcd(num, den);
-  return { numerator: num / divisor, denominator: den / divisor };
-}
-
-function fractionGreaterThan(f1: { numerator: number, denominator: number }, f2: { numerator: number, denominator: number }) {
-  return (f1.numerator * f2.denominator) > (f2.numerator * f1.denominator);
-}
+import { DocumentParser, CompiledScore } from './DocumentParser';
+import { Score } from './Parser';
 
 export class IncrementalCompiler {
   private cachedTokens: string[] = [];
-  private cachedEvents: any[] = [];
+  private cachedEvents: AtomicEvent[] = [];
+  private documentParser: DocumentParser;
+  private lastCompiledScore: CompiledScore | null = null;
   public lastScore: Score | null = null;
 
-  constructor(private serializer: ASTSerializer) {}
-
-  public update(newSourceCode: string): any[] {
-    const lexer = new Lexer(newSourceCode);
-    const parser = new Parser(lexer.tokenize());
-    const score = parser.parse();
-    this.lastScore = score;
-    return this.linearizeEvents(score);
+  constructor(private serializer: ASTSerializer) {
+    this.documentParser = new DocumentParser();
   }
 
-  public linearizeEvents(score: Score): any[] {
-    const events: any[] = [];
-    const newCachedEvents: any[] = [];
-    
-    // We linearly process assignments across top level and measures
-    const assignments: Assignment[] = [];
+  private gcd(a: number, b: number): number {
+    let x = Math.abs(Math.round(a));
+    let y = Math.abs(Math.round(b));
+    while (y !== 0) {
+      const t = y;
+      y = x % y;
+      x = t;
+    }
+    return x || 1;
+  }
 
-    for (const tl of score.topLevels) {
-      if (tl instanceof Measure) {
-        for (const logic of tl.logic) {
-           if (logic instanceof Assignment) {
-              assignments.push(logic);
-           }
-        }
-      } else if (tl instanceof Assignment) {
-        assignments.push(tl);
-      }
+  private addFractions(
+    a: { numerator: number; denominator: number },
+    b: { numerator: number; denominator: number }
+  ): { numerator: number; denominator: number } {
+    const num = a.numerator * b.denominator + b.numerator * a.denominator;
+    const den = a.denominator * b.denominator;
+    const div = this.gcd(num, den);
+    return { numerator: num / div, denominator: den / div };
+  }
+
+  public getLastCompiledScore(): CompiledScore | null {
+    return this.lastCompiledScore;
+  }
+
+  public compileDocument(sourceCode: string): CompiledScore {
+    const score = this.documentParser.compile(sourceCode);
+    this.lastCompiledScore = score;
+    return score;
+  }
+
+  public update(newSourceCode: string): AtomicEvent[] {
+    const sanitized = this.documentParser.sanitizeLLMInput(newSourceCode);
+
+    // Route full Tenuto 5.0 documents, chords, Euclidean patterns, or multi-line scores to DocumentParser
+    if (
+      this.documentParser.isFullDocument(sanitized) ||
+      sanitized.includes('\n') ||
+      sanitized.includes('[') ||
+      sanitized.includes('(')
+    ) {
+      const score = this.documentParser.compile(sanitized);
+      this.lastCompiledScore = score;
+      return score.events;
     }
 
-    let defaultFrac = { numerator: 0, denominator: 1 };
-    
-    for (const assignment of assignments) {
-      const trackId = assignment.trackId || 'default';
-      
-      const processVoice = (voice: any, startFrac: { numerator: number, denominator: number }): { numerator: number, denominator: number } => {
-         let localFrac = { ...startFrac };
-         for (const ev of voice.events) {
-            if (ev instanceof EventNode || ev instanceof Tuplet || ev instanceof Euclidean) {
-               try {
-                 const serializedTok = ev.serialize();
-                 const cacheKey = `${trackId}-${serializedTok}`;
-                 
-                 let atomicRaw: any;
-                 const cachedIndex = this.cachedTokens.indexOf(cacheKey);
-                 if (cachedIndex !== -1) {
-                    atomicRaw = this.cachedEvents[cachedIndex];
-                    // Update temporal position dynamically on the cached item
-                    atomicRaw.startTime = { ...localFrac };
-                 } else {
-                    const pitchLit = (ev as EventNode).pitchLit || 'r';
-                    const durRaw = (ev as EventNode).duration ? ':' + (ev as EventNode).duration?.raw : ':4';
-                 
-                    atomicRaw = this.serializer.parseToken(pitchLit + durRaw);
-                    atomicRaw.astNodeId = ev.astNodeId;
-                    atomicRaw.rawToken = serializedTok;
-                    atomicRaw.trackId = trackId;
-                    atomicRaw.startTime = { ...localFrac };
-                 }
-                 
-                 newCachedEvents.push(atomicRaw);
-                 this.cachedTokens.push(cacheKey);
-                 
-                 // If not a grace note, increment 
-                 if (!atomicRaw.duration.isGrace) {
-                    localFrac = addFractions(localFrac, atomicRaw.duration);
-                 }
-                 
-                 events.push(atomicRaw);
-               } catch (e) {
-                 // Ignore unsupported serialization or parsing bounds 
-               }
-            }
-         }
-         return localFrac;
+    const trackMatch = sanitized.match(/^([a-zA-Z0-9_]+):\s+(.*)$/);
+    const trackId = trackMatch ? trackMatch[1] : 'pno';
+    const eventsSequence = (trackMatch ? trackMatch[2] : sanitized).trim();
+
+    if (!eventsSequence) {
+      this.cachedTokens = [];
+      this.cachedEvents = [];
+      this.lastCompiledScore = {
+        version: '5.0',
+        meta: {
+          title: 'Sketch',
+          tempo: 120,
+          time: '4/4',
+          sidechain: null,
+          autoPadVoices: true,
+        },
+        defs: [
+          {
+            id: trackId,
+            name: trackId.toUpperCase(),
+            style: 'standard',
+            patch: 'salamander_grand',
+            volume: 100,
+            pan: 0,
+            fx: [],
+          },
+        ],
+        events: [],
+        diagnostics: [],
       };
+      return [];
+    }
 
-      if (assignment.singleVoice) {
-         defaultFrac = processVoice(assignment.singleVoice, defaultFrac);
-      } else if (assignment.voiceGroup) {
-         let maxVoiceFrac = { ...defaultFrac };
-         for (const voice of assignment.voiceGroup.voices) {
-            const endFrac = processVoice(voice, defaultFrac);
-            if (fractionGreaterThan(endFrac, maxVoiceFrac)) maxVoiceFrac = endFrac;
-         }
-         defaultFrac = maxVoiceFrac; // Advance global cursor to the end of the voice group block
+    const tokens = eventsSequence
+      .split(/\s+/)
+      .filter((t) => Boolean(t) && t !== '<[' && t !== ']>' && t !== '|');
+
+    // Pre-validate all tokens first so partial syntax errors (e.g. trailing "f:" or "?unknown") throw before mutating cache
+    const validationSerializer = new ASTSerializer();
+    for (const token of tokens) {
+      validationSerializer.parseToken(token);
+    }
+
+    let cursorTime = { numerator: 0, denominator: 1 };
+
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      let event: AtomicEvent;
+
+      if (this.cachedTokens[i] === token && this.cachedEvents[i]) {
+        event = this.cachedEvents[i];
+        event.startTime = { ...cursorTime };
+      } else {
+        event = this.serializer.parseToken(token);
+        event.rawToken = token;
+        event.trackId = trackId;
+        event.startTime = { ...cursorTime };
+
+        this.cachedTokens[i] = token;
+        this.cachedEvents[i] = event;
+      }
+
+      if (!event.duration.isGrace) {
+        cursorTime = this.addFractions(cursorTime, event.duration);
       }
     }
 
-    this.cachedTokens = newCachedEvents.map(e => `${e.trackId}-${e.rawToken}`);
-    this.cachedEvents = newCachedEvents;
-    return events;
+    this.cachedTokens.length = tokens.length;
+    this.cachedEvents.length = tokens.length;
+
+    const resultEvents = [...this.cachedEvents];
+    this.lastCompiledScore = {
+      version: '5.0',
+      meta: {
+        title: 'Sketch',
+        tempo: 120,
+        time: '4/4',
+        sidechain: null,
+        autoPadVoices: true,
+      },
+      defs: [
+        {
+          id: trackId,
+          name: trackId.toUpperCase(),
+          style: 'standard',
+          patch: 'salamander_grand',
+          volume: 100,
+          pan: 0,
+          fx: [],
+        },
+      ],
+      events: resultEvents,
+      diagnostics: [],
+    };
+
+    return resultEvents;
   }
 }

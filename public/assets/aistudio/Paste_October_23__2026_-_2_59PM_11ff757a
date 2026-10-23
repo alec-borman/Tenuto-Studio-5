@@ -1,0 +1,1231 @@
+You nailed the exact root cause across all three demo songs.
+
+In Contract #2, **all three multi-track presets (`Neon Horizon`, `Midnight Patio`, and `Glass Cathedral`) had 8 beats (two full 4/4 bars) stuffed inside each `measure` block**:
+
+* **Midnight Patio & Glass Cathedral:** Both had only `measure 1` written in the code, but inside `measure 1` there were 8 quarter-note beats (2 whole notes) of music—so 1 written measure played across **`M1` and `M2**`.
+* **Neon Horizon:** Had `measure 1` and `measure 2` written in the code, and *both* of them had 8 beats (2 whole notes) inside them (`pad` had two `:1` whole-note chords in `measure 1` and two `:1` whole-note chords in `measure 2`). Because the compiler started `measure 1` at `M1` and `measure 2` at `M2`:
+* `measure 1` played across **`M1` and `M2**`
+* `measure 2` started at **`M2`** (colliding with the second half of `measure 1`) and sustained all the way through **`M3`**!
+
+
+
+---
+
+### Unified Contract: Fix All Demo Score Measures + Browser Play Guard + macOS `.pkg` Electron Setup (`TDB-605`)
+
+Instead of running two separate contracts, here is a single combined contract that fixes:
+
+1. **All 3 Demo Songs (`src/presets/presetScores.ts`):** Every `measure N` block now contains **strictly 4 beats (1 whole note in 4/4)**—`Neon Horizon` is `measure 1` through `measure 4` (`M1`–`M4`), and `Midnight Patio` and `Glass Cathedral` are `measure 1` and `measure 2` (`M1`–`M2`), with zero spillover into an extra measure.
+2. **Dynamic Measure Overflow Protection (`src/parser/DocumentParser.ts`):** If pasted LLM code ever puts more than 4 beats inside a `measure` block, the compiler advances the timeline cursor past those beats so the next `measure` never overlaps it.
+3. **Browser Play Guard, Master Bus DSP & macOS `.pkg` Electron Files:** Wraps legacy `audioManager.initialize()` in a safe `try/catch`, adds the master compressor/sidechain/delay to `StudioAudioEngine.ts`, and adds `electron/main.cjs`, `electron-builder.json`, and `base: './'` in `vite.config.ts`.
+
+
+
+Paste this single contract into Google AI Studio:
+
+```markdown
+# Implementation Contract: Exact 4/4 Measure Alignment, Master DSP Bus & macOS .pkg Electron Setup (TDB-605)
+
+**Project:** Tenuto Studio 5
+**Scope:** Fix all multi-track preset scores in `src/presets/presetScores.ts` so every `measure N` block contains strictly 4 beats (1 whole note in `4/4`) with zero spillover into extra measures; update `src/parser/DocumentParser.ts` so overfilled measures advance `currentScoreTime` without overlapping subsequent measures; guard `audioManager.initialize()` in `src/components/SplitWorkspace.tsx`; upgrade `src/audio/StudioAudioEngine.ts` with a master compressor, sidechain ducking, and delay; and add `electron/main.cjs`, `electron-builder.json`, and `base: './'` in `vite.config.ts`.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+Currently, all three multi-track demo scores in `src/presets/presetScores.ts` pack 8 beats (2 full `4/4` bars) inside each `measure` block: `Glass Cathedral` and `Midnight Patio` have 1 written measure that spills across `M1` and `M2`, while `Neon Horizon` has 2 written measures (`measure 1` and `measure 2`) that each last 2 bars—causing `measure 1` (`M1`–`M2`) and `measure 2` (`M2`–`M3`) to overlap in `M2` and sustain through `M3`. Furthermore, `DocumentParser.ts` advances `measureStartTime` by a fixed 1-bar offset even if a measure contains >1 bar of notes.
+
+This contract:
+1. Rewrites `Neon Horizon` (`measure 1`–`measure 4`), `Midnight Patio` (`measure 1`–`measure 2`), and `Glass Cathedral` (`measure 1`–`measure 2`) in `src/presets/presetScores.ts` so every single voice in every `measure` block sums to **exactly 1 whole note (4 beats)**—eliminating measure spillover and overlap.
+2. Updates `src/parser/DocumentParser.ts` so `currentScoreTime` advances by `max(measureCapacity, maxVoiceDurationInMeasure)`.
+3. Wraps `await audioManager.initialize()` in a safe `try/catch` in `src/components/SplitWorkspace.tsx` and guards `app.canvas` in `src/components/WebGPUCanvas.tsx`.
+4. Upgrades `src/audio/StudioAudioEngine.ts` with a master `DynamicsCompressorNode`, kick-triggered sidechain ducking, tempo-synced stereo delay, and `.glide()`.
+5. Adds `base: './'` in `vite.config.ts`, `electron/main.cjs`, and `electron-builder.json` for native macOS `.pkg` installation.
+
+---
+
+## 2. Root Cause
+1. In `src/presets/presetScores.ts`, `Neon Horizon`, `Midnight Patio`, and `Glass Cathedral` each placed 2 whole notes (8 quarter-note beats) inside a single `measure` block.
+2. In `src/parser/DocumentParser.ts`, `measureStartTime` used `measureOffsetIndex * measureCapacity` rather than accumulating the actual duration consumed by each measure.
+3. In `src/components/SplitWorkspace.tsx`, `await audioManager.initialize()` is unguarded when `/TenutoProcessor.js` is absent in live browser/Electron environments.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/presets/presetScores.ts` - Strictly 4 Beats (1 Whole Note) Per Measure Across All Demo Scores
+Replace `src/presets/presetScores.ts` with the following implementation:
+
+```typescript
+export interface PresetScore {
+  id: string;
+  title: string;
+  genre: string;
+  code: string;
+}
+
+export const PRESET_SCORES: PresetScore[] = [
+  {
+    id: 'neon_horizon',
+    title: 'Neon Horizon (Synthwave)',
+    genre: '118 BPM',
+    code: `tenuto "5.0" {
+  %% Phase 1: Global Score Configuration
+  meta @{ title: "Neon Horizon", tempo: 118, time: "4/4", sidechain: "drums" }
+
+  %% Phase 2: Instrument Definitions
+  def lead "Analog Brass Lead" style=synth patch="saw_lead"
+  def pad "Juno Chorus Pad" style=synth patch="warm_pad"
+  def bass "Rolling Arp Bass" style=synth patch="808_sub"
+  def drums "Linn 808 Kit" style=grid patch="tenuto_808_kit"
+
+  %% Phase 3: Musical Timeline (Strictly 4 Beats / 1 Whole Note per Measure)
+  measure 1 {
+    lead: r:4 a4:8.f c5:8 e5:8 a5:4. |
+    pad: [a3 c4 e4 g4]:1.fx(reverb, @{mix: 0.5}) |
+    bass: a1:8.stacc a2:8 a1:8 a2:8 a1:8 a2:8 a1:8 a2:8 |
+    drums: <[ v1: k:4 r:4 k:4 r:4 | v2: r:4 s:4 r:4 s:4 | v3: h:8 h:8 h:8 h:8 h:8 h:8 h:8 oh:8 ]>
+  }
+
+  measure 2 {
+    lead: g5:8 e5:4 d5:8 c5:8 d5:4. |
+    pad: [f3 a3 c4 e4]:1 |
+    bass: f1:8.stacc f2:8 f1:8 f2:8 f1:8 f2:8 g1:8 g2:8 |
+    drums: <[ v1: k:4 r:8 k:8 r:4 r:4 | v2: r:4 s:4 r:4 s:4 | v3: h:8 h:8 h:8 h:8 h:8 h:8 h:8 oh:8 ]>
+  }
+
+  measure 3 {
+    lead: e5:4. d5:8 c5:4 a4:4 |
+    pad: [c3 e3 g3 b3]:1 |
+    bass: c2:8.stacc c3:8 c2:8 c3:8 c2:8 c3:8 c2:8 c3:8 |
+    drums: <[ v1: k:4 r:4 k:4 r:4 | v2: r:4 s:4 r:4 s:4 | v3: h:8 h:8 h:8 h:8 h:8 h:8 h:8 h:8 ]>
+  }
+
+  measure 4 {
+    lead: g4:2. r:4 |
+    pad: [g2 b2 d3 f#3]:1 |
+    bass: g1:8.stacc g2:8 g1:8 g2:8 g1:8 g2:8 b1:8 b2:8 |
+    drums: <[ v1: k:4 k:8 r:8 k:4 r:4 | v2: r:4 s:4 r:4 s:8 s:8 | v3: h:8 h:8 h:8 h:8 h:8 h:8 oh:4 ]>
+  }
+}`,
+  },
+  {
+    id: 'lofi_rain',
+    title: 'Midnight Patio (Lo-Fi Groove)',
+    genre: '86 BPM',
+    code: `tenuto "5.0" {
+  meta @{ title: "Midnight Patio", tempo: 86, time: "4/4" }
+
+  def pno "Felt Grand Piano" style=standard patch="salamander_grand"
+  def bass "Warm Sub Bass" style=synth patch="808_sub"
+  def drums "Dusty Kit" style=grid patch="tenuto_808_kit"
+
+  measure 1 {
+    pno: <[ v1: r:8 a4:8.mf c5:8 e5:8 g5:4 f5:8 e5:8 | v2: [d3 f3 a3 c4]:2.fx(reverb, @{mix: 0.4}) [g2 b2 d3 f3]:2 ]>
+    bass: d2:4. r:8 g1:2 |
+    drums: <[ v1: k:4 r:8 k:8 r:2 | v2: r:4 s:4.pull(12ms) r:4 s:4.pull(12ms) | v3: h:8 h:8 h:8 h:8 h:8 h:8 h:8 h:8 ]>
+  }
+
+  measure 2 {
+    pno: <[ v1: d5:4. c5:8 a4:2 | v2: [c3 e3 g3 b3]:2 [a2 c#3 e3 g3]:2 ]>
+    bass: c2:4. g1:8 a1:2 |
+    drums: <[ v1: k:4 r:8 k:8 r:2 | v2: r:4 s:4.pull(12ms) r:4 s:4.pull(12ms) | v3: h:8 h:8 h:8 h:8 h:8 h:8 h:8 oh:8 ]>
+  }
+}`,
+  },
+  {
+    id: 'glass_cathedral',
+    title: 'Glass Cathedral (Chamber Arpeggios)',
+    genre: '108 BPM',
+    code: `tenuto "5.0" {
+  meta @{ title: "Glass Cathedral", tempo: 108, time: "4/4" }
+
+  def pno "Concert Grand" style=standard patch="salamander_grand"
+  def strings "Chamber Strings" style=synth patch="warm_pad"
+
+  measure 1 {
+    pno: <[ v1: c4:16 g4 c5 d5 e5 d5 c5 g4 c4:16 g4 c5 d5 e5 d5 c5 g4 | v2: [c2 c3]:1 ]>
+    strings: [c4 e4 g4]:1.p |
+  }
+
+  measure 2 {
+    pno: <[ v1: a3:16 e4 a4 b4 c5 b4 a4 e4 f3:16 c4 f4 g4 a4 g4 f4 c4 | v2: [a1 a2]:2 [f1 f2]:2 ]>
+    strings: [a3 c4 e4]:2.p [f3 a3 c4]:2 |
+  }
+}`,
+  },
+  {
+    id: 'minimal_sketch',
+    title: 'Minimal Piano Sketch (Default)',
+    genre: '120 BPM',
+    code: 'pno: c4:4',
+  },
+];
+
+```
+
+### 3.2 `src/parser/DocumentParser.ts` - Advance Measure Cursor Dynamically to Prevent Measure Collisions
+
+In `src/parser/DocumentParser.ts`, replace the measure parsing loop (section `// 6. Parse measure blocks...` to the end of `compile()`) with the following implementation so `currentScoreTime` advances by `max(measureCapacity, maxVoiceDurationInMeasure)`:
+
+```typescript
+    // 6. Parse measure blocks and maintain per-track/voice sticky serializers across measures
+    const trackSerializers = new Map<string, ASTSerializer>();
+    const getSerializer = (key: string): ASTSerializer => {
+      if (!trackSerializers.has(key)) {
+        trackSerializers.set(key, new ASTSerializer());
+      }
+      return trackSerializers.get(key)!;
+    };
+
+    const [beatsStr, beatTypeStr] = (meta.time || '4/4').split('/');
+    const capNum = parseInt(beatsStr, 10) || 4;
+    const capDen = parseInt(beatTypeStr, 10) || 4;
+    const capDiv = this.gcd(capNum, capDen);
+    const measureCapacity = {
+      numerator: capNum / capDiv,
+      denominator: capDen / capDiv,
+    };
+
+    const measureHeaderRegex = /\bmeasure\s+(\d+)(?:\s*-\s*(\d+))?\s*\{/gi;
+    let measureMatch: RegExpExecArray | null;
+    let currentScoreTime = { numerator: 0, denominator: 1 };
+
+    while ((measureMatch = measureHeaderRegex.exec(cleanSource)) !== null) {
+      const startNum = parseInt(measureMatch[1], 10);
+      const endNum = measureMatch[2] ? parseInt(measureMatch[2], 10) : startNum;
+      const bodyStartIdx = measureMatch.index + measureMatch[0].length;
+      let braceDepth = 1;
+      let cursor = bodyStartIdx;
+      let inQuotes = false;
+
+      while (cursor < cleanSource.length && braceDepth > 0) {
+        const ch = cleanSource[cursor];
+        if (ch === '"' && cleanSource[cursor - 1] !== '\\') {
+          inQuotes = !inQuotes;
+        } else if (!inQuotes) {
+          if (ch === '{') braceDepth++;
+          else if (ch === '}') braceDepth--;
+        }
+        cursor++;
+      }
+
+      const measureBody = cleanSource.slice(bodyStartIdx, cursor - 1);
+      measureHeaderRegex.lastIndex = cursor;
+
+      for (let mNum = startNum; mNum <= endNum; mNum++) {
+        const measureStartTime = { ...currentScoreTime };
+        let maxVoiceDurationInMeasure = { ...measureCapacity };
+
+        const assignmentRegex = /^\s*([a-zA-Z0-9_]+)\s*:\s+(<\[[\s\S]*?\]>|[^\n]+)$/gm;
+        let assignMatch: RegExpExecArray | null;
+
+        while ((assignMatch = assignmentRegex.exec(measureBody)) !== null) {
+          const trackId = assignMatch[1].trim();
+          const rhs = assignMatch[2].trim();
+
+          if (!defsMap.has(trackId)) {
+            const inferredStyle =
+              /^(drum|drums|kit|perc|808_kit)$/i.test(trackId)
+                ? 'grid'
+                : /^(synth|lead|pad|bass|sub|arp|808)$/i.test(trackId)
+                  ? 'synth'
+                  : 'standard';
+            defsMap.set(trackId, {
+              id: trackId,
+              name: trackId.toUpperCase(),
+              style: inferredStyle,
+              patch:
+                inferredStyle === 'synth'
+                  ? 'saw_lead'
+                  : inferredStyle === 'grid'
+                    ? 'tenuto_808_kit'
+                    : 'salamander_grand',
+              volume: trackVolumes.get(trackId) ?? 100,
+              pan: 0,
+              fx: [],
+            });
+          }
+
+          const trackDef = defsMap.get(trackId)!;
+
+          if (rhs.startsWith('<[') && rhs.endsWith(']>')) {
+            const innerVoices = rhs
+              .slice(2, -2)
+              .split('|')
+              .map((s) => s.trim())
+              .filter(Boolean);
+            innerVoices.forEach((voiceSegment, vIdx) => {
+              const voiceLabelMatch = voiceSegment.match(/^([a-zA-Z0-9_]+)\s*:\s+([\s\S]*)$/);
+              const voiceId = voiceLabelMatch ? voiceLabelMatch[1] : `v${vIdx + 1}`;
+              const tokenStream = voiceLabelMatch ? voiceLabelMatch[2] : voiceSegment;
+              const serializer = getSerializer(`${trackId}:${voiceId}`);
+              const tokens = this.tokenizeVoiceStream(tokenStream);
+              const { events, totalDuration } = this.parseVoiceTokensToEvents(
+                tokens,
+                serializer,
+                trackDef,
+                mNum,
+                voiceId,
+                measureStartTime,
+                macros
+              );
+              allEvents.push(...events);
+              if (
+                totalDuration.numerator * maxVoiceDurationInMeasure.denominator >
+                maxVoiceDurationInMeasure.numerator * totalDuration.denominator
+              ) {
+                maxVoiceDurationInMeasure = totalDuration;
+              }
+            });
+          } else {
+            const cleanRhs = rhs.replace(/\|$/, '').trim();
+            const serializer = getSerializer(`${trackId}:v1`);
+            const tokens = this.tokenizeVoiceStream(cleanRhs);
+            const { events, totalDuration } = this.parseVoiceTokensToEvents(
+              tokens,
+              serializer,
+              trackDef,
+              mNum,
+              'v1',
+              measureStartTime,
+              macros
+            );
+            allEvents.push(...events);
+            if (
+              totalDuration.numerator * maxVoiceDurationInMeasure.denominator >
+              maxVoiceDurationInMeasure.numerator * totalDuration.denominator
+            ) {
+              maxVoiceDurationInMeasure = totalDuration;
+            }
+          }
+        }
+
+        currentScoreTime = this.addFractions(measureStartTime, maxVoiceDurationInMeasure);
+      }
+    }
+
+    return {
+      version,
+      meta,
+      defs: Array.from(defsMap.values()),
+      events: allEvents,
+      diagnostics,
+    };
+
+```
+
+### 3.3 `src/components/SplitWorkspace.tsx` - Guard `audioManager.initialize()` in `handleTogglePlay`
+
+In `src/components/SplitWorkspace.tsx`, update `handleTogglePlay` so `audioManager.initialize()` is wrapped in a `try/catch` block:
+
+```typescript
+  const handleTogglePlay = async () => {
+    if (!isAudioInitialized.current) {
+      isAudioInitialized.current = true;
+      try {
+        await audioManager.initialize();
+      } catch {
+        // In live browser / Electron environments without a root TenutoProcessor.js file,
+        // continue seamlessly to StudioAudioEngine playback.
+      }
+    }
+
+    const nextPlaying = !isPlaying;
+    setIsPlaying(nextPlaying);
+
+    if (nextPlaying) {
+      try {
+        await playbackOrchestrator.compileAndPlay(compiledEvents);
+      } catch {
+        // Fallback if >255 events in legacy buffer
+      }
+      const compiledScore =
+        incrementalCompiler.getLastCompiledScore() || incrementalCompiler.compileDocument(sourceCode);
+      try {
+        await studioAudio.playScore(compiledScore);
+      } catch {
+        // Ignore WebAudio mock absence in headless JSDOM tests
+      }
+    } else {
+      studioAudio.stop();
+    }
+  };
+
+```
+
+### 3.4 `src/components/WebGPUCanvas.tsx` - Safely Guard `app.canvas` Getter in `initPromise.then()`
+
+In `src/components/WebGPUCanvas.tsx`, wrap the `app.canvas` access inside `initPromise.then()` in a `try/catch` block so headless JSDOM tests never log an uninitialized renderer warning:
+
+```typescript
+    initPromise
+      .then(() => {
+        if (!isMounted || appRef.current !== app) return;
+        try {
+          if (containerRef.current && app.canvas) {
+            app.canvas.style.position = 'absolute';
+            app.canvas.style.opacity = '0.01';
+            app.canvas.style.pointerEvents = 'none';
+            containerRef.current.appendChild(app.canvas);
+          }
+        } catch {
+          // Ignore uninitialized canvas getter in headless JSDOM
+        }
+        renderEvents();
+      })
+      .catch(console.error);
+
+```
+
+### 3.5 `src/audio/StudioAudioEngine.ts` - Add Master Bus Compressor, Sidechain Ducking, Delay FX & Glide
+
+Replace `src/audio/StudioAudioEngine.ts` with the upgraded studio audio engine:
+
+```typescript
+import { CompiledScore, TrackDefinition } from '../parser/DocumentParser';
+
+export interface PlaybackProgress {
+  isPlaying: boolean;
+  currentQuarterBeat: number;
+  totalQuarterBeats: number;
+  currentTimeSec: number;
+  totalDurationSec: number;
+}
+
+export class StudioAudioEngine {
+  private ctx: AudioContext | null = null;
+  private masterGain: GainNode | null = null;
+  private reverbNode: ConvolverNode | null = null;
+  private delayNode: DelayNode | null = null;
+  private activeNodes: Set<AudioNode> = new Set();
+  private rafId: number | null = null;
+  private startContextTime: number = 0;
+  private scoreDurationSec: number = 0;
+  private totalQuarterBeats: number = 4;
+  private tempoBpm: number = 120;
+  private isPlaying: boolean = false;
+  private isLooping: boolean = false;
+  private trackVolumes: Map<string, number> = new Map();
+  private mutedTracks: Set<string> = new Set();
+  private soloedTracks: Set<string> = new Set();
+
+  public onProgress?: (progress: PlaybackProgress) => void;
+
+  private setupMasterChain(ctx: BaseAudioContext): {
+    masterInput: GainNode;
+    reverbInput: ConvolverNode | null;
+    delayInput: DelayNode | null;
+  } {
+    const masterInput = ctx.createGain();
+    masterInput.gain.value = 0.85;
+
+    let outputTarget: AudioNode = ctx.destination;
+    if (typeof (ctx as any).createDynamicsCompressor === 'function') {
+      const comp = ctx.createDynamicsCompressor();
+      comp.threshold?.setValueAtTime?.(-14, ctx.currentTime || 0);
+      comp.knee?.setValueAtTime?.(18, ctx.currentTime || 0);
+      comp.ratio?.setValueAtTime?.(4, ctx.currentTime || 0);
+      comp.attack?.setValueAtTime?.(0.005, ctx.currentTime || 0);
+      comp.release?.setValueAtTime?.(0.18, ctx.currentTime || 0);
+      comp.connect(ctx.destination);
+      outputTarget = comp;
+    }
+
+    masterInput.connect(outputTarget);
+
+    let reverbInput: ConvolverNode | null = null;
+    if (typeof (ctx as any).createConvolver === 'function') {
+      reverbInput = this.createImpulseReverb(ctx, 2.2, 2.6);
+      const revWet = ctx.createGain();
+      revWet.gain.value = 0.28;
+      reverbInput.connect(revWet);
+      revWet.connect(masterInput);
+      if (ctx === this.ctx) {
+        this.reverbNode = reverbInput;
+      }
+    }
+
+    let delayInput: DelayNode | null = null;
+    if (typeof (ctx as any).createDelay === 'function') {
+      delayInput = ctx.createDelay(2.0);
+      delayInput.delayTime.value = 0.375;
+      const fb = ctx.createGain();
+      fb.gain.value = 0.32;
+      const dlyWet = ctx.createGain();
+      dlyWet.gain.value = 0.24;
+
+      delayInput.connect(fb);
+      fb.connect(delayInput);
+      delayInput.connect(dlyWet);
+      dlyWet.connect(masterInput);
+
+      if (ctx === this.ctx) {
+        this.delayNode = delayInput;
+      }
+    }
+
+    return { masterInput, reverbInput, delayInput };
+  }
+
+  private ensureContext(): AudioContext {
+    if (!this.ctx) {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      this.ctx = new AudioCtx();
+      const { masterInput } = this.setupMasterChain(this.ctx);
+      this.masterGain = masterInput;
+    }
+    return this.ctx;
+  }
+
+  private createImpulseReverb(ctx: BaseAudioContext, seconds: number, decay: number): ConvolverNode {
+    const convolver = ctx.createConvolver();
+    const rate = ctx.sampleRate;
+    const length = Math.floor(rate * seconds);
+    const impulse = ctx.createBuffer(2, length, rate);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = impulse.getChannelData(ch);
+      for (let i = 0; i < length; i++) {
+        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay);
+      }
+    }
+    convolver.buffer = impulse;
+    return convolver;
+  }
+
+  public setTrackVolume(trackId: string, volumeMidi: number): void {
+    this.trackVolumes.set(trackId, Math.max(0, Math.min(127, volumeMidi)));
+  }
+
+  public setLoop(loop: boolean): void {
+    this.isLooping = loop;
+  }
+
+  public calculateScoreDuration(score: CompiledScore): { totalQuarterBeats: number; totalSeconds: number } {
+    const tempo = score.meta?.tempo || 120;
+    const secPerWholeNote = (60 / tempo) * 4;
+    let maxWholeFraction = 0;
+
+    for (const ev of score.events) {
+      const start = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+      const dur = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
+      if (start + dur > maxWholeFraction) {
+        maxWholeFraction = start + dur;
+      }
+    }
+
+    if (maxWholeFraction === 0) maxWholeFraction = 0.25;
+    return {
+      totalQuarterBeats: maxWholeFraction * 4,
+      totalSeconds: maxWholeFraction * secPerWholeNote,
+    };
+  }
+
+  private renderScoreToContext(
+    targetCtx: BaseAudioContext,
+    destination: AudioNode,
+    reverbInput: AudioNode | null,
+    delayInput: DelayNode | null,
+    score: CompiledScore,
+    baseStartTime: number
+  ): void {
+    const tempo = score.meta?.tempo || 120;
+    const secPerWholeNote = (60 / tempo) * 4;
+
+    if (delayInput?.delayTime) {
+      const dottedEighthSec = Math.min(1.8, (60 / tempo) * 0.75);
+      delayInput.delayTime.setValueAtTime(dottedEighthSec, baseStartTime);
+    }
+
+    const defsById = new Map<string, TrackDefinition>();
+    for (const d of score.defs) {
+      defsById.set(d.id, d);
+    }
+
+    const sidechainSourceId = score.meta?.sidechain?.toLowerCase();
+    const sidechainHitTimes: number[] = [];
+    if (sidechainSourceId) {
+      for (const ev of score.events) {
+        const tId = (ev.trackId || '').toLowerCase();
+        if (tId === sidechainSourceId || ev.style === 'grid') {
+          const isKick = ev.pitch?.midi === 36 || ev.pitch?.gridKey === 'k' || ev.pitch?.gridKey === 'bd';
+          if (isKick) {
+            const stWhole = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+            sidechainHitTimes.push(baseStartTime + stWhole * secPerWholeNote);
+          }
+        }
+      }
+    }
+
+    const duckBus = targetCtx.createGain();
+    duckBus.gain.setValueAtTime(1.0, baseStartTime);
+    for (const hitTime of sidechainHitTimes) {
+      duckBus.gain.setValueAtTime(1.0, Math.max(baseStartTime, hitTime - 0.005));
+      duckBus.gain.linearRampToValueAtTime(0.32, hitTime + 0.015);
+      duckBus.gain.exponentialRampToValueAtTime(1.0, hitTime + 0.22);
+    }
+    duckBus.connect(destination);
+
+    for (let idx = 0; idx < score.events.length; idx++) {
+      const ev = score.events[idx];
+      if (!ev.pitch || ev.pitch.isRest || ev.pitch.isSpacer) continue;
+
+      const trackId = ev.trackId || 'pno';
+      if (this.soloedTracks.size > 0 && !this.soloedTracks.has(trackId)) continue;
+      if (this.mutedTracks.has(trackId)) continue;
+
+      const def = defsById.get(trackId);
+      const style = (ev.style || def?.style || 'standard').toLowerCase();
+      const patch = (ev.patch || def?.patch || 'salamander_grand').toLowerCase();
+
+      const trackVolMidi = this.trackVolumes.get(trackId) ?? def?.volume ?? 100;
+      const trackGainScalar = (trackVolMidi / 100) * 0.5;
+
+      const startWhole = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+      const durWhole = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
+
+      let startSec = baseStartTime + startWhole * secPerWholeNote;
+      if (ev.physics?.pullMs) startSec += ev.physics.pullMs / 1000;
+      if (ev.physics?.pushMs) startSec = Math.max(baseStartTime, startSec - ev.physics.pushMs / 1000);
+
+      let durSec = Math.max(0.04, durWhole * secPerWholeNote);
+      if (ev.physics?.articulation === 'stacc' || ev.physics?.articulation === 'staccato') {
+        durSec = Math.max(0.04, durSec * 0.42);
+      }
+
+      const velScalar = ((ev.physics?.velocity ?? 85) / 127) * trackGainScalar;
+      const panVal = ev.physics?.pan ?? def?.pan ?? 0;
+
+      const isDrumTrack = style === 'grid' || Boolean(ev.pitch.gridKey);
+      const targetBus = !isDrumTrack && sidechainHitTimes.length > 0 ? duckBus : destination;
+
+      let voiceOutput: AudioNode = targetBus;
+      if (typeof (targetCtx as any).createStereoPanner === 'function') {
+        const panner = targetCtx.createStereoPanner();
+        panner.pan.setValueAtTime(Math.max(-1, Math.min(1, panVal)), startSec);
+        panner.connect(targetBus);
+        voiceOutput = panner;
+      }
+
+      const hasReverb =
+        style === 'standard' ||
+        patch.includes('pad') ||
+        patch.includes('lead') ||
+        def?.fx?.includes('reverb') ||
+        ev.physics?.fx?.some((f) => f.type === 'reverb');
+
+      if (hasReverb && reverbInput) {
+        const send = targetCtx.createGain();
+        const customMix = ev.physics?.fx?.find((f) => f.type === 'reverb')?.params?.mix;
+        send.gain.value = typeof customMix === 'number' ? customMix : 0.35;
+        voiceOutput.connect(send);
+        send.connect(reverbInput);
+      }
+
+      const hasDelay =
+        patch.includes('lead') ||
+        def?.fx?.includes('delay') ||
+        ev.physics?.fx?.some((f) => f.type === 'delay');
+
+      if (hasDelay && delayInput) {
+        const dlySend = targetCtx.createGain();
+        const customMix = ev.physics?.fx?.find((f) => f.type === 'delay')?.params?.mix;
+        dlySend.gain.value = typeof customMix === 'number' ? customMix : 0.22;
+        voiceOutput.connect(dlySend);
+        dlySend.connect(delayInput);
+      }
+
+      let glideTargetFreq: number | undefined;
+      if (ev.physics?.glideMs) {
+        for (let nextIdx = idx + 1; nextIdx < score.events.length; nextIdx++) {
+          const candidate = score.events[nextIdx];
+          if (candidate.trackId === trackId && candidate.pitch?.frequency > 0) {
+            glideTargetFreq = candidate.pitch.frequency;
+            break;
+          }
+        }
+      }
+
+      if (isDrumTrack) {
+        this.scheduleDrumHit(targetCtx, voiceOutput, ev.pitch.gridKey || 'k', ev.pitch.midi, startSec, velScalar);
+      } else if (style === 'synth') {
+        this.scheduleSynthVoice(
+          targetCtx,
+          voiceOutput,
+          ev.pitch.frequency,
+          patch,
+          startSec,
+          durSec,
+          velScalar,
+          ev.physics?.glideMs,
+          glideTargetFreq
+        );
+      } else {
+        this.scheduleAcousticPianoVoice(targetCtx, voiceOutput, ev.pitch.frequency, startSec, durSec, velScalar);
+      }
+    }
+  }
+
+  private scheduleAcousticPianoVoice(
+    ctx: BaseAudioContext,
+    output: AudioNode,
+    freq: number,
+    startSec: number,
+    durSec: number,
+    amp: number
+  ): void {
+    const env = ctx.createGain();
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(Math.min(12000, freq * 7.5), startSec);
+    filter.frequency.exponentialRampToValueAtTime(Math.max(400, freq * 2.2), startSec + durSec);
+
+    const oscFund = ctx.createOscillator();
+    const oscHarm = ctx.createOscillator();
+    const oscWarm = ctx.createOscillator();
+
+    oscFund.type = 'triangle';
+    oscHarm.type = 'sine';
+    oscWarm.type = 'sawtooth';
+
+    oscFund.frequency.setValueAtTime(freq, startSec);
+    oscHarm.frequency.setValueAtTime(freq * 2, startSec);
+    oscWarm.frequency.setValueAtTime(freq, startSec);
+    oscWarm.detune.setValueAtTime(4, startSec);
+
+    const gFund = ctx.createGain();
+    const gHarm = ctx.createGain();
+    const gWarm = ctx.createGain();
+    gFund.gain.value = 0.65;
+    gHarm.gain.value = 0.2;
+    gWarm.gain.value = 0.15;
+
+    oscFund.connect(gFund);
+    oscHarm.connect(gHarm);
+    oscWarm.connect(gWarm);
+    gFund.connect(filter);
+    gHarm.connect(filter);
+    gWarm.connect(filter);
+    filter.connect(env);
+    env.connect(output);
+
+    const peak = Math.max(0.001, amp * 0.55);
+    const release = Math.min(0.28, durSec * 0.45);
+    env.gain.setValueAtTime(0.0001, startSec);
+    env.gain.linearRampToValueAtTime(peak, startSec + 0.008);
+    env.gain.exponentialRampToValueAtTime(Math.max(0.0005, peak * 0.45), startSec + durSec);
+    env.gain.exponentialRampToValueAtTime(0.0001, startSec + durSec + release);
+
+    const stopAt = startSec + durSec + release + 0.02;
+    oscFund.start(startSec);
+    oscHarm.start(startSec);
+    oscWarm.start(startSec);
+    oscFund.stop(stopAt);
+    oscHarm.stop(stopAt);
+    oscWarm.stop(stopAt);
+
+    this.activeNodes.add(oscFund);
+    this.activeNodes.add(oscHarm);
+    this.activeNodes.add(oscWarm);
+  }
+
+  private scheduleSynthVoice(
+    ctx: BaseAudioContext,
+    output: AudioNode,
+    freq: number,
+    patch: string,
+    startSec: number,
+    durSec: number,
+    amp: number,
+    glideMs?: number,
+    glideTargetFreq?: number
+  ): void {
+    const isSub = patch.includes('sub') || patch.includes('808') || freq < 130;
+    const isPad = patch.includes('pad') || patch.includes('string');
+
+    const env = ctx.createGain();
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+
+    if (isSub) {
+      filter.frequency.setValueAtTime(Math.min(600, freq * 3.5), startSec);
+      filter.frequency.exponentialRampToValueAtTime(Math.max(80, freq * 1.4), startSec + durSec);
+    } else if (isPad) {
+      filter.frequency.setValueAtTime(2400, startSec);
+    } else {
+      filter.frequency.setValueAtTime(4800, startSec);
+      filter.frequency.exponentialRampToValueAtTime(1400, startSec + durSec);
+    }
+
+    const osc1 = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+
+    osc1.type = isSub ? 'sine' : 'sawtooth';
+    osc2.type = isSub ? 'triangle' : isPad ? 'sawtooth' : 'square';
+
+    osc1.frequency.setValueAtTime(freq, startSec);
+    osc2.frequency.setValueAtTime(freq, startSec);
+    osc2.detune.setValueAtTime(isPad ? 10 : isSub ? 2 : 7, startSec);
+
+    if (glideMs && glideTargetFreq && glideTargetFreq > 0) {
+      osc1.frequency.exponentialRampToValueAtTime(glideTargetFreq, startSec + durSec);
+      osc2.frequency.exponentialRampToValueAtTime(glideTargetFreq, startSec + durSec);
+    }
+
+    const mix1 = ctx.createGain();
+    const mix2 = ctx.createGain();
+    mix1.gain.value = 0.6;
+    mix2.gain.value = 0.4;
+
+    osc1.connect(mix1);
+    osc2.connect(mix2);
+    mix1.connect(filter);
+    mix2.connect(filter);
+    filter.connect(env);
+    env.connect(output);
+
+    const attack = isPad ? Math.min(0.12, durSec * 0.3) : 0.01;
+    const release = isPad ? 0.35 : 0.12;
+    const peak = Math.max(0.001, amp * (isSub ? 0.65 : isPad ? 0.32 : 0.42));
+
+    env.gain.setValueAtTime(0.0001, startSec);
+    env.gain.linearRampToValueAtTime(peak, startSec + attack);
+    env.gain.setValueAtTime(peak * 0.8, startSec + Math.max(attack, durSec - 0.02));
+    env.gain.exponentialRampToValueAtTime(0.0001, startSec + durSec + release);
+
+    const stopAt = startSec + durSec + release + 0.02;
+    osc1.start(startSec);
+    osc2.start(startSec);
+    osc1.stop(stopAt);
+    osc2.stop(stopAt);
+
+    this.activeNodes.add(osc1);
+    this.activeNodes.add(osc2);
+  }
+
+  private scheduleDrumHit(
+    ctx: BaseAudioContext,
+    output: AudioNode,
+    gridKey: string,
+    midi: number,
+    startSec: number,
+    amp: number
+  ): void {
+    const key = gridKey.toLowerCase();
+
+    if (key === 'k' || key === 'bd' || key === 'kick' || midi === 36) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(145, startSec);
+      osc.frequency.exponentialRampToValueAtTime(38, startSec + 0.12);
+      gain.gain.setValueAtTime(Math.max(0.001, amp * 0.9), startSec);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.28);
+      osc.connect(gain);
+      gain.connect(output);
+      osc.start(startSec);
+      osc.stop(startSec + 0.3);
+      this.activeNodes.add(osc);
+      return;
+    }
+
+    if (key === 's' || key === 'sd' || key === 'snare' || key === 'cp' || key === 'clap' || midi === 38 || midi === 39) {
+      const noiseLen = Math.floor(ctx.sampleRate * 0.2);
+      const noiseBuf = ctx.createBuffer(1, noiseLen, ctx.sampleRate);
+      const data = noiseBuf.getChannelData(0);
+      for (let i = 0; i < noiseLen; i++) {
+        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / noiseLen, 1.8);
+      }
+      const noise = ctx.createBufferSource();
+      noise.buffer = noiseBuf;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'highpass';
+      filter.frequency.setValueAtTime(650, startSec);
+
+      const nGain = ctx.createGain();
+      nGain.gain.setValueAtTime(Math.max(0.001, amp * 0.65), startSec);
+      nGain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.19);
+
+      noise.connect(filter);
+      filter.connect(nGain);
+      nGain.connect(output);
+      noise.start(startSec);
+
+      const bodyOsc = ctx.createOscillator();
+      const bodyGain = ctx.createGain();
+      bodyOsc.type = 'triangle';
+      bodyOsc.frequency.setValueAtTime(185, startSec);
+      bodyOsc.frequency.exponentialRampToValueAtTime(95, startSec + 0.08);
+      bodyGain.gain.setValueAtTime(Math.max(0.001, amp * 0.45), startSec);
+      bodyGain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.1);
+      bodyOsc.connect(bodyGain);
+      bodyGain.connect(output);
+      bodyOsc.start(startSec);
+      bodyOsc.stop(startSec + 0.12);
+
+      this.activeNodes.add(noise);
+      this.activeNodes.add(bodyOsc);
+      return;
+    }
+
+    const isOpen = key === 'oh' || midi === 46;
+    const hatDur = isOpen ? 0.28 : 0.065;
+    const bufLen = Math.floor(ctx.sampleRate * hatDur);
+    const hatBuf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+    const chData = hatBuf.getChannelData(0);
+    for (let i = 0; i < bufLen; i++) {
+      chData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufLen, isOpen ? 1.6 : 3.2);
+    }
+    const hatSrc = ctx.createBufferSource();
+    hatSrc.buffer = hatBuf;
+
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.setValueAtTime(6500, startSec);
+
+    const hatGain = ctx.createGain();
+    hatGain.gain.setValueAtTime(Math.max(0.001, amp * 0.45), startSec);
+    hatGain.gain.exponentialRampToValueAtTime(0.0001, startSec + hatDur);
+
+    hatSrc.connect(hp);
+    hp.connect(hatGain);
+    hatGain.connect(output);
+    hatSrc.start(startSec);
+    this.activeNodes.add(hatSrc);
+  }
+
+  public async playScore(score: CompiledScore): Promise<void> {
+    this.stop(false);
+
+    const ctx = this.ensureContext();
+    if (ctx.state === 'suspended') {
+      await ctx.resume();
+    }
+
+    const { totalQuarterBeats, totalSeconds } = this.calculateScoreDuration(score);
+    this.totalQuarterBeats = totalQuarterBeats;
+    this.scoreDurationSec = totalSeconds;
+    this.tempoBpm = score.meta?.tempo || 120;
+    this.isPlaying = true;
+
+    const baseStart = ctx.currentTime + 0.04;
+    this.startContextTime = baseStart;
+
+    this.renderScoreToContext(ctx, this.masterGain!, this.reverbNode, this.delayNode, score, baseStart);
+
+    const tickProgress = () => {
+      if (!this.isPlaying || !this.ctx) return;
+      const elapsed = Math.max(0, this.ctx.currentTime - this.startContextTime);
+      const currentBeat = (elapsed / 60) * this.tempoBpm;
+
+      if (elapsed >= this.scoreDurationSec) {
+        if (this.isLooping) {
+          this.playScore(score);
+          return;
+        }
+        this.stop(true);
+        return;
+      }
+
+      this.onProgress?.({
+        isPlaying: true,
+        currentQuarterBeat: currentBeat,
+        totalQuarterBeats: this.totalQuarterBeats,
+        currentTimeSec: elapsed,
+        totalDurationSec: this.scoreDurationSec,
+      });
+
+      this.rafId = requestAnimationFrame(tickProgress);
+    };
+
+    this.rafId = requestAnimationFrame(tickProgress);
+  }
+
+  public stop(notify: boolean = true): void {
+    this.isPlaying = false;
+    if (this.rafId !== null) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
+
+    for (const node of this.activeNodes) {
+      try {
+        (node as any).stop?.();
+        node.disconnect();
+      } catch {
+        // Ignore already stopped nodes
+      }
+    }
+    this.activeNodes.clear();
+
+    if (notify) {
+      this.onProgress?.({
+        isPlaying: false,
+        currentQuarterBeat: 0,
+        totalQuarterBeats: this.totalQuarterBeats,
+        currentTimeSec: 0,
+        totalDurationSec: this.scoreDurationSec,
+      });
+    }
+  }
+
+  public async exportWavBlob(score: CompiledScore): Promise<Blob> {
+    const { totalSeconds } = this.calculateScoreDuration(score);
+    const renderDuration = Math.min(180, Math.max(2, totalSeconds + 1.2));
+    const sampleRate = 44100;
+    const totalFrames = Math.ceil(renderDuration * sampleRate);
+
+    const OfflineCtx = window.OfflineAudioContext || (window as any).webkitOfflineAudioContext;
+    const offlineCtx: OfflineAudioContext = new OfflineCtx(2, totalFrames, sampleRate);
+
+    const { masterInput, reverbInput, delayInput } = this.setupMasterChain(offlineCtx);
+    this.renderScoreToContext(offlineCtx, masterInput, reverbInput, delayInput, score, 0.05);
+    const renderedBuffer = await offlineCtx.startRendering();
+    return this.audioBufferToWavBlob(renderedBuffer);
+  }
+
+  private audioBufferToWavBlob(buffer: AudioBuffer): Blob {
+    const numCh = buffer.numberOfChannels;
+    const sampleRate = buffer.sampleRate;
+    const numFrames = buffer.length;
+    const bytesPerSample = 2;
+    const blockAlign = numCh * bytesPerSample;
+    const dataBytes = numFrames * blockAlign;
+    const arrayBuffer = new ArrayBuffer(44 + dataBytes);
+    const view = new DataView(arrayBuffer);
+
+    const writeStr = (offset: number, str: string) => {
+      for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    };
+
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataBytes, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numCh, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, dataBytes, true);
+
+    const channels: Float32Array[] = [];
+    for (let ch = 0; ch < numCh; ch++) {
+      channels.push(buffer.getChannelData(ch));
+    }
+
+    let offset = 44;
+    for (let i = 0; i < numFrames; i++) {
+      for (let ch = 0; ch < numCh; ch++) {
+        const s = Math.max(-1, Math.min(1, channels[ch][i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+        offset += 2;
+      }
+    }
+
+    return new Blob([arrayBuffer], { type: 'audio/wav' });
+  }
+}
+
+```
+
+### 3.6 `vite.config.ts`, `electron/main.cjs` & `electron-builder.json` - Native macOS `.pkg` Packaging Setup
+
+1. Add `base: './',` to `vite.config.ts`.
+2. Create `electron/main.cjs`:
+
+```javascript
+const { app, BrowserWindow, session } = require('electron');
+const path = require('path');
+
+app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+
+function createMainWindow() {
+  const mainWindow = new BrowserWindow({
+    width: 1480,
+    height: 920,
+    minWidth: 1024,
+    minHeight: 680,
+    backgroundColor: '#020617',
+    title: 'Tenuto Studio 5',
+    autoHideMenuBar: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  });
+
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Cross-Origin-Opener-Policy': ['same-origin'],
+        'Cross-Origin-Embedder-Policy': ['require-corp'],
+      },
+    });
+  });
+
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+  if (devServerUrl) {
+    mainWindow.loadURL(devServerUrl);
+  } else {
+    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+  }
+}
+
+app.whenReady().then(() => {
+  createMainWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createMainWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+```
+
+3. Create `electron-builder.json`:
+
+```json
+{
+  "appId": "com.tenuto.studio5",
+  "productName": "Tenuto Studio 5",
+  "directories": {
+    "output": "release"
+  },
+  "extraMetadata": {
+    "main": "electron/main.cjs",
+    "version": "5.0.0"
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*"
+  ],
+  "mac": {
+    "category": "public.app-category.music",
+    "target": [
+      "pkg"
+    ],
+    "darkModeSupport": true
+  },
+  "pkg": {
+    "installLocation": "/Applications",
+    "allowAnywhere": false,
+    "allowCurrentUserHome": false,
+    "allowRootDirectory": true,
+    "isRelocatable": false
+  }
+}
+
+```
+
+### 3.7 `tests/studio_engine_and_ui.test.tsx` - Verify Exact Measure Counts & Beat Totals for All Presets
+
+Add an assertion in `tests/studio_engine_and_ui.test.tsx` verifying that `Neon Horizon` is exactly 16 quarter beats (4 measures of 4/4), `Midnight Patio` is 8 quarter beats (2 measures of 4/4), and `Glass Cathedral` is 8 quarter beats (2 measures of 4/4), with zero spillover into an extra measure:
+
+```typescript
+  it('ensures every multi-track preset matches its exact written measure count with zero spillover', () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+
+    const neon = parser.compile(PRESET_SCORES.find((p) => p.id === 'neon_horizon')!.code);
+    expect(engine.calculateScoreDuration(neon).totalQuarterBeats).toBe(16); // 4 written measures * 4 beats
+
+    const lofi = parser.compile(PRESET_SCORES.find((p) => p.id === 'lofi_rain')!.code);
+    expect(engine.calculateScoreDuration(lofi).totalQuarterBeats).toBe(8); // 2 written measures * 4 beats
+
+    const glass = parser.compile(PRESET_SCORES.find((p) => p.id === 'glass_cathedral')!.code);
+    expect(engine.calculateScoreDuration(glass).totalQuarterBeats).toBe(8); // 2 written measures * 4 beats
+  });
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/audio/AudioContextManager.ts`, `src/audio/PlaybackOrchestrator.ts`, `src/audio/TenutoProcessor.ts`, `src/audio/TCALManager.ts`
+* `package.json`
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) completes with zero TypeScript errors.
+2. `npx vitest run tests/studio_engine_and_ui.test.tsx tests/transport_binding.test.tsx tests/document_compiler.test.ts` passes 100%.
+3. `npm run build` succeeds cleanly.
+4. Selecting `Neon Horizon` (4 written measures) spans strictly `M1`–`M4` (16 beats); selecting `Midnight Patio` or `Glass Cathedral` (2 written measures) spans strictly `M1`–`M2` (8 beats) with zero spillover into `M3`.
+
+---
+
+## 6. Constraints
+
+* Do NOT modify `package.json`.
+
+---
+
+## 7. Manual Steps (On Your Mac After Pushing to GitHub)
+
+Once verified and pushed to GitHub via the AI Studio UI, run:
+
+```bash
+git pull
+npm install
+npm install --no-save electron electron-builder
+npm run build
+npx electron-builder --config electron-builder.json --mac pkg --arm64
+open release/"Tenuto Studio 5-5.0.0-arm64.pkg"
+
+```
+
+---
+
+## 8. Rollback Plan
+
+Revert modified files or run `git revert HEAD`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `electron/main.cjs`, `electron-builder.json`
+* Modified file(s): `src/presets/presetScores.ts`, `src/parser/DocumentParser.ts`, `src/components/SplitWorkspace.tsx`, `src/components/WebGPUCanvas.tsx`, `src/audio/StudioAudioEngine.ts`, `vite.config.ts`, `tests/studio_engine_and_ui.test.tsx`
+* Commit message: `fix(scores): align all demo presets to exact 4/4 measure bounds and add macOS pkg setup`
+
+Confirm acceptance criteria checks pass, then stop and report back.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Neon Horizon Demo** | Had 2 written measures (`measure 1`–`2`) that overlapped in `M2` and sustained through `M3` | Has 4 exact 4/4 measures (`measure 1`–`4`) that play cleanly across `M1`–`M4` (16 beats) |
+| **Midnight Patio & Glass Cathedral Demos** | Had 1 written measure (`measure 1`) that spilled over into `M2` | Each has 2 exact 4/4 measures (`measure 1`–`2`) that play cleanly across `M1`–`M2` (8 beats) |
+| **Overfilled LLM Measures** | Next measure started at fixed index and collided with overflow notes | `DocumentParser` advances `currentScoreTime` past the full duration of the previous measure |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-23
+Implementer: AI Agent
+
+```
+
+```
