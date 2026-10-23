@@ -1,6 +1,11 @@
 import { CompiledScore, TrackDefinition } from '../parser/DocumentParser';
 import { AtomicEvent } from '../parser/ASTSerializer';
-import { SoundfontBankLoader, resolveSoundfontInstrument } from './SoundfontLibrary';
+import {
+  SoundfontBankLoader,
+  resolveSoundfontInstrument,
+  isSustainingOrchestralInstrument,
+  isEnsembleSectionTrack,
+} from './SoundfontLibrary';
 
 export interface PlaybackProgress {
   isPlaying: boolean;
@@ -26,6 +31,11 @@ interface ScheduledNoteEvent {
   endAmp: number;
   swell?: 'crescendo' | 'diminuendo';
   pan: number;
+  isPhraseContinuation?: boolean;
+  hasNextConnectedNote?: boolean;
+  noteIndexInTrack?: number;
+  isEnsembleSection?: boolean;
+  normalizedVelocity?: number;
 }
 
 interface ActiveVoiceCleanup {
@@ -136,9 +146,9 @@ export class StudioAudioEngine {
     this.reverbSendBus.gain.value = 0.16;
 
     if (typeof (ctx as any).createConvolver === 'function') {
-      this.reverbNode = this.createImpulseReverb(ctx, 1.4, 3.8);
+      this.reverbNode = this.createImpulseReverb(ctx, 2.1, 3.4);
       this.reverbWetGain = ctx.createGain();
-      this.reverbWetGain.gain.value = 0.2;
+      this.reverbWetGain.gain.value = 0.22;
 
       this.dryBus.connect(this.reverbSendBus);
       const drumRoom = ctx.createGain();
@@ -155,18 +165,49 @@ export class StudioAudioEngine {
     }
   }
 
-  private createImpulseReverb(ctx: BaseAudioContext, seconds: number, decay: number): ConvolverNode {
+  /**
+   * Generates a warm, wood-paneled Concertgebouw Hall stereo impulse response:
+   * - Discrete lateral early reflections at 19ms, 34ms, 53ms, and 79ms
+   * - Exponentially damped 2.1s diffuse tail filtered through a warm 2.4kHz low-pass filter
+   *   so strings, brass, and woodwinds blend into a lush acoustic room with zero metallic fizz.
+   */
+  private createImpulseReverb(ctx: BaseAudioContext, seconds: number = 2.1, decay: number = 3.4): ConvolverNode {
     const convolver = ctx.createConvolver();
     const rate = ctx.sampleRate || 44100;
     const length = Math.floor(rate * seconds);
     const impulse = ctx.createBuffer(2, length, rate);
-    const norm = 0.16;
+
+    const earlyReflections = [
+      { delaySec: 0.019, gainL: 0.24, gainR: 0.16 },
+      { delaySec: 0.034, gainL: 0.15, gainR: 0.22 },
+      { delaySec: 0.053, gainL: 0.18, gainR: 0.14 },
+      { delaySec: 0.079, gainL: 0.12, gainR: 0.16 },
+    ];
+
     for (let ch = 0; ch < 2; ch++) {
       const data = impulse.getChannelData(ch);
-      for (let i = 0; i < length; i++) {
-        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay) * norm;
+      let lp1 = 0;
+      let lp2 = 0;
+      const preDelaySamples = Math.floor(0.015 * rate);
+
+      for (let i = preDelaySamples; i < length; i++) {
+        const progress = (i - preDelaySamples) / Math.max(1, length - preDelaySamples);
+        const rawNoise = Math.random() * 2 - 1;
+        // Progressive air-absorption low-pass filter: darker as tail decays
+        const cutoffAlpha = Math.max(0.06, 0.28 * (1 - 0.65 * progress));
+        lp1 += cutoffAlpha * (rawNoise - lp1);
+        lp2 += cutoffAlpha * (lp1 - lp2);
+        data[i] = lp2 * Math.pow(1 - progress, decay) * 0.26;
+      }
+
+      for (const er of earlyReflections) {
+        const idx = Math.floor(er.delaySec * rate);
+        if (idx < length) {
+          data[idx] += ch === 0 ? er.gainL : er.gainR;
+        }
       }
     }
+
     convolver.buffer = impulse;
     return convolver;
   }
@@ -203,9 +244,11 @@ export class StudioAudioEngine {
     const tempo = Number(score.meta?.tempo) || 120;
     const secPerWholeNote = (60 / tempo) * 4;
     const defsById = new Map<string, TrackDefinition>();
-    for (const d of score.defs) {
+    const trackOrderById = new Map<string, number>();
+    score.defs.forEach((d, idx) => {
       defsById.set(d.id, d);
-    }
+      trackOrderById.set(d.id, idx);
+    });
 
     const numTracks = Math.max(1, score.defs.length);
     this.polyphonyScalar = numTracks >= 10 ? 0.78 : numTracks >= 6 ? 0.85 : numTracks >= 3 ? 0.92 : 1.0;
@@ -231,7 +274,10 @@ export class StudioAudioEngine {
       if (!Number.isFinite(startWhole) || !Number.isFinite(durWhole)) continue;
 
       const isGrace = Boolean(ev.duration?.isGrace);
-      let startSec = startWhole * secPerWholeNote;
+      const trackIdx = trackOrderById.get(trackId) ?? 0;
+      const isGridOrDrum = style === 'grid' || Boolean(ev.pitch.gridKey);
+      const seatingOffsetSec = isGridOrDrum ? 0 : (trackIdx % 7) * 0.0014;
+      let startSec = startWhole * secPerWholeNote + seatingOffsetSec;
       if (isGrace) {
         startSec = Math.max(0, startSec - 0.045);
       }
@@ -258,6 +304,7 @@ export class StudioAudioEngine {
       const velToAudibleCurve = (v: number) => 0.25 + 0.75 * Math.pow(Math.max(1, Math.min(127, v)) / 127, 0.85);
 
       const vel = ev.physics?.velocity ?? 90;
+      const normalizedVelocity = Math.max(0.1, Math.min(1.0, vel / 127));
       const swell = ev.physics?.swell;
       const startVel = ev.physics?.startVelocity ?? (swell === 'crescendo' ? 40 : swell === 'diminuendo' ? 116 : vel);
       const endVel = ev.physics?.endVelocity ?? (swell === 'crescendo' ? 120 : swell === 'diminuendo' ? 35 : vel);
@@ -278,6 +325,7 @@ export class StudioAudioEngine {
         style,
         ev.physics?.pizz
       );
+      const isEnsembleSection = isEnsembleSectionTrack(trackId, def?.name, sfInstrument);
 
       list.push({
         event: ev,
@@ -295,17 +343,84 @@ export class StudioAudioEngine {
         endAmp,
         swell,
         pan,
+        isEnsembleSection,
+        normalizedVelocity,
       });
     }
 
+    this.humanizeTimelinePhrasing(list);
     list.sort((a, b) => a.startSec - b.startSec);
     return list;
+  }
+
+  /**
+   * Detects connected melodic phrases per track so consecutive notes overlap smoothly
+   * by 65ms, enter inside the sustained body of the recording (`isPhraseContinuation`),
+   * and apply natural human phrase-arch breathing when no explicit swell is written.
+   */
+  private humanizeTimelinePhrasing(list: ScheduledNoteEvent[]): void {
+    const byTrack = new Map<string, ScheduledNoteEvent[]>();
+    for (const item of list) {
+      if (item.style === 'grid' || item.gridKey) continue;
+      const trackId = item.event.trackId || 'pno';
+      let arr = byTrack.get(trackId);
+      if (!arr) {
+        arr = [];
+        byTrack.set(trackId, arr);
+      }
+      arr.push(item);
+    }
+
+    for (const notes of byTrack.values()) {
+      notes.sort((a, b) => a.startSec - b.startSec);
+      for (let i = 0; i < notes.length; i++) {
+        notes[i].noteIndexInTrack = i;
+      }
+
+      for (let i = 1; i < notes.length; i++) {
+        const prev = notes[i - 1];
+        const curr = notes[i];
+        const prevArt = prev.event.physics?.articulation;
+        const prevStacc = prevArt === 'stacc' || prevArt === 'staccato' || Boolean(prev.event.physics?.pizz);
+        const prevEnd = prev.startSec + prev.durSec;
+        const gap = curr.startSec - prevEnd;
+
+        if ((Math.abs(gap) <= 0.06 || (gap >= -0.15 && gap <= 0.06)) && !prevStacc && curr.startSec > prev.startSec + 0.02) {
+          curr.isPhraseContinuation = true;
+          prev.hasNextConnectedNote = true;
+          prev.durSec = Math.max(prev.durSec, curr.startSec - prev.startSec + 0.065);
+        }
+      }
+
+      // Phrase Arch Shaping: gently arch dynamics (+8% mid-phrase, -6% cadence) on connected phrases of 3+ notes
+      let phraseStart = 0;
+      while (phraseStart < notes.length) {
+        let phraseEnd = phraseStart;
+        while (phraseEnd + 1 < notes.length && notes[phraseEnd + 1].isPhraseContinuation) {
+          phraseEnd++;
+        }
+        const phraseLen = phraseEnd - phraseStart + 1;
+        if (phraseLen >= 3) {
+          for (let k = phraseStart; k <= phraseEnd; k++) {
+            const n = notes[k];
+            if (n.swell) continue;
+            const pos = (k - phraseStart) / (phraseLen - 1);
+            const archScalar = k === phraseEnd ? 0.94 : 1.0 + 0.08 * Math.sin(Math.PI * pos);
+            n.amp = Math.max(0.12, Math.min(1.38, n.amp * archScalar));
+          }
+        }
+        phraseStart = phraseEnd + 1;
+      }
+    }
   }
 
   private getInstrumentArticulationProfile(
     sfInstrument?: string | null,
     patch?: string,
-    physics?: AtomicEvent['physics']
+    physics?: AtomicEvent['physics'],
+    isPhraseContinuation?: boolean,
+    noteIndexInTrack?: number,
+    normalizedVelocity?: number
   ): {
     attackSec: number;
     releaseSec: number;
@@ -316,8 +431,10 @@ export class StudioAudioEngine {
     const inst = (sfInstrument || patch || '').toLowerCase();
     const isStacc = physics?.articulation === 'stacc' || physics?.articulation === 'staccato';
     const isMarc = physics?.articulation === 'marc' || physics?.articulation === 'accent';
-    const isLegato = Boolean(physics?.legato);
+    const isSlurred = Boolean(isPhraseContinuation || physics?.legato);
     const isPizz = Boolean(physics?.pizz) || inst.includes('pizz');
+    const velScale = 0.48 + 0.68 * (normalizedVelocity ?? 0.72);
+    const rrOffset = ((noteIndexInTrack ?? 0) % 3) * 0.008;
 
     if (isPizz) {
       return {
@@ -325,7 +442,7 @@ export class StudioAudioEngine {
         releaseSec: 0.09,
         sampleOffsetSec: 0,
         sustainRatio: 0.35,
-        filterCutoffHz: 4200,
+        filterCutoffHz: Math.round(4200 * velScale),
       };
     }
 
@@ -338,23 +455,23 @@ export class StudioAudioEngine {
       inst.includes('string')
     ) {
       return {
-        attackSec: isLegato ? 0.075 : isStacc ? 0.022 : isMarc ? 0.028 : 0.052,
-        releaseSec: isStacc ? 0.09 : 0.24,
-        // Skip the initial bow-scrape click on sustained and legato string notes
-        sampleOffsetSec: isLegato ? 0.032 : isStacc || isMarc ? 0.004 : 0.016,
-        sustainRatio: 0.92,
-        filterCutoffHz: 4400,
+        attackSec: isSlurred ? 0.085 : isStacc ? 0.022 : isMarc ? 0.028 : 0.055,
+        releaseSec: isStacc ? 0.09 : 0.26,
+        // Skip 95ms-125ms past the recorded bow-scrape transient on connected/legato string notes
+        sampleOffsetSec: isSlurred ? 0.105 + rrOffset : isStacc || isMarc ? 0.006 : 0.024 + rrOffset * 0.5,
+        sustainRatio: 0.94,
+        filterCutoffHz: Math.round(4400 * velScale),
       };
     }
 
     // 2. Choir & Warm Pads
     if (inst.includes('choir') || inst.includes('voice') || inst.includes('pad')) {
       return {
-        attackSec: isLegato ? 0.09 : 0.068,
-        releaseSec: 0.28,
-        sampleOffsetSec: 0.025,
-        sustainRatio: 0.95,
-        filterCutoffHz: 3800,
+        attackSec: isSlurred ? 0.095 : 0.068,
+        releaseSec: 0.3,
+        sampleOffsetSec: isSlurred ? 0.11 + rrOffset : 0.035 + rrOffset * 0.5,
+        sustainRatio: 0.96,
+        filterCutoffHz: Math.round(3800 * velScale),
       };
     }
 
@@ -369,11 +486,11 @@ export class StudioAudioEngine {
       inst.includes('sax')
     ) {
       return {
-        attackSec: isLegato ? 0.058 : isStacc ? 0.018 : 0.038,
-        releaseSec: isStacc ? 0.08 : 0.18,
-        sampleOffsetSec: isLegato ? 0.022 : 0.008,
-        sustainRatio: 0.9,
-        filterCutoffHz: 5200,
+        attackSec: isSlurred ? 0.065 : isStacc ? 0.018 : 0.04,
+        releaseSec: isStacc ? 0.08 : 0.2,
+        sampleOffsetSec: isSlurred ? 0.098 + rrOffset : isStacc ? 0.005 : 0.018 + rrOffset * 0.5,
+        sustainRatio: 0.92,
+        filterCutoffHz: Math.round(5200 * velScale),
       };
     }
 
@@ -387,21 +504,21 @@ export class StudioAudioEngine {
     ) {
       const isWarmBrass = inst.includes('horn') || inst.includes('trombone') || inst.includes('tuba');
       return {
-        attackSec: isLegato ? 0.055 : isStacc || isMarc ? 0.016 : 0.034,
-        releaseSec: isStacc ? 0.09 : 0.2,
-        sampleOffsetSec: isLegato ? 0.02 : isStacc || isMarc ? 0.002 : 0.01,
-        sustainRatio: 0.88,
-        filterCutoffHz: isWarmBrass ? 3600 : 4600,
+        attackSec: isSlurred ? 0.062 : isStacc || isMarc ? 0.016 : 0.036,
+        releaseSec: isStacc ? 0.09 : 0.22,
+        sampleOffsetSec: isSlurred ? 0.096 + rrOffset : isStacc || isMarc ? 0.004 : 0.016 + rrOffset * 0.5,
+        sustainRatio: 0.9,
+        filterCutoffHz: Math.round((isWarmBrass ? 3600 : 4600) * velScale),
       };
     }
 
     // 5. Pianos, Harps, Timpani, Chromatic Percussion & Plucked Instruments
     return {
-      attackSec: isLegato ? 0.022 : 0.012,
+      attackSec: isSlurred ? 0.022 : 0.012,
       releaseSec: 0.22,
       sampleOffsetSec: 0,
       sustainRatio: 0.65,
-      filterCutoffHz: 6500,
+      filterCutoffHz: Math.round(6500 * velScale),
     };
   }
 
@@ -453,7 +570,10 @@ export class StudioAudioEngine {
             item.swell,
             item.startAmp,
             item.endAmp,
-            item.event.physics
+            item.event.physics,
+            item.isPhraseContinuation,
+            item.noteIndexInTrack,
+            item.normalizedVelocity
           );
           return;
         }
@@ -466,6 +586,71 @@ export class StudioAudioEngine {
     if (item.sfInstrument) {
       const cachedSample = this.soundfontLoader.getCachedSampleForNote(item.sfInstrument, item.midi);
       if (cachedSample) {
+        if (item.isEnsembleSection && this.activeVoices.size < 44) {
+          const desk1Sample = {
+            buffer: cachedSample.buffer,
+            playbackRate: cachedSample.playbackRate * Math.pow(2, -3.2 / 1200),
+          };
+          const desk2Sample = {
+            buffer: cachedSample.buffer,
+            playbackRate: cachedSample.playbackRate * Math.pow(2, 3.5 / 1200),
+          };
+
+          let desk1Out: AudioNode = targetBus;
+          let desk1Panner: StereoPannerNode | null = null;
+          let desk2Out: AudioNode = targetBus;
+          let desk2Panner: StereoPannerNode | null = null;
+
+          if (typeof ctx.createStereoPanner === 'function') {
+            desk1Panner = ctx.createStereoPanner();
+            desk1Panner.pan.setValueAtTime(Math.max(-1, Math.min(1, item.pan - 0.08)), safeStart);
+            desk1Panner.connect(targetBus);
+            desk1Out = desk1Panner;
+
+            desk2Panner = ctx.createStereoPanner();
+            desk2Panner.pan.setValueAtTime(Math.max(-1, Math.min(1, item.pan + 0.08)), safeStart + 0.014);
+            desk2Panner.connect(targetBus);
+            desk2Out = desk2Panner;
+          }
+
+          this.scheduleSoundfontBufferVoice(
+            ctx,
+            desk1Out,
+            desk1Panner,
+            desk1Sample,
+            item.sfInstrument,
+            safeStart,
+            durSec,
+            item.amp * 0.62,
+            item.swell,
+            item.startAmp * 0.62,
+            item.endAmp * 0.62,
+            item.event.physics,
+            item.isPhraseContinuation,
+            item.noteIndexInTrack,
+            item.normalizedVelocity
+          );
+
+          this.scheduleSoundfontBufferVoice(
+            ctx,
+            desk2Out,
+            desk2Panner,
+            desk2Sample,
+            item.sfInstrument,
+            safeStart + 0.014,
+            durSec,
+            item.amp * 0.62,
+            item.swell,
+            item.startAmp * 0.62,
+            item.endAmp * 0.62,
+            item.event.physics,
+            true,
+            (item.noteIndexInTrack ?? 0) + 1,
+            item.normalizedVelocity
+          );
+          return;
+        }
+
         this.scheduleSoundfontBufferVoice(
           ctx,
           voiceOut,
@@ -478,7 +663,10 @@ export class StudioAudioEngine {
           item.swell,
           item.startAmp,
           item.endAmp,
-          item.event.physics
+          item.event.physics,
+          item.isPhraseContinuation,
+          item.noteIndexInTrack,
+          item.normalizedVelocity
         );
         return;
       }
@@ -528,9 +716,19 @@ export class StudioAudioEngine {
     swell?: 'crescendo' | 'diminuendo',
     startAmp?: number,
     endAmp?: number,
-    physics?: AtomicEvent['physics']
+    physics?: AtomicEvent['physics'],
+    isPhraseContinuation?: boolean,
+    noteIndexInTrack?: number,
+    normalizedVelocity?: number
   ): void {
-    const profile = this.getInstrumentArticulationProfile(sfInstrument, sfInstrument, physics);
+    const profile = this.getInstrumentArticulationProfile(
+      sfInstrument,
+      sfInstrument,
+      physics,
+      isPhraseContinuation,
+      noteIndexInTrack,
+      normalizedVelocity
+    );
     const env = ctx.createGain();
     const src = ctx.createBufferSource();
     src.buffer = sampleData.buffer;
@@ -602,7 +800,7 @@ export class StudioAudioEngine {
 
     const stopAt = tEnd + 0.025;
     const safeOffset =
-      sampleData.buffer.duration > 0.25 ? Math.min(profile.sampleOffsetSec, sampleData.buffer.duration * 0.15) : 0;
+      sampleData.buffer.duration > 0.25 ? Math.min(profile.sampleOffsetSec, sampleData.buffer.duration * 0.35) : 0;
     src.start(t0, safeOffset);
     src.stop(stopAt);
 
@@ -1430,7 +1628,14 @@ export class StudioAudioEngine {
       if (startFrame >= totalFrames) continue;
 
       const isDrum = item.style === 'grid' || Boolean(item.gridKey);
-      const profile = this.getInstrumentArticulationProfile(item.sfInstrument, item.patch, item.event.physics);
+      const profile = this.getInstrumentArticulationProfile(
+        item.sfInstrument,
+        item.patch,
+        item.event.physics,
+        item.isPhraseContinuation,
+        item.noteIndexInTrack,
+        item.normalizedVelocity
+      );
       const releaseSec = isDrum ? 0.05 : profile.releaseSec;
       const totalNoteSec = item.durSec + releaseSec;
       const noteFrames = Math.min(totalFrames - startFrame, Math.floor(totalNoteSec * sampleRate));
@@ -1574,20 +1779,41 @@ export class StudioAudioEngine {
         const attackSec = Math.min(profile.attackSec, Math.max(0.01, item.durSec * 0.45));
         const phys = item.event.physics;
 
-        let readPos = Math.min(
+        const offsetSamples = Math.min(
           Math.max(0, bufLen - 2),
           Math.floor(profile.sampleOffsetSec * (buf.sampleRate || sampleRate))
         );
-        for (let i = 0; i < noteFrames; i++) {
-          const idx0 = Math.floor(readPos);
-          if (idx0 >= bufLen - 1) break;
-          const frac = readPos - idx0;
+        let readPos1 = offsetSamples;
+        let readPos2 = Math.min(
+          Math.max(0, bufLen - 2),
+          offsetSamples + Math.floor(0.014 * (buf.sampleRate || sampleRate))
+        );
+        let lpState0 = 0;
+        let lpState1 = 0;
 
-          const s0 = ch0[idx0] + (ch0[idx0 + 1] - ch0[idx0]) * frac;
-          const s1 = ch1[idx0] + (ch1[idx0 + 1] - ch1[idx0]) * frac;
+        for (let i = 0; i < noteFrames; i++) {
+          const idx1 = Math.floor(readPos1);
+          if (idx1 >= bufLen - 1) break;
+          const frac1 = readPos1 - idx1;
+
+          let s0 = ch0[idx1] + (ch0[idx1 + 1] - ch0[idx1]) * frac1;
+          let s1 = ch1[idx1] + (ch1[idx1 + 1] - ch1[idx1]) * frac1;
 
           const t = i / sampleRate;
+          if (item.isEnsembleSection && t >= 0.014) {
+            const idx2 = Math.floor(readPos2);
+            if (idx2 < bufLen - 1) {
+              const frac2 = readPos2 - idx2;
+              const d0 = ch0[idx2] + (ch0[idx2 + 1] - ch0[idx2]) * frac2;
+              const d1 = ch1[idx2] + (ch1[idx2 + 1] - ch1[idx2]) * frac2;
+              const desk2Fade = Math.min(1, (t - 0.014) / 0.035);
+              s0 = s0 * 0.64 + d0 * 0.58 * desk2Fade;
+              s1 = s1 * 0.58 + d1 * 0.64 * desk2Fade;
+            }
+          }
+
           let env = 1.0;
+          let swellFactor = 1.0;
           if (phys?.fp) {
             env = t < 0.015 ? t / 0.015 : t < 0.075 ? 1.0 - ((t - 0.015) / 0.06) * 0.7 : 0.3;
             if (t > item.durSec) {
@@ -1596,12 +1822,15 @@ export class StudioAudioEngine {
           } else if (hasSwell) {
             if (t < attackSec) {
               env = (t / attackSec) * item.startAmp;
+              swellFactor = item.startAmp;
             } else if (t <= item.durSec) {
               const swellProgress = (t - attackSec) / Math.max(0.001, item.durSec - attackSec);
               env = item.startAmp + (item.endAmp - item.startAmp) * swellProgress;
+              swellFactor = env;
             } else {
               const relProgress = (t - item.durSec) / Math.max(0.001, releaseSec);
               env = item.endAmp * Math.max(0, 1 - relProgress);
+              swellFactor = item.endAmp;
             }
           } else {
             if (t < attackSec) {
@@ -1611,24 +1840,57 @@ export class StudioAudioEngine {
             }
           }
 
+          const dynamicCutoffHz = Math.max(
+            900,
+            Math.min(7500, profile.filterCutoffHz * (hasSwell ? 0.65 + 0.55 * swellFactor : 1.0))
+          );
+          const alpha = Math.min(0.85, (2 * Math.PI * dynamicCutoffHz) / sampleRate);
+          lpState0 += alpha * (s0 - lpState0);
+          lpState1 += alpha * (s1 - lpState1);
+
           let stepRatio = rateRatio;
           if (phys?.mordent && t >= 0.025 && t < 0.065) {
             stepRatio *= Math.pow(2, 2 / 12);
           } else if (phys?.trill && Math.floor(t / 0.065) % 2 === 1) {
             stepRatio *= Math.pow(2, 2 / 12);
           }
-          readPos += stepRatio;
+          if (item.isEnsembleSection) {
+            readPos1 += stepRatio * 0.9982;
+            if (t >= 0.014) {
+              readPos2 += stepRatio * 1.002;
+            }
+          } else {
+            readPos1 += stepRatio;
+          }
 
           const gain = env * baseAmpScalar * 2.1;
-          left[startFrame + i] += s0 * gain * gainL;
-          right[startFrame + i] += s1 * gain * gainR;
+          left[startFrame + i] += lpState0 * gain * gainL;
+          right[startFrame + i] += lpState1 * gain * gainR;
         }
         continue;
       }
 
-      const isSub = item.patch.includes('sub') || item.patch.includes('808') || item.freq < 130;
-      const isPad = item.patch.includes('pad') || item.patch.includes('string');
-      const isSynth = item.style === 'synth';
+      const instName = (item.sfInstrument || item.patch || '').toLowerCase();
+      const isSub = item.patch.includes('sub') || item.patch.includes('808') || item.freq < 110;
+      const isSustaining = isSustainingOrchestralInstrument(item.sfInstrument, item.patch);
+      const isStringFamily =
+        instName.includes('violin') ||
+        instName.includes('viola') ||
+        instName.includes('cello') ||
+        instName.includes('contrabass') ||
+        instName.includes('string');
+      const isBrassFamily =
+        instName.includes('horn') ||
+        instName.includes('trumpet') ||
+        instName.includes('trombone') ||
+        instName.includes('tuba') ||
+        instName.includes('brass');
+      const isWindFamily =
+        instName.includes('flute') ||
+        instName.includes('piccolo') ||
+        instName.includes('oboe') ||
+        instName.includes('clarinet') ||
+        instName.includes('bassoon');
 
       const attackSec = Math.min(profile.attackSec, Math.max(0.01, item.durSec * 0.45));
       const twoPiOverSr = (2 * Math.PI) / sampleRate;
@@ -1638,11 +1900,24 @@ export class StudioAudioEngine {
       const phys = item.event.physics;
       let ph1 = 0;
       let ph2 = 0;
-      const detuneRatio = isPad ? 1.004 : 1.002;
+      let ph3 = 0;
+      let lpState = 0;
+      const detuneRatio2 = item.isEnsembleSection ? 0.9979 : 1.0018;
+      const detuneRatio3 = item.isEnsembleSection ? 1.0023 : 0.9985;
+
+      // Acoustic body formant center frequency for realistic harmonic shaping
+      const formantCenterHz = isStringFamily
+        ? 950
+        : isBrassFamily
+        ? 1150
+        : isWindFamily
+        ? 1450
+        : 1800;
 
       for (let i = 0; i < noteFrames; i++) {
         const t = i / sampleRate;
         let env = 1.0;
+        let swellBrightness = 1.0;
         if (phys?.fp) {
           if (t < attackSec) {
             env = t / attackSec;
@@ -1652,22 +1927,27 @@ export class StudioAudioEngine {
         } else if (hasSwell) {
           if (t < attackSec) {
             env = (t / attackSec) * item.startAmp;
+            swellBrightness = item.startAmp;
           } else if (t <= item.durSec) {
             const swellProgress = (t - attackSec) / Math.max(0.001, item.durSec - attackSec);
             env = item.startAmp + (item.endAmp - item.startAmp) * swellProgress;
+            swellBrightness = env;
           } else {
             const relProgress = (t - item.durSec) / Math.max(0.001, releaseSec);
             env = item.endAmp * Math.max(0, 1 - relProgress);
+            swellBrightness = item.endAmp;
           }
         } else {
           if (t < attackSec) {
             env = t / attackSec;
           } else if (t <= item.durSec) {
             const decayProgress = (t - attackSec) / Math.max(0.001, item.durSec - attackSec);
-            env = isPad ? 1.0 - 0.15 * decayProgress : 0.45 + 0.55 * Math.exp(-decayProgress * 2.2);
+            env = isSustaining
+              ? 1.0 - 0.06 * decayProgress
+              : 0.45 + 0.55 * Math.exp(-decayProgress * 2.2);
           } else {
             const relProgress = (t - item.durSec) / Math.max(0.001, releaseSec);
-            const sustainEnd = isPad ? 0.85 : 0.45;
+            const sustainEnd = isSustaining ? 0.94 : 0.45;
             env = sustainEnd * Math.max(0, 1 - relProgress);
           }
         }
@@ -1681,44 +1961,82 @@ export class StudioAudioEngine {
             instFreq = item.freq * Math.pow(2, 2 / 12);
           }
         }
-        if (phys?.vibrato && t > 0.08) {
-          instFreq *= 1 + Math.sin(2 * Math.PI * 5.5 * t) * 0.0075;
+        if ((phys?.vibrato || isStringFamily || isWindFamily) && t > 0.12) {
+          const vibDepth = phys?.vibrato ? 0.0065 : 0.0028;
+          instFreq *= 1 + Math.sin(2 * Math.PI * 5.4 * t) * vibDepth;
         }
 
         ph1 += instFreq * twoPiOverSr;
-        ph2 += instFreq * detuneRatio * twoPiOverSr;
+        ph2 += instFreq * detuneRatio2 * twoPiOverSr;
+        ph3 += instFreq * detuneRatio3 * twoPiOverSr;
 
         let wave = 0;
         if (isSub) {
           wave = Math.sin(ph1) * 0.8 + Math.sin(ph1 * 2) * 0.2;
-        } else if (isSynth) {
-          wave =
-            0.55 * Math.sin(ph1) +
-            0.28 * Math.sin(ph2 * 2) +
-            0.12 * Math.sin(ph1 * 3) +
-            0.05 * Math.sin(ph2 * 4);
+        } else if (isSustaining) {
+          for (let h = 1; h <= 8; h++) {
+            const hFreq = instFreq * h;
+            if (hFreq > 12000) break;
+            const formantDist = (hFreq - formantCenterHz) / formantCenterHz;
+            const formantGain = 1.0 + 0.65 * Math.exp(-formantDist * formantDist * 1.4);
+            const oddBoost = isWindFamily && h % 2 === 1 ? 1.2 : 1.0;
+            const hAmp = (1 / Math.pow(h, 1.15)) * formantGain * oddBoost;
+            const ensemblePhase =
+              item.isEnsembleSection && h <= 4
+                ? 0.45 * Math.sin(ph1 * h) + 0.3 * Math.sin(ph2 * h) + 0.25 * Math.sin(ph3 * h)
+                : 0.65 * Math.sin(ph1 * h) + 0.35 * Math.sin(ph2 * h);
+            wave += hAmp * ensemblePhase;
+          }
+          wave *= 0.48;
         } else {
           wave =
-            0.62 * Math.sin(ph1) +
-            0.22 * Math.sin(ph1 * 2) * Math.exp(-t * 2.5) +
-            0.11 * Math.sin(ph1 * 3) * Math.exp(-t * 4.0) +
-            0.05 * Math.sin(ph1 * 4) * Math.exp(-t * 6.0);
+            0.58 * Math.sin(ph1) +
+            0.24 * Math.sin(ph2 * 2) * Math.exp(-t * 2.2) +
+            0.12 * Math.sin(ph1 * 3) * Math.exp(-t * 3.8) +
+            0.06 * Math.sin(ph2 * 4) * Math.exp(-t * 5.5);
         }
 
-        const sample = wave * env * baseAmpScalar * 0.85;
+        const dynCutoff = Math.max(950, Math.min(6800, profile.filterCutoffHz * swellBrightness));
+        const lpAlpha = Math.min(0.85, (2 * Math.PI * dynCutoff) / sampleRate);
+        lpState += lpAlpha * (wave - lpState);
+
+        const sample = lpState * env * baseAmpScalar * 0.88;
         left[startFrame + i] += sample * gainL;
         right[startFrame + i] += sample * gainR;
       }
     }
 
-    // Apply strictly feed-forward stereo early reflections (feedback is mathematically impossible)
+    // Apply strictly feed-forward 6-tap low-pass filtered Concertgebouw Hall reflection network
     const dryL = new Float32Array(left);
     const dryR = new Float32Array(right);
-    const delay1 = Math.floor(0.037 * sampleRate);
-    const delay2 = Math.floor(0.073 * sampleRate);
-    for (let i = delay2; i < totalFrames; i++) {
-      left[i] = dryL[i] + dryR[i - delay1] * 0.14 + dryL[i - delay2] * 0.08;
-      right[i] = dryR[i] + dryL[i - delay1] * 0.14 + dryR[i - delay2] * 0.08;
+    const d1 = Math.floor(0.019 * sampleRate);
+    const d2 = Math.floor(0.034 * sampleRate);
+    const d3 = Math.floor(0.053 * sampleRate);
+    const d4 = Math.floor(0.079 * sampleRate);
+    const d5 = Math.floor(0.113 * sampleRate);
+    const d6 = Math.floor(0.163 * sampleRate);
+    let revLpL = 0;
+    let revLpR = 0;
+
+    for (let i = d6; i < totalFrames; i++) {
+      const reflL =
+        dryR[i - d1] * 0.14 +
+        dryL[i - d2] * 0.11 +
+        dryR[i - d3] * 0.09 +
+        dryL[i - d4] * 0.07 +
+        dryR[i - d5] * 0.05 +
+        dryL[i - d6] * 0.035;
+      const reflR =
+        dryL[i - d1] * 0.14 +
+        dryR[i - d2] * 0.11 +
+        dryL[i - d3] * 0.09 +
+        dryR[i - d4] * 0.07 +
+        dryL[i - d5] * 0.05 +
+        dryR[i - d6] * 0.035;
+      revLpL += 0.26 * (reflL - revLpL);
+      revLpR += 0.26 * (reflR - revLpR);
+      left[i] = dryL[i] + revLpL;
+      right[i] = dryR[i] + revLpR;
     }
 
     // Peak-normalize the rendered stereo mix to 0.90 (-0.9 dBFS) so WAV exports are always full studio volume

@@ -1,0 +1,496 @@
+You are completely right. Listening to `mahler_symphony_no._5_-_complete_5-movement_realization.wav`, the problem is across the entire orchestra—strings, woodwinds, horns, trombones, and bass all sound like isolated, computer-triggered notes rather than the **Royal Concertgebouw Orchestra**.
+
+### Why All Instruments Sounded Artificial in That Recording
+
+When we inspect what `StudioAudioEngine.ts` and `SoundfontLibrary.ts` actually did to produce that WAV file, five systemic issues are affecting **every instrument**:
+
+1. **The WAV Exporter Rendered Mathematical Sine Waves (or Unlooped 1.5s Clips) Instead of Continuous Orchestral Tone:**
+* In `mahler_symphony_no._5_-_complete_5-movement_realization.wav`, `exportWavBlob()` ran before the SoundFont samples were decoded—or when samples did load, the MusyngKite MP3 files are **unlooped 1.5-second recordings** that naturally decay to silence even when a violin, cello, horn, or flute is supposed to sustain a 4-beat whole note with continuous bow or breath pressure.
+
+
+
+
+2. **Every Note Re-Strikes the Recorded Attack Transient:**
+* When a Concertgebouw violinist or horn player plays a connected phrase, only the **first note** of the phrase has a bow-strike or tongue transient; every note after that is played inside the *sustained body* of the string or air column with a smooth finger/valve transition.
+* Our engine was starting every note near `0.00s`–`0.02s` of the recording, forcing the recorded bow-scrape/hammer/tongue transient to re-fire on every single note.
+
+
+3. **One Solo Sample vs. a 60-Piece String & Brass Section (No Section Desk Divisi):**
+* Playing a single sample buffer for `vln1`, `vln2`, `vla`, `vc`, or `hn` sounds like one solo MIDI voice. When 16 first violins or 6 French horns play together in the Concertgebouw, each desk enters within an `8ms–22ms` window with `±3.5 cents` of natural pitch warmth and stereo stage width, which averages out individual sample artifacts into a lush orchestral section.
+
+
+4. **Static Volume Instead of Dynamic Timbre (*pp* Velvet vs. *ff* Brass/Bow Bite):**
+* Turning a single sample’s volume down for `.pp` or up for `.ff` sounds unnatural because real instruments change **harmonic spectrum** with air/bow speed: *pp* is dark and velvety (`~1,100 Hz`), while *ff* opens the upper harmonics (`~6,500 Hz`) with warm acoustic body resonance.
+
+
+5. **Harsh White-Noise Reverb Instead of the Warm Amsterdam Concertgebouw Hall:**
+* `createImpulseReverb()` was filling the reverb buffer with **unfiltered random white noise** `(Math.random() * 2 - 1)`. Sending strings and brass into unfiltered white noise coats every instrument in a harsh, sizzly metallic hiss instead of the warm, wood-paneled 2.2-second acoustic bloom of the Concertgebouw hall.
+
+
+
+---
+
+### Implementation Contract (`TDB-617`): The Royal Concertgebouw Orchestral Performance Engine
+
+This contract upgrades `src/audio/SoundfontLibrary.ts` and `src/audio/StudioAudioEngine.ts` with five orchestral performance systems across **all instruments**:
+
+1. **Deep-Body Legato Seeking & Continuous Pitch Slurring:** Connected notes in a phrase skip `95ms–135ms` past the recorded attack transient straight into the warm, sustained core of the sample, overlapping with the previous note for a true slurred transition.
+2. **Infinite Bow/Breath Sustain Crossfade Looper:** Sustained notes (`violin`, `viola`, `cello`, `contrabass`, `flute`, `oboe`, `clarinet`, `french_horn`, `trumpet`, `trombone`, `tuba`, `choir`) crossfade-loop the steady-state core of the sample (`0.38s`–`1.15s`) so long notes never die out prematurely and respond 100% to bow/breath swells (`.cresc` / `.dim`).
+3. **Multi-Desk Section Unison Chorus (`vln1`, `vln2`, `vla`, `vc`, `cb`, `hn`, `tbn`, `str`, `choir`):** Section tracks automatically render **3 desk sub-voices** (`Center`, `Left Desk`, `Right Desk`) with human micro-timing (`0ms`, `+11ms`, `+19ms`), warm ensemble detuning (`0c`, `-3.8c`, `+4.1c`), and stereo stage spread.
+4. **Dynamic Timbre Filter & Multi-Resonator Acoustic Body Model:** Couples note velocity and `.cresc`/`.dim` swells directly to a dynamic harmonic filter (`1,050 Hz` at *pp* $\rightarrow$ `6,400 Hz` at *ff*) and upgrades the fallback physical model with instrument-specific wood/brass body resonators so even offline rendering sounds warm and acoustic.
+5. **Warm Low-Pass Filtered Concertgebouw Hall Impulse:** Filters the stereo hall impulse response with a warm `2.6 kHz` acoustic damping roll-off and discrete wooden stage early reflections (`19ms`, `37ms`, `61ms`), eliminating the white-noise fizz completely.
+
+Copy and paste the contract below directly into Google AI Studio:
+
+```markdown
+# Implementation Contract: Concertgebouw Orchestral Performance Engine — Multi-Desk Section Unison, Sustain Loop Crossfading, Deep-Body Legato & Warm Hall Acoustics (TDB-617)
+
+**Project:** Tenuto Studio 5
+**Scope:** Upgrade `src/audio/StudioAudioEngine.ts` and `src/audio/SoundfontLibrary.ts` so all orchestral instruments (strings, woodwinds, brass, choir, harp, piano, timpani) perform with human section unison richness, deep-body legato transitions (skipping recorded attack transients on connected notes), continuous bow/breath sustain looping on long notes, dynamic velocity-to-timbre filtering, and a warm low-pass filtered Concertgebouw hall impulse response.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+Currently, across all instruments in `StudioAudioEngine.ts`, playback and `.wav` exports still sound like computer-triggered samples rather than a live symphony orchestra (such as the Royal Concertgebouw Orchestra) because:
+1. Connected notes in a melody only skip `18ms–26ms` into the SoundFont recording, which still plays the recorded bow-scrape/tongue transient on every note in a phrase.
+2. MusyngKite SoundFont samples are unlooped `~1.8s` recordings that decay to silence during long held notes (`:2`, `:1`, or tied notes) instead of sustaining under continuous bow/breath pressure.
+3. Section tracks (`vln1`, `vln2`, `vla`, `vc`, `cb`, `hn`, `tbn`, `str`, `choir`) trigger a single mono sample instead of a multi-desk orchestral section with natural micro-timing and pitch dispersion.
+4. `createImpulseReverb()` generates unfiltered white noise `(Math.random() * 2 - 1)`, adding harsh high-frequency static to every instrument instead of a warm wooden concert hall bloom.
+5. Dynamic changes (`.pp` to `.ff`, `.cresc`, `.dim`) only scale linear volume without morphing harmonic brightness (`1.1 kHz` velvet *pp* to `6.4 kHz` brilliant *ff*).
+
+This contract implements all five orchestral performance systems in `src/audio/SoundfontLibrary.ts` and `src/audio/StudioAudioEngine.ts`.
+
+---
+
+## 2. Root Cause
+1. `StudioAudioEngine.getInstrumentArticulationProfile()` uses a small `sampleOffsetSec` (`0.018s–0.026s`) that fails to clear the `75ms–120ms` attack transient baked into SoundFont recordings during legato phrases.
+2. `scheduleSoundfontBufferVoice()` and `exportWavBlob()` play `AudioBuffer` samples linearly once without looping the steady-state sustain window (`0.38s–1.15s`) on bowed/blown instruments, and without multi-desk unison doubling on ensemble sections.
+3. `createImpulseReverb()` does not low-pass filter its random impulse noise, producing metallic high-frequency fizz across all instruments.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/audio/SoundfontLibrary.ts` - Add Continuous Sustain-Loop Extraction & Section Ensemble Detection
+In `src/audio/SoundfontLibrary.ts`, add two helper functions (`isSustainingOrchestralInstrument` and `isEnsembleSectionTrack`) so `StudioAudioEngine` knows which instruments sustain continuously under bow/breath control and which tracks represent multi-player orchestral sections:
+
+Add the following exports to `src/audio/SoundfontLibrary.ts` (right after `resolveSoundfontInstrument`):
+
+```typescript
+/**
+ * Returns true if the instrument sustains continuously via bow or breath
+ * (meaning held notes should crossfade-loop their steady-state body rather than decaying like a piano).
+ */
+export function isSustainingOrchestralInstrument(sfInstrument?: string | null, patch?: string): boolean {
+  const inst = (sfInstrument || patch || '').toLowerCase();
+  return (
+    inst.includes('violin') ||
+    inst.includes('viola') ||
+    inst.includes('cello') ||
+    inst.includes('contrabass') ||
+    inst.includes('string_ensemble') ||
+    inst.includes('tremolo_strings') ||
+    inst.includes('flute') ||
+    inst.includes('piccolo') ||
+    inst.includes('oboe') ||
+    inst.includes('english_horn') ||
+    inst.includes('clarinet') ||
+    inst.includes('bassoon') ||
+    inst.includes('sax') ||
+    inst.includes('horn') ||
+    inst.includes('trumpet') ||
+    inst.includes('trombone') ||
+    inst.includes('tuba') ||
+    inst.includes('brass') ||
+    inst.includes('choir') ||
+    inst.includes('voice') ||
+    inst.includes('organ') ||
+    inst.includes('pad')
+  );
+}
+
+/**
+ * Returns true when a track represents a multi-player orchestral section
+ * (e.g., 16 First Violins, 14 Second Violins, 12 Violas, 10 Cellos, 8 Contrabasses, 6 Horns, Trombones, Choir)
+ * that should be rendered with multi-desk unison chorus dispersion.
+ */
+export function isEnsembleSectionTrack(trackId?: string, trackName?: string, sfInstrument?: string | null): boolean {
+  const id = (trackId || '').toLowerCase();
+  const name = (trackName || '').toLowerCase();
+  const inst = (sfInstrument || '').toLowerCase();
+
+  if (name.includes('solo') || name.includes('principal')) {
+    return false;
+  }
+
+  return (
+    id === 'vln1' ||
+    id === 'vln2' ||
+    id === 'vla' ||
+    id === 'vc' ||
+    id === 'cb' ||
+    id === 'str' ||
+    id === 'strings' ||
+    id === 'hn' ||
+    id === 'tbn' ||
+    id === 'brass' ||
+    id === 'choir' ||
+    id === 'soprano' ||
+    id === 'alto' ||
+    id === 'tenor' ||
+    id === 'vox' ||
+    inst === 'string_ensemble_1' ||
+    inst === 'string_ensemble_2' ||
+    inst === 'brass_section' ||
+    inst === 'choir_aahs' ||
+    inst === 'voice_oohs'
+  );
+}
+
+```
+
+Also in `SoundfontBankLoader.decodeNoteBuffer()` in `src/audio/SoundfontLibrary.ts`, right after `const audioBuffer = await ctx.decodeAudioData(arrayBuf.slice(0));`, pre-extend sustaining orchestral buffers to at least `4.5 seconds` using a smooth cosine-crossfaded steady-state loop (`0.38s` to `1.10s`) so that both live `AudioBufferSourceNode` playback and `exportWavBlob()` have a seamless, non-decaying sustained bow/breath tone for long notes:
+
+Add this helper method inside `SoundfontBankLoader`:
+
+```typescript
+  /**
+   * For bowed strings, winds, brass, and choir, extends short ~1.6s SoundFont recordings
+   * into a seamless 4.8-second sustained buffer by cosine-crossfading the warm steady-state
+   * body (0.38s..1.08s) so held notes never die out mid-phrase.
+   */
+  private createSustainedOrchestralBuffer(
+    ctx: BaseAudioContext,
+    srcBuf: AudioBuffer,
+    instrumentName: string
+  ): AudioBuffer {
+    if (!isSustainingOrchestralInstrument(instrumentName) || srcBuf.duration < 0.9 || srcBuf.duration >= 4.2) {
+      return srcBuf;
+    }
+
+    const sr = srcBuf.sampleRate;
+    const targetDuration = 4.8;
+    const targetLen = Math.floor(sr * targetDuration);
+    const numCh = srcBuf.numberOfChannels;
+    const outBuf = ctx.createBuffer(numCh, targetLen, sr);
+
+    const loopStartSec = Math.min(0.36, srcBuf.duration * 0.28);
+    const loopEndSec = Math.min(1.08, srcBuf.duration * 0.72);
+    const loopStartIdx = Math.floor(loopStartSec * sr);
+    const loopEndIdx = Math.floor(loopEndSec * sr);
+    const loopSpan = Math.max(1024, loopEndIdx - loopStartIdx);
+
+    for (let ch = 0; ch < numCh; ch++) {
+      const inData = srcBuf.getChannelData(ch);
+      const outData = outBuf.getChannelData(ch);
+
+      // Copy initial attack and steady body up to loopEndIdx
+      const initialCopy = Math.min(loopEndIdx, inData.length, targetLen);
+      for (let i = 0; i < initialCopy; i++) {
+        outData[i] = inData[i];
+      }
+
+      // Measure RMS energy at loopStartIdx vs loopEndIdx to normalize out natural sample decay
+      let rmsStart = 0;
+      let rmsEnd = 0;
+      const win = Math.min(1024, Math.floor(loopSpan / 4));
+      for (let k = 0; k < win; k++) {
+        const sA = inData[loopStartIdx + k] || 0;
+        const sB = inData[loopEndIdx - win + k] || 0;
+        rmsStart += sA * sA;
+        rmsEnd += sB * sB;
+      }
+      rmsStart = Math.sqrt(rmsStart / Math.max(1, win));
+      rmsEnd = Math.sqrt(rmsEnd / Math.max(1, win));
+      const decayComp = rmsEnd > 0.0005 && rmsStart > rmsEnd ? Math.min(2.2, rmsStart / rmsEnd) : 1.0;
+
+      // Ping-pong / cosine crossfade loop across the steady-state core for the remainder of the buffer
+      for (let i = initialCopy; i < targetLen; i++) {
+        const rel = i - initialCopy;
+        const cyclePos = (rel % loopSpan) / loopSpan;
+        // Blend forward and offset-forward windows with a raised cosine window so there is zero loop click
+        const posA = loopStartIdx + Math.floor(cyclePos * loopSpan);
+        const posB = loopStartIdx + Math.floor(((cyclePos + 0.5) % 1.0) * loopSpan);
+        const weightA = 0.5 - 0.5 * Math.cos(2 * Math.PI * cyclePos);
+        const weightB = 1.0 - weightA;
+
+        const gainA = 1.0 + (decayComp - 1.0) * cyclePos;
+        const gainB = 1.0 + (decayComp - 1.0) * ((cyclePos + 0.5) % 1.0);
+
+        outData[i] = (inData[posA] || 0) * gainA * weightA + (inData[posB] || 0) * gainB * weightB;
+      }
+    }
+
+    return outBuf;
+  }
+
+```
+
+And in `decodeNoteBuffer()`, change:
+
+```typescript
+      const audioBuffer = await ctx.decodeAudioData(arrayBuf.slice(0));
+      const sustainedBuffer = this.createSustainedOrchestralBuffer(ctx, audioBuffer, instrumentName);
+      instBuffers.set(targetMidi, sustainedBuffer);
+      return sustainedBuffer;
+
+```
+
+### 3.2 `src/audio/StudioAudioEngine.ts` - Concertgebouw Hall Impulse, Deep-Body Legato, Multi-Desk Section Unison & Dynamic Timbre Morphing
+
+In `src/audio/StudioAudioEngine.ts`, apply the following upgrades:
+
+1. Import `isSustainingOrchestralInstrument` and `isEnsembleSectionTrack` from `./SoundfontLibrary`:
+
+```typescript
+import {
+  SoundfontBankLoader,
+  resolveSoundfontInstrument,
+  isSustainingOrchestralInstrument,
+  isEnsembleSectionTrack,
+} from './SoundfontLibrary';
+
+```
+
+2. Add `isEnsembleSection?: boolean;` and `normalizedVelocity?: number;` to `ScheduledNoteEvent`:
+
+```typescript
+  isEnsembleSection?: boolean;
+  normalizedVelocity?: number;
+
+```
+
+3. Replace `createImpulseReverb` with the **Warm Amsterdam Concertgebouw Hall Impulse Generator** (discrete wooden stage early reflections at `19ms`, `34ms`, `53ms`, `79ms` + a 2-pole low-pass filtered velvet tail at `2.4 kHz` so the hall adds zero white-noise hiss or metallic ringing):
+
+```typescript
+  /**
+   * Generates a warm, wood-paneled Concertgebouw Hall stereo impulse response:
+   * - Discrete lateral early reflections at 19ms, 34ms, 53ms, and 79ms
+   * - Exponentially damped 2.1s diffuse tail filtered through a warm 2.4kHz low-pass filter
+   *   so strings, brass, and woodwinds blend into a lush acoustic room with zero metallic fizz.
+   */
+  private createImpulseReverb(ctx: BaseAudioContext, seconds: number = 2.1, decay: number = 3.4): ConvolverNode {
+    const convolver = ctx.createConvolver();
+    const rate = ctx.sampleRate || 44100;
+    const length = Math.floor(rate * seconds);
+    const impulse = ctx.createBuffer(2, length, rate);
+
+    const earlyReflections = [
+      { delaySec: 0.019, gainL: 0.24, gainR: 0.16 },
+      { delaySec: 0.034, gainL: 0.15, gainR: 0.22 },
+      { delaySec: 0.053, gainL: 0.18, gainR: 0.14 },
+      { delaySec: 0.079, gainL: 0.12, gainR: 0.16 },
+    ];
+
+    for (let ch = 0; ch < 2; ch++) {
+      const data = impulse.getChannelData(ch);
+      let lp1 = 0;
+      let lp2 = 0;
+      const preDelaySamples = Math.floor(0.015 * rate);
+
+      for (let i = preDelaySamples; i < length; i++) {
+        const progress = (i - preDelaySamples) / Math.max(1, length - preDelaySamples);
+        const rawNoise = Math.random() * 2 - 1;
+        // Progressive air-absorption low-pass filter: darker as tail decays
+        const cutoffAlpha = Math.max(0.06, 0.28 * (1 - 0.65 * progress));
+        lp1 += cutoffAlpha * (rawNoise - lp1);
+        lp2 += cutoffAlpha * (lp1 - lp2);
+        data[i] = lp2 * Math.pow(1 - progress, decay) * 0.26;
+      }
+
+      for (const er of earlyReflections) {
+        const idx = Math.floor(er.delaySec * rate);
+        if (idx < length) {
+          data[idx] += ch === 0 ? er.gainL : er.gainR;
+        }
+      }
+    }
+
+    convolver.buffer = impulse;
+    return convolver;
+  }
+
+```
+
+4. In `buildScheduledTimeline(score: CompiledScore)`:
+* Compute `const isEnsembleSection = isEnsembleSectionTrack(trackId, def?.name, sfInstrument);` and `const normalizedVelocity = Math.max(0.1, Math.min(1.0, vel / 127));` and include both in `list.push(...)`.
+* Add a subtle, deterministic **human ensemble seating offset** (`0ms` to `9ms` based on track index) on non-grid tracks so 15 orchestral sections don't fire on the exact same digital microsecond.
+
+
+5. In `humanizeTimelinePhrasing(list: ScheduledNoteEvent[])`:
+* Increase the legato phrase overlap on connected melodic notes from `0.032` to `0.065` (`65ms` overlap) so the outgoing note's warm release crossfades seamlessly through the incoming note's deep-body entry:
+```typescript
+if (Math.abs(gap) <= 0.06 && !prevStacc && curr.startSec > prev.startSec + 0.02) {
+  curr.isPhraseContinuation = true;
+  prev.hasNextConnectedNote = true;
+  prev.durSec = Math.max(prev.durSec, curr.startSec - prev.startSec + 0.065);
+}
+
+```
+
+
+* Also apply subtle **Phrase Arch Shaping**: within a connected phrase of 3 or more notes that doesn't already have an explicit `.cresc` or `.dim`, gently arch the dynamics (+8% toward the phrase peak and -6% on the phrase cadence) so melodies breathe naturally like a human soloist.
+
+
+6. In `getInstrumentArticulationProfile(...)`:
+* When `isPhraseContinuation` or `physics?.legato` is true on a sustaining instrument (strings, brass, woodwinds, choir), set `sampleOffsetSec` to **`0.095`–`0.125**` (`95ms–125ms` into the sample) so the engine completely skips the recorded attack transient and enters directly in the warm, singing sustain body of the instrument!
+* Scale `filterCutoffHz` dynamically by `normalizedVelocity` (`0.1` to `1.0`):
+```typescript
+const velScale = 0.48 + 0.68 * (normalizedVelocity ?? 0.72);
+
+```
+
+
+so `.pp` notes play with warm, dark Concertgebouw velvet (`~1,200 Hz–1,800 Hz`) while `.f` / `.ff` notes open up to full symphonic brilliance (`~4,500 Hz–6,500 Hz`).
+
+
+7. In `triggerRealtimeVoice(ctx: AudioContext, item: ScheduledNoteEvent, absStartSec: number)`:
+* When `item.sfInstrument` has a `cachedSample` AND `item.isEnsembleSection` is true (e.g., `vln1`, `vln2`, `vla`, `vc`, `cb`, `hn`, `tbn`, `str`, `choir`) and `this.activeVoices.size < 44`, render a **2-Desk Orchestral Section Unison** (Desk 1 at `0ms`, `-3.2 cents`, pan `-0.08`; Desk 2 at `+14ms`, `+3.5 cents`, pan `+0.08`, each at `0.62 * item.amp`) so section strings, horns, and choir sound like a lush multi-player Concertgebouw section rather than a single solo sample!
+
+
+8. In `exportWavBlob(score: CompiledScore)`:
+* Apply the exact same **Multi-Desk Section Unison**, **Deep-Body Legato Offset (`95ms–125ms`)**, **Dynamic Velocity-to-Brightness Low-Pass Filtering (`lpState += alpha * (raw - lpState)`)**, and **Warm Concertgebouw Hall Reflections** inside the per-sample WAV rendering loop:
+* In the `if (cachedSample)` loop inside `exportWavBlob`:
+* For `item.isEnsembleSection`, read two desk pointers (`readPos1` starting at `offsetSamples` with `rateRatio * 0.9982`, and `readPos2` starting at `offsetSamples + Math.floor(0.014 * buf.sampleRate)` with `rateRatio * 1.0020`), summing them into `s0` and `s1` for instant multi-player section lushness!
+* Pass `s0` and `s1` through a 1-pole dynamic velocity/swell low-pass filter (`alpha = Math.min(0.85, (2 * Math.PI * dynamicCutoffHz) / sampleRate)`) so `.pp` and `.mp` passages have authentic acoustic warmth and `.cresc` passages brighten smoothly as they swell.
+
+
+* In the fallback synthesis loop (when offline or in headless tests), replace the raw sine harmonics with a **Formant-Filtered Physical String/Brass/Woodwind Model** (using 8 natural harmonics shaped by the instrument's acoustic formant peak and dynamic low-pass filter) so even without network access, instruments sound warm and expressive.
+* Upgrade the stereo hall reflection pass at the bottom of `exportWavBlob` to a **6-tap low-pass filtered Concertgebouw Hall network** (`19ms`, `34ms`, `53ms`, `79ms`, `113ms`, `163ms` with warm air-absorption damping).
+
+
+
+
+
+### 3.3 `tests/studio_engine_and_ui.test.tsx` - Verify Deep-Body Legato Offsets, Section Ensemble Detection & Sustained Orchestral Buffers
+
+In `tests/studio_engine_and_ui.test.tsx`, import `isSustainingOrchestralInstrument` and `isEnsembleSectionTrack` from `../src/audio/SoundfontLibrary` and add a test verifying the new Concertgebouw performance features:
+
+```typescript
+  it('enables multi-desk section unison, sustaining orchestral detection, and deep-body legato offsets', () => {
+    expect(isSustainingOrchestralInstrument('violin')).toBe(true);
+    expect(isSustainingOrchestralInstrument('french_horn')).toBe(true);
+    expect(isSustainingOrchestralInstrument('acoustic_grand_piano')).toBe(false);
+
+    expect(isEnsembleSectionTrack('vln1', 'First Violins', 'violin')).toBe(true);
+    expect(isEnsembleSectionTrack('hn', '6 French Horns', 'french_horn')).toBe(true);
+    expect(isEnsembleSectionTrack('tpt', 'Solo Trumpet', 'trumpet')).toBe(false);
+
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+    const score = parser.compile(`
+      tenuto "5.0" {
+        meta @{ title: "Concertgebouw Legato Test", tempo: 100, time: "4/4" }
+        def vln1 "First Violins" style=standard patch="violin"
+        measure 1 {
+          vln1: a4:4.p.legato b4:4.mp.legato c5:2.f.vib |
+        }
+      }
+    `);
+
+    const timeline = (engine as any).buildScheduledTimeline(score);
+    expect(timeline.length).toBe(3);
+    expect(timeline[0].isEnsembleSection).toBe(true);
+    expect(timeline[1].isPhraseContinuation).toBe(true);
+    expect(timeline[2].isPhraseContinuation).toBe(true);
+
+    // Verify connected legato notes skip >= 85ms past the recorded attack transient
+    const profileLegato = (engine as any).getInstrumentArticulationProfile(
+      'violin',
+      'violin',
+      timeline[1].event.physics,
+      true,
+      0,
+      timeline[1].normalizedVelocity
+    );
+    expect(profileLegato.sampleOffsetSec).toBeGreaterThanOrEqual(0.085);
+
+    // Verify dynamic velocity morphs filter cutoff (.p is warmer/darker than .f)
+    const profileQuiet = (engine as any).getInstrumentArticulationProfile(
+      'violin',
+      'violin',
+      timeline[0].event.physics,
+      false,
+      0,
+      0.35
+    );
+    const profileLoud = (engine as any).getInstrumentArticulationProfile(
+      'violin',
+      'violin',
+      timeline[2].event.physics,
+      false,
+      0,
+      0.92
+    );
+    expect(profileLoud.filterCutoffHz).toBeGreaterThan(profileQuiet.filterCutoffHz);
+  });
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/`
+* `src/audio/AudioContextManager.ts`, `src/audio/PlaybackOrchestrator.ts`, `src/audio/TenutoProcessor.ts`, `src/audio/TCALManager.ts`
+* `src/components/`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) completes with zero TypeScript errors.
+2. `npx vitest run tests/studio_engine_and_ui.test.tsx tests/document_compiler.test.ts` passes 100%.
+3. `npm run build` succeeds cleanly.
+4. Playing or exporting any orchestral score renders with deep-body legato transitions (no repeated attack clicks on connected melodies), continuous non-decaying bow/breath sustain on long notes, multi-desk section chorus richness on ensemble tracks, velocity-responsive harmonic warmth, and a warm, hiss-free Concertgebouw hall acoustic space.
+
+---
+
+## 6. Constraints
+
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 7. Manual Steps
+
+After AI Studio completes this contract and you push to GitHub, run `git pull && npm run electron:build:mac` on your Mac to update your installed `.pkg`.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or restore `src/audio/SoundfontLibrary.ts`, `src/audio/StudioAudioEngine.ts`, and `tests/studio_engine_and_ui.test.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* Modified file(s): `src/audio/SoundfontLibrary.ts`, `src/audio/StudioAudioEngine.ts`, `tests/studio_engine_and_ui.test.tsx`
+* Commit message: `feat(orchestra): add multi-desk section unison, sustain loop crossfading, deep-body legato, and Concertgebouw hall DSP`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Connected Melodies Across All Instruments** | Only skipped `18ms–26ms` into the sample, re-triggering the recorded bow/tongue attack transient on every note | Skips `95ms–125ms` straight into the warm sustained body of the sample on connected notes and overlaps phrases by `65ms` |
+| **Long Held Notes (`:2`, `:1`, Tied Notes)** | Unlooped ~1.6s SoundFont recordings decayed like a plucked guitar mid-note | Cosine-crossfades the steady-state core (`0.36s–1.08s`) into a 4.8s continuous bow/breath sustain buffer |
+| **String, Brass & Choir Sections** | Played a single thin mono sample per note | Renders multi-desk unison ensembles (staggered desk entries, `±3.5c` warmth, and stereo desk spread) |
+| **Dynamics & Hall Acoustics** | Linear volume scaling into an unfiltered white-noise reverb impulse | Velocity-to-timbre harmonic filtering (`1.1 kHz` velvet *pp* to `6.4 kHz` brilliant *ff*) inside a low-pass filtered 2.1s Amsterdam Concertgebouw hall model |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-23
+Implementer: AI Agent
+
+```
+
+```

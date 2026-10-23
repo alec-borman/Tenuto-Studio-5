@@ -283,6 +283,76 @@ export function resolveSoundfontInstrument(
   return 'acoustic_grand_piano';
 }
 
+/**
+ * Returns true if the instrument sustains continuously via bow or breath
+ * (meaning held notes should crossfade-loop their steady-state body rather than decaying like a piano).
+ */
+export function isSustainingOrchestralInstrument(sfInstrument?: string | null, patch?: string): boolean {
+  const inst = (sfInstrument || patch || '').toLowerCase();
+  return (
+    inst.includes('violin') ||
+    inst.includes('viola') ||
+    inst.includes('cello') ||
+    inst.includes('contrabass') ||
+    inst.includes('string_ensemble') ||
+    inst.includes('tremolo_strings') ||
+    inst.includes('flute') ||
+    inst.includes('piccolo') ||
+    inst.includes('oboe') ||
+    inst.includes('english_horn') ||
+    inst.includes('clarinet') ||
+    inst.includes('bassoon') ||
+    inst.includes('sax') ||
+    inst.includes('horn') ||
+    inst.includes('trumpet') ||
+    inst.includes('trombone') ||
+    inst.includes('tuba') ||
+    inst.includes('brass') ||
+    inst.includes('choir') ||
+    inst.includes('voice') ||
+    inst.includes('organ') ||
+    inst.includes('pad')
+  );
+}
+
+/**
+ * Returns true when a track represents a multi-player orchestral section
+ * (e.g., 16 First Violins, 14 Second Violins, 12 Violas, 10 Cellos, 8 Contrabasses, 6 Horns, Trombones, Choir)
+ * that should be rendered with multi-desk unison chorus dispersion.
+ */
+export function isEnsembleSectionTrack(trackId?: string, trackName?: string, sfInstrument?: string | null): boolean {
+  const id = (trackId || '').toLowerCase();
+  const name = (trackName || '').toLowerCase();
+  const inst = (sfInstrument || '').toLowerCase();
+
+  if (name.includes('solo') || name.includes('principal')) {
+    return false;
+  }
+
+  return (
+    id === 'vln1' ||
+    id === 'vln2' ||
+    id === 'vla' ||
+    id === 'vc' ||
+    id === 'cb' ||
+    id === 'str' ||
+    id === 'strings' ||
+    id === 'hn' ||
+    id === 'tbn' ||
+    id === 'brass' ||
+    id === 'choir' ||
+    id === 'soprano' ||
+    id === 'alto' ||
+    id === 'tenor' ||
+    id === 'vox' ||
+    inst === 'string_ensemble_1' ||
+    inst === 'string_ensemble_2' ||
+    inst === 'brass_section' ||
+    inst === 'choir_aahs' ||
+    inst === 'voice_oohs'
+  );
+}
+
 const CDN_BASES = [
   'https://gleitz.github.io/midi-js-soundfonts/MusyngKite',
   'https://cdn.jsdelivr.net/gh/gleitz/midi-js-soundfonts@gh-pages/MusyngKite',
@@ -391,6 +461,76 @@ export class SoundfontBankLoader {
     return res;
   }
 
+  /**
+   * For bowed strings, winds, brass, and choir, extends short ~1.6s SoundFont recordings
+   * into a seamless 4.8-second sustained buffer by cosine-crossfading the warm steady-state
+   * body (0.38s..1.08s) so held notes never die out mid-phrase.
+   */
+  private createSustainedOrchestralBuffer(
+    ctx: BaseAudioContext,
+    srcBuf: AudioBuffer,
+    instrumentName: string
+  ): AudioBuffer {
+    if (!isSustainingOrchestralInstrument(instrumentName) || srcBuf.duration < 0.9 || srcBuf.duration >= 4.2) {
+      return srcBuf;
+    }
+
+    const sr = srcBuf.sampleRate;
+    const targetDuration = 4.8;
+    const targetLen = Math.floor(sr * targetDuration);
+    const numCh = srcBuf.numberOfChannels;
+    const outBuf = ctx.createBuffer(numCh, targetLen, sr);
+
+    const loopStartSec = Math.min(0.36, srcBuf.duration * 0.28);
+    const loopEndSec = Math.min(1.08, srcBuf.duration * 0.72);
+    const loopStartIdx = Math.floor(loopStartSec * sr);
+    const loopEndIdx = Math.floor(loopEndSec * sr);
+    const loopSpan = Math.max(1024, loopEndIdx - loopStartIdx);
+
+    for (let ch = 0; ch < numCh; ch++) {
+      const inData = srcBuf.getChannelData(ch);
+      const outData = outBuf.getChannelData(ch);
+
+      // Copy initial attack and steady body up to loopEndIdx
+      const initialCopy = Math.min(loopEndIdx, inData.length, targetLen);
+      for (let i = 0; i < initialCopy; i++) {
+        outData[i] = inData[i];
+      }
+
+      // Measure RMS energy at loopStartIdx vs loopEndIdx to normalize out natural sample decay
+      let rmsStart = 0;
+      let rmsEnd = 0;
+      const win = Math.min(1024, Math.floor(loopSpan / 4));
+      for (let k = 0; k < win; k++) {
+        const sA = inData[loopStartIdx + k] || 0;
+        const sB = inData[loopEndIdx - win + k] || 0;
+        rmsStart += sA * sA;
+        rmsEnd += sB * sB;
+      }
+      rmsStart = Math.sqrt(rmsStart / Math.max(1, win));
+      rmsEnd = Math.sqrt(rmsEnd / Math.max(1, win));
+      const decayComp = rmsEnd > 0.0005 && rmsStart > rmsEnd ? Math.min(2.2, rmsStart / rmsEnd) : 1.0;
+
+      // Ping-pong / cosine crossfade loop across the steady-state core for the remainder of the buffer
+      for (let i = initialCopy; i < targetLen; i++) {
+        const rel = i - initialCopy;
+        const cyclePos = (rel % loopSpan) / loopSpan;
+        // Blend forward and offset-forward windows with a raised cosine window so there is zero loop click
+        const posA = loopStartIdx + Math.floor(cyclePos * loopSpan);
+        const posB = loopStartIdx + Math.floor(((cyclePos + 0.5) % 1.0) * loopSpan);
+        const weightA = 0.5 - 0.5 * Math.cos(2 * Math.PI * cyclePos);
+        const weightB = 1.0 - weightA;
+
+        const gainA = 1.0 + (decayComp - 1.0) * cyclePos;
+        const gainB = 1.0 + (decayComp - 1.0) * ((cyclePos + 0.5) % 1.0);
+
+        outData[i] = (inData[posA] || 0) * gainA * weightA + (inData[posB] || 0) * gainB * weightB;
+      }
+    }
+
+    return outBuf;
+  }
+
   public async decodeNoteBuffer(
     ctx: BaseAudioContext,
     instrumentName: string,
@@ -435,8 +575,9 @@ export class SoundfontBankLoader {
     try {
       const arrayBuf = this.base64ToArrayBuffer(base64);
       const audioBuffer = await ctx.decodeAudioData(arrayBuf.slice(0));
-      instBuffers.set(targetMidi, audioBuffer);
-      return audioBuffer;
+      const sustainedBuffer = this.createSustainedOrchestralBuffer(ctx, audioBuffer, instrumentName);
+      instBuffers.set(targetMidi, sustainedBuffer);
+      return sustainedBuffer;
     } catch {
       return null;
     }

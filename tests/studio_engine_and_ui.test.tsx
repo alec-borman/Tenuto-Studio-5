@@ -4,7 +4,12 @@ import { describe, it, expect, vi } from 'vitest';
 import { PRESET_SCORES } from '../src/presets/presetScores';
 import { DocumentParser } from '../src/parser/DocumentParser';
 import { StudioAudioEngine } from '../src/audio/StudioAudioEngine';
-import { resolveSoundfontInstrument, SoundfontBankLoader } from '../src/audio/SoundfontLibrary';
+import {
+  resolveSoundfontInstrument,
+  SoundfontBankLoader,
+  isSustainingOrchestralInstrument,
+  isEnsembleSectionTrack,
+} from '../src/audio/SoundfontLibrary';
 import { configureTenutoMonaco } from '../src/components/CodeEditor';
 import Transport from '../src/components/Transport';
 import WebGPUCanvas from '../src/components/WebGPUCanvas';
@@ -349,6 +354,64 @@ describe('TDB-603 & TDB-604: Syntax-Highlighted Code Editor, Scrolling Player & 
 
     const wavBlob = await engine.exportWavBlob(score);
     expect(wavBlob.size).toBeGreaterThan(44100 * 2);
+  });
+
+  it('enables multi-desk section unison, sustaining orchestral detection, and deep-body legato offsets', () => {
+    expect(isSustainingOrchestralInstrument('violin')).toBe(true);
+    expect(isSustainingOrchestralInstrument('french_horn')).toBe(true);
+    expect(isSustainingOrchestralInstrument('acoustic_grand_piano')).toBe(false);
+
+    expect(isEnsembleSectionTrack('vln1', 'First Violins', 'violin')).toBe(true);
+    expect(isEnsembleSectionTrack('hn', '6 French Horns', 'french_horn')).toBe(true);
+    expect(isEnsembleSectionTrack('tpt', 'Solo Trumpet', 'trumpet')).toBe(false);
+
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+    const score = parser.compile(`
+      tenuto "5.0" {
+        meta @{ title: "Concertgebouw Legato Test", tempo: 100, time: "4/4" }
+        def vln1 "First Violins" style=standard patch="violin"
+        measure 1 {
+          vln1: a4:4.p.legato b4:4.mp.legato c5:2.f.vib |
+        }
+      }
+    `);
+
+    const timeline = (engine as any).buildScheduledTimeline(score);
+    expect(timeline.length).toBe(3);
+    expect(timeline[0].isEnsembleSection).toBe(true);
+    expect(timeline[1].isPhraseContinuation).toBe(true);
+    expect(timeline[2].isPhraseContinuation).toBe(true);
+
+    // Verify connected legato notes skip >= 85ms past the recorded attack transient
+    const profileLegato = (engine as any).getInstrumentArticulationProfile(
+      'violin',
+      'violin',
+      timeline[1].event.physics,
+      true,
+      0,
+      timeline[1].normalizedVelocity
+    );
+    expect(profileLegato.sampleOffsetSec).toBeGreaterThanOrEqual(0.085);
+
+    // Verify dynamic velocity morphs filter cutoff (.p is warmer/darker than .f)
+    const profileQuiet = (engine as any).getInstrumentArticulationProfile(
+      'violin',
+      'violin',
+      timeline[0].event.physics,
+      false,
+      0,
+      0.35
+    );
+    const profileLoud = (engine as any).getInstrumentArticulationProfile(
+      'violin',
+      'violin',
+      timeline[2].event.physics,
+      false,
+      0,
+      0.92
+    );
+    expect(profileLoud.filterCutoffHz).toBeGreaterThan(profileQuiet.filterCutoffHz);
   });
 });
 
