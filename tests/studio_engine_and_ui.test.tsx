@@ -441,4 +441,26 @@ describe('TDB-603 & TDB-604: Syntax-Highlighted Code Editor, Scrolling Player & 
     const wavBlob = await engine.exportWavBlob(score);
     expect(wavBlob.size).toBeGreaterThan(44100 * 4);
   });
+
+  it('compiles the 60-measure Mahler Symphony No. 6 Finale with 16 tracks, 3 Hammer Blows, tempo map transitions, and fused-token recovery', async () => {
+    expect(resolveSoundfontInstrument('ham', 'Mahler Wooden Box Hammer', 'timpani', 'grid')).toBe('taiko_drum');
+
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+    const mahler6Preset = PRESET_SCORES.find((p) => p.id === 'mahler_symphony_6_finale')!;
+    expect(mahler6Preset).toBeDefined();
+
+    const score = parser.compile(mahler6Preset.code);
+    expect(score.defs.length).toBe(16);
+    expect(score.meta.tempoMap?.length).toBe(7);
+
+    const { totalQuarterBeats, totalSeconds } = engine.calculateScoreDuration(score);
+    // 60 measures * 4 beats = 240 quarter beats with zero tuplet or fused-token spillover
+    expect(totalQuarterBeats).toBe(240);
+    expect(totalSeconds).toBeGreaterThan(100);
+
+    const hammerEvents = score.events.filter((e) => e.trackId === 'ham');
+    expect(hammerEvents.length).toBe(4); // Three Hammer Blows (M19, M37, M49) + Final Strike (M60)
+  });
 });
+

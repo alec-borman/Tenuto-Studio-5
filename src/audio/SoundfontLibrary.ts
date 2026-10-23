@@ -237,6 +237,10 @@ export function resolveSoundfontInstrument(
   const cleanPatch = (patch || '').toLowerCase().replace(/^"|"$/g, '');
   const cleanStyle = (style || 'standard').toLowerCase();
 
+  if (id === 'ham' || name.includes('hammer') || cleanPatch === 'taiko_drum') {
+    return 'taiko_drum';
+  }
+
   if (id === 'timp' || id.includes('timp') || name.includes('timpani') || cleanPatch === 'timpani') {
     return 'timpani';
   }
@@ -345,6 +349,8 @@ export function isEnsembleSectionTrack(trackId?: string, trackName?: string, sfI
     id === 'alto' ||
     id === 'tenor' ||
     id === 'vox' ||
+    name.includes('section') ||
+    name.includes('trumpets') ||
     inst === 'string_ensemble_1' ||
     inst === 'string_ensemble_2' ||
     inst === 'brass_section' ||

@@ -21,6 +21,7 @@ export interface ScoreMeta {
   key?: string;
   sidechain: string | null;
   autoPadVoices: boolean;
+  tempoMap?: Array<{ startWhole: number; tempo: number }>;
 }
 
 export interface CompilerDiagnostic {
@@ -198,7 +199,7 @@ export class DocumentParser {
     const finalTokens: string[] = [];
     for (const tok of merged) {
       const fusedMatch = tok.match(
-        /^([a-gA-G][#b]*[0-9]*:[0-9.]+\.(?:pp|p|mp|mf|f|ff|sfz|stacc|ten|marc|cresc|crescendo|dim|diminuendo))([a-gA-G][#b]*[0-9]*:[0-9.].*)$/
+        /^([a-gA-G][#b]*[0-9]*:[0-9.]+(?:\.(?:pp|p|mp|mf|f|ff|sfz|stacc|staccato|ten|tenuto|marc|accent|legato|vib|trem|pizz|ped|fp|fermata|trill|mordent|cresc|crescendo|dim|diminuendo))+?)([a-gA-G][#b]*[0-9]+:[0-9.].*)$/
       );
       if (fusedMatch) {
         finalTokens.push(fusedMatch[1], fusedMatch[2]);
@@ -736,6 +737,18 @@ export class DocumentParser {
 
       const measureBody = cleanSource.slice(bodyStartIdx, cursor - 1);
       measureHeaderRegex.lastIndex = cursor;
+
+      const measureMetaMatch = measureBody.match(/\bmeta\s*@\{([^}]*)\}/i);
+      if (measureMetaMatch) {
+        const parsedMeasureMeta = this.parseDictionary(measureMetaMatch[1]);
+        if (typeof parsedMeasureMeta.tempo === 'number' && parsedMeasureMeta.tempo > 0) {
+          if (!meta.tempoMap) meta.tempoMap = [];
+          meta.tempoMap.push({
+            startWhole: currentScoreTime.numerator / currentScoreTime.denominator,
+            tempo: parsedMeasureMeta.tempo,
+          });
+        }
+      }
 
       for (let mNum = startNum; mNum <= endNum; mNum++) {
         const measureStartTime = { ...currentScoreTime };

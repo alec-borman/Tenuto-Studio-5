@@ -220,9 +220,43 @@ export class StudioAudioEngine {
     this.isLooping = loop;
   }
 
+  private wholeNoteToSeconds(
+    wholeNote: number,
+    baseTempo: number,
+    tempoMap?: Array<{ startWhole: number; tempo: number }>
+  ): number {
+    if (!Number.isFinite(wholeNote) || wholeNote <= 0) return 0;
+    if (!tempoMap || tempoMap.length === 0) {
+      return wholeNote * ((60 / baseTempo) * 4);
+    }
+
+    let elapsedSec = 0;
+    let cursorWhole = 0;
+    let currentTempo = baseTempo;
+
+    for (let i = 0; i < tempoMap.length; i++) {
+      const entry = tempoMap[i];
+      if (entry.startWhole <= cursorWhole) {
+        currentTempo = entry.tempo > 0 ? entry.tempo : currentTempo;
+        continue;
+      }
+      if (wholeNote <= entry.startWhole) {
+        break;
+      }
+      const segWhole = entry.startWhole - cursorWhole;
+      elapsedSec += segWhole * ((60 / currentTempo) * 4);
+      cursorWhole = entry.startWhole;
+      currentTempo = entry.tempo > 0 ? entry.tempo : currentTempo;
+    }
+
+    if (wholeNote > cursorWhole) {
+      elapsedSec += (wholeNote - cursorWhole) * ((60 / currentTempo) * 4);
+    }
+    return elapsedSec;
+  }
+
   public calculateScoreDuration(score: CompiledScore): { totalQuarterBeats: number; totalSeconds: number } {
     const tempo = Number(score.meta?.tempo) || 120;
-    const secPerWholeNote = (60 / tempo) * 4;
     let maxWholeFraction = 0;
 
     for (const ev of score.events) {
@@ -236,12 +270,13 @@ export class StudioAudioEngine {
     if (maxWholeFraction <= 0) maxWholeFraction = 0.25;
     return {
       totalQuarterBeats: maxWholeFraction * 4,
-      totalSeconds: maxWholeFraction * secPerWholeNote,
+      totalSeconds: this.wholeNoteToSeconds(maxWholeFraction, tempo, score.meta?.tempoMap),
     };
   }
 
   private buildScheduledTimeline(score: CompiledScore): ScheduledNoteEvent[] {
     const tempo = Number(score.meta?.tempo) || 120;
+    const tempoMap = score.meta?.tempoMap;
     const secPerWholeNote = (60 / tempo) * 4;
     const defsById = new Map<string, TrackDefinition>();
     const trackOrderById = new Map<string, number>();
@@ -277,14 +312,16 @@ export class StudioAudioEngine {
       const trackIdx = trackOrderById.get(trackId) ?? 0;
       const isGridOrDrum = style === 'grid' || Boolean(ev.pitch.gridKey);
       const seatingOffsetSec = isGridOrDrum ? 0 : (trackIdx % 7) * 0.0014;
-      let startSec = startWhole * secPerWholeNote + seatingOffsetSec;
+      const rawStartSec = this.wholeNoteToSeconds(startWhole, tempo, tempoMap);
+      const rawEndSec = this.wholeNoteToSeconds(startWhole + durWhole, tempo, tempoMap);
+      let startSec = rawStartSec + seatingOffsetSec;
       if (isGrace) {
         startSec = Math.max(0, startSec - 0.045);
       }
       if (ev.physics?.pullMs) startSec += ev.physics.pullMs / 1000;
       if (ev.physics?.pushMs) startSec = Math.max(0, startSec - ev.physics.pushMs / 1000);
 
-      let durSec = isGrace ? 0.045 : Math.max(0.05, durWhole * secPerWholeNote);
+      let durSec = isGrace ? 0.045 : Math.max(0.05, rawEndSec - rawStartSec);
       if (ev.physics?.pizz) {
         durSec = Math.min(0.16, Math.max(0.045, durSec * 0.35));
       } else if (ev.physics?.articulation === 'stacc' || ev.physics?.articulation === 'staccato') {
@@ -550,6 +587,16 @@ export class StudioAudioEngine {
 
     if (isDrumTrack) {
       const key = (item.gridKey || '').toLowerCase();
+      const isHammerBlow =
+        item.sfInstrument === 'taiko_drum' ||
+        item.event.trackId === 'ham' ||
+        Boolean(item.def?.name?.toLowerCase().includes('hammer'));
+
+      if (isHammerBlow) {
+        this.scheduleDrumHit(ctx, voiceOut, pannerNode, 'hammer', item.midi, safeStart, item.amp);
+        return;
+      }
+
       const isTimpaniStrike =
         item.sfInstrument === 'timpani' &&
         (key === 'k' || key === 'bd' || key === 'kick' || key === 'lt' || key === 'mt' || key === 'ht' || !key);
@@ -1164,6 +1211,80 @@ export class StudioAudioEngine {
     const key = gridKey.toLowerCase();
     const sr = ctx.sampleRate || 44100;
 
+    // 0. MAHLER WOODEN BOX HAMMER (hammer / ham): Non-metallic deep wooden resonator box thud
+    if (key === 'hammer' || key === 'ham') {
+      const subOsc = ctx.createOscillator();
+      const woodOsc1 = ctx.createOscillator();
+      const woodOsc2 = ctx.createOscillator();
+      const subGain = ctx.createGain();
+      const woodGain = ctx.createGain();
+
+      subOsc.type = 'sine';
+      subOsc.frequency.setValueAtTime(58, startSec);
+      subOsc.frequency.exponentialRampToValueAtTime(31, startSec + 0.55);
+
+      woodOsc1.type = 'triangle';
+      woodOsc1.frequency.setValueAtTime(118, startSec);
+      woodOsc1.frequency.exponentialRampToValueAtTime(84, startSec + 0.18);
+
+      woodOsc2.type = 'sine';
+      woodOsc2.frequency.setValueAtTime(176, startSec);
+      woodOsc2.frequency.exponentialRampToValueAtTime(124, startSec + 0.14);
+
+      const peak = Math.max(0.02, amp * 1.35);
+      subGain.gain.setValueAtTime(0.001, startSec);
+      subGain.gain.linearRampToValueAtTime(peak, startSec + 0.005);
+      subGain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.65);
+
+      woodGain.gain.setValueAtTime(peak * 0.65, startSec);
+      woodGain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.22);
+
+      subOsc.connect(subGain);
+      woodOsc1.connect(woodGain);
+      woodOsc2.connect(woodGain);
+      subGain.connect(output);
+      woodGain.connect(output);
+
+      subOsc.start(startSec);
+      woodOsc1.start(startSec);
+      woodOsc2.start(startSec);
+      subOsc.stop(startSec + 0.68);
+      woodOsc1.stop(startSec + 0.24);
+      woodOsc2.stop(startSec + 0.24);
+
+      let cleaned = false;
+      const cleanup: ActiveVoiceCleanup = {
+        fadeOutAndStop: (_now: number) => {
+          cleanup.stopAndDisconnect();
+        },
+        stopAndDisconnect: () => {
+          if (cleaned) return;
+          cleaned = true;
+          this.activeVoices.delete(cleanup);
+          try {
+            subOsc.stop();
+            woodOsc1.stop();
+            woodOsc2.stop();
+          } catch {
+            // Ignore
+          }
+          try {
+            subOsc.disconnect();
+            woodOsc1.disconnect();
+            woodOsc2.disconnect();
+            subGain.disconnect();
+            woodGain.disconnect();
+            pannerNode?.disconnect();
+          } catch {
+            // Ignore
+          }
+        },
+      };
+      this.activeVoices.add(cleanup);
+      subOsc.onended = () => cleanup.stopAndDisconnect();
+      return;
+    }
+
     // 1. STUDIO KICK DRUM (k / bd / kick / 36): Sub Membrane + Punch Body + Beater Click
     if (key === 'k' || key === 'bd' || key === 'kick' || midi === 36) {
       const subOsc = ctx.createOscillator();
@@ -1651,6 +1772,36 @@ export class StudioAudioEngine {
 
       if (isDrum) {
         const key = (item.gridKey || 'k').toLowerCase();
+        const isHammerBlow =
+          item.sfInstrument === 'taiko_drum' ||
+          item.event.trackId === 'ham' ||
+          Boolean(item.def?.name?.toLowerCase().includes('hammer'));
+
+        if (isHammerBlow) {
+          const hammerFrames = Math.min(totalFrames - startFrame, Math.floor(0.72 * sampleRate));
+          let phSub = 0;
+          let phBox1 = 0;
+          let phBox2 = 0;
+          let lpWood = 0;
+          for (let i = 0; i < hammerFrames; i++) {
+            const t = i / sampleRate;
+            const subFreq = 31 + 27 * Math.exp(-t * 9.5);
+            const box1Freq = 86 + 34 * Math.exp(-t * 18);
+            const box2Freq = 132 + 48 * Math.exp(-t * 22);
+            phSub += (2 * Math.PI * subFreq) / sampleRate;
+            phBox1 += (2 * Math.PI * box1Freq) / sampleRate;
+            phBox2 += (2 * Math.PI * box2Freq) / sampleRate;
+
+            const sub = Math.sin(phSub) * Math.exp(-t * 5.2);
+            const box = (Math.sin(phBox1) * 0.65 + Math.sin(phBox2) * 0.35) * Math.exp(-t * 14.5) * 0.65;
+            const rawNoise = (Math.random() * 2 - 1) * Math.exp(-t * 65);
+            lpWood += 0.095 * (rawNoise - lpWood);
+            const sample = Math.tanh((sub + box + lpWood * 0.75) * 1.55) * item.amp * 1.15;
+            left[startFrame + i] += sample * gainL;
+            right[startFrame + i] += sample * gainR;
+          }
+          continue;
+        }
 
         // If this is an orchestral Timpani track with a cached timpani SoundFont sample, render the real sample!
         if (
