@@ -501,9 +501,22 @@ export default function WebGPUCanvas({
           const baseColor = getTrackColor(tId, ev.style, trackIndexMap.get(tId) ?? 0);
           const swell = ev.physics?.swell;
           const noteH = Math.max(5, rowH - 3);
+          const badge =
+            ev.physics?.trill
+              ? ' tr~'
+              : ev.physics?.vibrato
+                ? ' ~'
+                : ev.physics?.pizz
+                  ? ' pizz'
+                  : ev.physics?.fermata
+                    ? ' 𝄐'
+                    : swell === 'crescendo'
+                      ? ' <'
+                      : swell === 'diminuendo'
+                        ? ' >'
+                        : '';
           const label =
-            (ev.pitch?.noteName || `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`) +
-            (swell === 'crescendo' ? ' <' : swell === 'diminuendo' ? ' >' : '');
+            (ev.pitch?.noteName || `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`) + badge;
 
           return (
             <g

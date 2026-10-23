@@ -8,6 +8,16 @@ export interface EventPhysics {
   swell?: 'crescendo' | 'diminuendo';
   startVelocity?: number;
   endVelocity?: number;
+  pedal?: boolean;
+  arp?: boolean;
+  vibrato?: boolean;
+  pizz?: boolean;
+  fermata?: boolean;
+  fp?: boolean;
+  legato?: boolean;
+  trill?: boolean;
+  mordent?: boolean;
+  roll?: number;
   pan?: number;
   pushMs?: number;
   pullMs?: number;
@@ -133,8 +143,36 @@ export class ASTSerializer {
     };
 
     for (const mod of modifiers) {
-      if (['stacc', 'staccato', 'marc', 'ten', 'tenuto', 'accent', 'slur', 'pizz'].includes(mod)) {
+      if (['stacc', 'staccato', 'marc', 'ten', 'tenuto', 'accent'].includes(mod)) {
         physics.articulation = mod;
+      } else if (mod === 'slur' || mod === 'legato') {
+        physics.articulation = mod;
+        physics.legato = true;
+      } else if (mod === 'pizz' || mod === 'pizzicato') {
+        physics.articulation = 'pizz';
+        physics.pizz = true;
+      } else if (mod === 'ped' || mod === 'pedal') {
+        physics.pedal = true;
+      } else if (mod === 'arp' || mod === 'strum' || mod === 'rolled') {
+        physics.arp = true;
+      } else if (mod === 'vib' || mod === 'vibrato') {
+        physics.vibrato = true;
+      } else if (mod === 'fermata' || mod === 'hold') {
+        physics.fermata = true;
+      } else if (mod === 'fp' || mod === 'sfp') {
+        physics.fp = true;
+        physics.velocity = 118;
+      } else if (mod === 'tr' || mod === 'trill') {
+        physics.trill = true;
+      } else if (mod === 'mordent' || mod === 'turn') {
+        physics.mordent = true;
+      } else if (mod === 'trem' || mod === 'tremolo') {
+        physics.roll = 4;
+      } else if (mod.startsWith('roll(') && mod.endsWith(')')) {
+        const count = parseInt(mod.slice(5, -1), 10);
+        if (!isNaN(count) && count > 1) {
+          physics.roll = Math.min(16, count);
+        }
       } else if (dynamicVelocities[mod] !== undefined) {
         physics.velocity = dynamicVelocities[mod];
       } else if (mod === 'reverse') {

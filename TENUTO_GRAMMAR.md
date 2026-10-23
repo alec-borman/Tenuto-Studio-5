@@ -61,6 +61,19 @@ Define as many tracks as your arrangement needs using `def <trackId> "<Display N
 | `synth` | `"808_sub"` | Deep sine/triangle sub-bass with punchy low-pass envelope. |
 | `grid` | `"tenuto_808_kit"` | Percussion trigger grid supporting kick, snare, clap, hi-hats, toms, and cymbals. |
 
+### 3.1 Full 128-Instrument HD SoundFont Patch Catalog (`patch="..."`)
+
+Tenuto Studio 5 streams and caches real multi-sampled acoustic recordings from the **MusyngKite General MIDI SoundFont library** (and automatically detects orchestral instruments from track IDs like `vln1`, `vla`, `vc`, `cb`, `fl`, `hn`, `choir`, `soprano`, `alto`, `harp`, `pno`):
+
+* **Pianos & Keyboards:** `salamander_grand`, `acoustic_grand_piano`, `bright_piano`, `electric_grand`, `rhodes`, `dx7`, `harpsichord`, `clavinet`, `celesta`
+* **Chromatic Percussion:** `vibraphone`, `marimba`, `xylophone`, `glockenspiel`, `tubular_bells`, `music_box`, `dulcimer`
+* **Organs & Accordions:** `church_organ`, `drawbar_organ`, `rock_organ`, `reed_organ`, `accordion`, `bandoneon`, `harmonica`
+* **Orchestral Strings & Harp:** `violin`, `viola`, `cello`, `contrabass`, `string_ensemble_1`, `chamber_strings`, `tremolo_strings`, `pizzicato_strings`, `orchestral_harp`, `timpani`
+* **Choir & Voices:** `choir_aahs`, `voice_oohs`, `synth_choir`, `warm_pad`, `halo_pad`, `sweep_pad`
+* **Orchestral Brass:** `french_horn`, `trumpet`, `muted_trumpet`, `trombone`, `tuba`, `brass_section`
+* **Woodwinds:** `flute`, `piccolo`, `oboe`, `english_horn`, `clarinet`, `bassoon`, `soprano_sax`, `alto_sax`, `tenor_sax`, `baritone_sax`, `pan_flute`, `shakuhachi`, `ocarina`
+* **Guitars, Basses & World:** `nylon_guitar`, `steel_guitar`, `jazz_guitar`, `clean_guitar`, `overdriven_guitar`, `distortion_guitar`, `acoustic_bass`, `finger_bass`, `fretless_bass`, `slap_bass`, `sitar`, `koto`, `kalimba`, `banjo`
+
 ---
 
 ## 4. Pitches, Drum Keys, Rests & Sticky Octaves
@@ -133,6 +146,10 @@ Durations are appended to a pitch, chord, or rest using a colon (`:`):
 * **Macros (`macro name = { ... }` and `$name`):** Define reusable motifs once and invoke them with `$`:
   * `macro arp_motif = { a3:16 e4 a4 c5 e5 c5 a4 e4 }`
   * `pno: $arp_motif $arp_motif |`
+* **Inline Phrase Repeats (`repeat N { ... }`):** Repeat any pattern inline without copy-pasting tokens:
+  * `pno: repeat 2 { c4:8 d4:8 e4:8 g4:8 } |`
+* **Tied Notes Across Beats & Barlines (`~`):** Merge consecutive notes or chords of the same pitch into one continuous sustained sound:
+  * `vln1: d5:2~ d5:4 e5:4 |` or `pad: [c4 e4 g4]:1~`
 
 ---
 
@@ -140,10 +157,23 @@ Durations are appended to a pitch, chord, or rest using a colon (`:`):
 
 Chain dot modifiers directly onto any note or chord:
 
-* **Articulations:**
+* **Articulations, Pedal & Rolled Chords:**
   * `.stacc` / `.staccato` (short, detached gate)
   * `.ten` / `.tenuto` (full, slightly lengthened sustain)
   * `.marc` / `.accent` (emphasized attack)
+  * `.legato` / `.slur` (smoothly overlapping `1.08x` gate with softened attack)
+  * `.ped` / `.pedal` (damper sustain pedal extension for piano and harp arpeggios)
+  * `.arp` / `.strum` (rolls chord notes from lowest pitch to highest by `28ms` per voice, e.g., `[c3 g3 c4 e4 g4]:1.arp`)
+  * `.pizz` (plucked string articulation with snappy transient decay)
+  * `.fermata` (holds the note or chord for `1.65x` its written duration)
+* **Ornaments, Trills & Tremolo Rolls:**
+  * `.tr` / `.trill` (rapid whole-step alternation over the sustained note)
+  * `.mordent` (rapid upper-neighbor ornamental flick on the initial attack)
+  * `.roll(N)` / `.trem` (subdivides a note or chord into `N` rapid articulated repetitions for timpani rolls and string tremolos, e.g., `c5:4.roll(4)`)
+  * `:grace` (atemporal pre-beat ornamental grace note triggered `45ms` ahead of the beat)
+* **Vibrato & Expressive Accents:**
+  * `.vib` / `.vibrato` (delayed-onset `5.5 Hz` pitch vibrato LFO for solo violin, flute, and vocal leads)
+  * `.fp` (*forte-piano*: sharp `ff` attack that immediately drops to a soft `p` sustain)
 * **Dynamics & Velocity:**
   * `.pp` (`40`), `.p` (`60`), `.mp` (`75`), `.mf` (`90`), `.f` (`105`), `.ff` (`120`), `.sfz` (`124`)
   * `.vol(0..127)` for exact MIDI velocity (e.g., `c4:8.vol(110)`)

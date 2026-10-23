@@ -237,8 +237,23 @@ export class DocumentParser {
     let voiceDuration = { numerator: 0, denominator: 1 };
 
     const expandedTokens: string[] = [];
-    for (const tok of rawTokens) {
+    for (let idx = 0; idx < rawTokens.length; idx++) {
+      const tok = rawTokens[idx];
       if (tok === '|') continue;
+
+      if (tok.toLowerCase() === 'repeat' && idx + 2 < rawTokens.length) {
+        const count = parseInt(rawTokens[idx + 1], 10);
+        const block = rawTokens[idx + 2];
+        if (!isNaN(count) && count > 0 && block.startsWith('{') && block.endsWith('}')) {
+          const innerTokens = this.tokenizeVoiceStream(block.slice(1, -1));
+          for (let r = 0; r < Math.min(32, count); r++) {
+            expandedTokens.push(...innerTokens);
+          }
+          idx += 2;
+          continue;
+        }
+      }
+
       if (tok.startsWith('$')) {
         const macroName = tok.slice(1).replace(/\(.*\)$/, '');
         const macroBody = macros.get(macroName) || macros.get('$' + macroName);
@@ -332,16 +347,27 @@ export class DocumentParser {
         const chordMatch = token.match(/^\[([^\]]+)\](.*)$/);
         if (chordMatch) {
           const chordPitches = chordMatch[1].trim().split(/\s+/).filter(Boolean);
-          const suffix = chordMatch[2] || ''; // e.g. ":4.stacc"
+          const suffix = chordMatch[2] || '';
 
           let chordDuration: TemporalResult | null = null;
+          let sharedPhysics: any = undefined;
+          const chordEvents: AtomicEvent[] = [];
+
           for (let i = 0; i < chordPitches.length; i++) {
             const noteToken = i === 0 ? `${chordPitches[i]}${suffix}` : chordPitches[i];
             const ev = serializer.parseToken(noteToken, trackDef.style);
             if (i === 0) {
               chordDuration = ev.duration;
-            } else if (chordDuration) {
-              ev.duration = { ...chordDuration };
+              sharedPhysics = ev.physics;
+            } else {
+              if (chordDuration) ev.duration = { ...chordDuration };
+              if (sharedPhysics) {
+                ev.physics = {
+                  ...sharedPhysics,
+                  modifiers: sharedPhysics.modifiers ? [...sharedPhysics.modifiers] : undefined,
+                  fx: sharedPhysics.fx ? [...sharedPhysics.fx] : undefined,
+                };
+              }
             }
             ev.rawToken = token;
             ev.startTime = { ...cursorTime };
@@ -353,8 +379,40 @@ export class DocumentParser {
             ev.env = trackDef.env;
 
             if (!ev.pitch.isRest && !ev.pitch.isSpacer) {
-              events.push(ev);
+              chordEvents.push(ev);
             }
+          }
+
+          if (sharedPhysics?.arp && chordEvents.length > 1) {
+            const sortedByPitch = [...chordEvents].sort((a, b) => a.pitch.midi - b.pitch.midi);
+            sortedByPitch.forEach((cev, rollIdx) => {
+              if (!cev.physics) cev.physics = {};
+              cev.physics.pullMs = (cev.physics.pullMs || 0) + rollIdx * 28;
+            });
+          }
+
+          const rollSubdiv = sharedPhysics?.roll && sharedPhysics.roll > 1 ? sharedPhysics.roll : 1;
+          if (rollSubdiv > 1 && chordDuration && !chordDuration.isGrace) {
+            const subNum = chordDuration.numerator;
+            const subDen = chordDuration.denominator * rollSubdiv;
+            const div = this.gcd(subNum, subDen);
+            const sliceDur = { numerator: subNum / div, denominator: subDen / div };
+            let sliceCursor = { ...cursorTime };
+
+            for (let r = 0; r < rollSubdiv; r++) {
+              for (const baseEv of chordEvents) {
+                const cloned: AtomicEvent = {
+                  ...baseEv,
+                  duration: { ...sliceDur },
+                  startTime: { ...sliceCursor },
+                  physics: baseEv.physics ? { ...baseEv.physics, roll: undefined } : undefined,
+                };
+                events.push(cloned);
+              }
+              sliceCursor = this.addFractions(sliceCursor, sliceDur);
+            }
+          } else {
+            events.push(...chordEvents);
           }
 
           if (chordDuration && !chordDuration.isGrace) {
@@ -375,8 +433,27 @@ export class DocumentParser {
         ev.patch = trackDef.patch;
         ev.env = trackDef.env;
 
+        const rollCount = ev.physics?.roll && ev.physics.roll > 1 ? ev.physics.roll : 1;
         if (!ev.pitch.isRest && !ev.pitch.isSpacer) {
-          events.push(ev);
+          if (rollCount > 1 && !ev.duration.isGrace) {
+            const subNum = ev.duration.numerator;
+            const subDen = ev.duration.denominator * rollCount;
+            const div = this.gcd(subNum, subDen);
+            const sliceDur = { numerator: subNum / div, denominator: subDen / div };
+            let sliceCursor = { ...cursorTime };
+
+            for (let r = 0; r < rollCount; r++) {
+              events.push({
+                ...ev,
+                duration: { ...sliceDur },
+                startTime: { ...sliceCursor },
+                physics: ev.physics ? { ...ev.physics, roll: undefined } : undefined,
+              });
+              sliceCursor = this.addFractions(sliceCursor, sliceDur);
+            }
+          } else {
+            events.push(ev);
+          }
         }
 
         if (!ev.duration.isGrace) {
@@ -506,7 +583,7 @@ export class DocumentParser {
         version: '5.0',
         meta,
         defs: Array.from(defsMap.values()),
-        events: allEvents,
+        events: this.mergeTiedEvents(allEvents),
         diagnostics,
       };
     }
@@ -734,8 +811,52 @@ export class DocumentParser {
       version,
       meta,
       defs: Array.from(defsMap.values()),
-      events: allEvents,
+      events: this.mergeTiedEvents(allEvents),
       diagnostics,
     };
+  }
+
+  /**
+   * Merges forward-looking tied notes (`~`) of identical pitch on the same track & voice
+   * into a single continuous AtomicEvent so tied notes sustain seamlessly across beats and barlines.
+   */
+  private mergeTiedEvents(events: AtomicEvent[]): AtomicEvent[] {
+    const merged: AtomicEvent[] = [];
+    const activeTies = new Map<string, AtomicEvent>();
+
+    for (const ev of events) {
+      if (!ev.pitch || ev.pitch.isRest || ev.pitch.isSpacer || !ev.startTime) {
+        merged.push(ev);
+        continue;
+      }
+
+      const key = `${ev.trackId || 'pno'}:${ev.voiceId || 'v1'}:${ev.pitch.midi}`;
+      const prevTied = activeTies.get(key);
+
+      if (prevTied && prevTied.startTime) {
+        const expectedStart = this.addFractions(prevTied.startTime, prevTied.duration);
+        const isContiguous =
+          expectedStart.numerator * ev.startTime.denominator ===
+          ev.startTime.numerator * expectedStart.denominator;
+
+        if (isContiguous) {
+          prevTied.duration = this.addFractions(prevTied.duration, ev.duration);
+          if (ev.physics?.vibrato && prevTied.physics) prevTied.physics.vibrato = true;
+          if (!ev.physics?.tie) {
+            activeTies.delete(key);
+          }
+          continue;
+        } else {
+          activeTies.delete(key);
+        }
+      }
+
+      merged.push(ev);
+      if (ev.physics?.tie) {
+        activeTies.set(key, ev);
+      }
+    }
+
+    return merged;
   }
 }

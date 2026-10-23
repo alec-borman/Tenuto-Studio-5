@@ -1,0 +1,652 @@
+Here is **Implementation Contract (`TDB-611`)** to bring classical and modern sheet-music expression into **Tenuto Studio 5**:
+
+1. **True Tied Notes Across Beats & Barlines (`~`):** Consecutive tied notes or chords (`c4:2~ c4:4` or `[c4 e4 g4]:1~ | [c4 e4 g4]:2`) merge into a single continuous sustained note so the second note never re-strikes its attack.
+
+
+2. **Rolled / Arpeggiated Chords (`.arp` / `.strum`):** Writing `[c3 g3 c4 e4 g4]:1.arp` automatically staggers the physical attack of each note from bottom to top by `28ms` per voice while keeping the logical beat grid exact.
+3. **Sustain Pedal (`.ped` / `.pedal`) & Legato Slurs (`.legato` / `.slur`):** `.ped` lets arpeggiated piano and harp notes ring out over each other (`2.4x` sustain), and `.legato` / `.slur` overlaps consecutive melodic notes (`1.08x` gate) with a softened attack transient.
+
+
+4. **Ornaments & Rolls (`.trill`, `.mordent`, `.roll(N)`, `.trem`, `:grace`):**
+* `.tr` / `.trill`: Rapid whole-step alternation (`~14 Hz`) over the sustained note.
+* `.mordent`: Rapid upper-neighbor ornamental flick on the initial attack.
+* `.roll(N)` / `.trem`: Subdivides a note into `N` rapid articulated repetitions for timpani rolls and string tremolos.
+
+
+* `:grace`: Shifts physical execution `45ms` ahead of the parent note while consuming `0` logical beats.
+
+
+
+
+5. **Instrumental Expression (`.vib`, `.pizz`, `.fermata`, `.fp`) & Phrase Repeats (`repeat N { ... }`):**
+* `.vib` / `.vibrato`: Delayed-onset `5.5 Hz` pitch vibrato LFO for strings, flute, and choir.
+* `.pizz`: Short, woody plucked string envelope.
+
+
+* `.fermata`: Holds the note/chord for `1.65x` its written duration.
+* `.fp` (*forte-piano*): Sharp `ff` accent that immediately drops to a soft `p` sustain.
+* `repeat N { ... }`: Repeats any pattern inline without copy-pasting tokens.
+
+
+
+
+
+Paste the contract below directly into Google AI Studio:
+
+```markdown
+# Implementation Contract: Sheet Music Expression Engine — Ties, Rolled Chords, Pedal, Ornaments, Vibrato & Repeats (TDB-611)
+
+**Project:** Tenuto Studio 5
+**Scope:** Upgrade `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, `src/audio/StudioAudioEngine.ts`, `src/components/WebGPUCanvas.tsx`, and `TENUTO_GRAMMAR.md` to support forward-looking ties (`~`), rolled chords (`.arp`), sustain pedal (`.ped`), legato slurs (`.legato` / `.slur`), ornaments (`.trill`, `.mordent`, `.roll(N)`, `.trem`, `:grace`), vibrato (`.vib`), pizzicato (`.pizz`), fermatas (`.fermata`), forte-piano (`.fp`), and inline `repeat N { ... }` blocks.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+While Tenuto Studio 5 now supports multi-track scores and dynamic swells (`.cresc` / `.dim`), several core sheet-music markings either act as no-op strings or do not affect physical audio synthesis:
+1. Tied notes (`c4:2~ c4:4`) set `physics.tie = true` in `ASTSerializer.ts` but still emit two separate note events that re-trigger their attack envelope on the second note.
+2. Chords lack a rolled/arpeggiated modifier (`.arp` / `.strum`), piano/harp notes lack a sustain pedal modifier (`.ped` / `.pedal`), and `:grace` notes trigger at `0s` duration instead of an ornamental pre-beat flick.
+3. Expressive markings from sheet music—vibrato (`.vib`), pizzicato (`.pizz`), trills (`.tr` / `.trill`), mordents (`.mordent`), tremolos/rolls (`.roll(N)` / `.trem`), legato slurs (`.legato` / `.slur`), fermatas (`.fermata`), forte-piano (`.fp`), and `repeat N { ... }` blocks—are not yet wired into the compiler and audio engine.
+
+This contract implements all of these sheet-music capabilities across the compiler, real-time WebAudio engine, offline WAV renderer, Piano Roll visualizer, and grammar guide.
+
+---
+
+## 2. Root Cause
+1. `src/parser/ASTSerializer.ts` (`EventPhysics` and `parseModifiersToPhysics`) does not parse `.ped`, `.arp`, `.vib`, `.pizz`, `.fermata`, `.fp`, `.legato`, `.trill`, `.mordent`, or `.roll(N)`.
+2. `src/parser/DocumentParser.ts` does not merge tied notes (`~`) across consecutive events/measures, stagger `.arp` chord notes, subdivide `.roll(N)` notes, or expand `repeat N { ... }` blocks.
+3. `src/audio/StudioAudioEngine.ts` does not apply vibrato LFOs, trill/mordent pitch alternations, pizzicato pluck envelopes, forte-piano drops, sustain pedal extensions, or `:grace` pre-beat offsets.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/parser/ASTSerializer.ts` - Parse Sheet Music Articulations & Ornaments into `EventPhysics`
+In `src/parser/ASTSerializer.ts`:
+
+1. Update the `EventPhysics` interface to include the new sheet-music properties:
+```typescript
+export interface EventPhysics {
+  articulation?: string;
+  modifiers?: string[];
+  velocity?: number;
+  swell?: 'crescendo' | 'diminuendo';
+  startVelocity?: number;
+  endVelocity?: number;
+  pedal?: boolean;
+  arp?: boolean;
+  vibrato?: boolean;
+  pizz?: boolean;
+  fermata?: boolean;
+  fp?: boolean;
+  legato?: boolean;
+  trill?: boolean;
+  mordent?: boolean;
+  roll?: number;
+  pan?: number;
+  pushMs?: number;
+  pullMs?: number;
+  glideMs?: number;
+  slice?: number;
+  reverse?: boolean;
+  stretch?: boolean;
+  tie?: boolean;
+  fx?: Array<{ type: string; params: Record<string, any> }>;
+  cc?: { controller: number; values: number[]; curve: string };
+}
+
+```
+
+2. Inside `parseModifiersToPhysics(modifiers: string[], defaultVelocity: number = 80)`, add parsing for the new modifiers inside the `for (const mod of modifiers)` loop:
+
+```typescript
+      if (['stacc', 'staccato', 'marc', 'ten', 'tenuto', 'accent'].includes(mod)) {
+        physics.articulation = mod;
+      } else if (mod === 'slur' || mod === 'legato') {
+        physics.articulation = mod;
+        physics.legato = true;
+      } else if (mod === 'pizz' || mod === 'pizzicato') {
+        physics.articulation = 'pizz';
+        physics.pizz = true;
+      } else if (mod === 'ped' || mod === 'pedal') {
+        physics.pedal = true;
+      } else if (mod === 'arp' || mod === 'strum' || mod === 'rolled') {
+        physics.arp = true;
+      } else if (mod === 'vib' || mod === 'vibrato') {
+        physics.vibrato = true;
+      } else if (mod === 'fermata' || mod === 'hold') {
+        physics.fermata = true;
+      } else if (mod === 'fp' || mod === 'sfp') {
+        physics.fp = true;
+        physics.velocity = 118;
+      } else if (mod === 'tr' || mod === 'trill') {
+        physics.trill = true;
+      } else if (mod === 'mordent' || mod === 'turn') {
+        physics.mordent = true;
+      } else if (mod === 'trem' || mod === 'tremolo') {
+        physics.roll = 4;
+      } else if (mod.startsWith('roll(') && mod.endsWith(')')) {
+        const count = parseInt(mod.slice(5, -1), 10);
+        if (!isNaN(count) && count > 1) {
+          physics.roll = Math.min(16, count);
+        }
+      }
+
+```
+
+### 3.2 `src/parser/DocumentParser.ts` - Add `repeat N { ... }`, `.roll(N)` Subdivision, `.arp` Chord Staggering & Tie (`~`) Merging
+
+In `src/parser/DocumentParser.ts`:
+
+1. Inside `parseVoiceTokensToEvents()`, expand `repeat N { ... }` blocks when building `expandedTokens`:
+
+```typescript
+    const expandedTokens: string[] = [];
+    for (let idx = 0; idx < rawTokens.length; idx++) {
+      const tok = rawTokens[idx];
+      if (tok === '|') continue;
+
+      if (tok.toLowerCase() === 'repeat' && idx + 2 < rawTokens.length) {
+        const count = parseInt(rawTokens[idx + 1], 10);
+        const block = rawTokens[idx + 2];
+        if (!isNaN(count) && count > 0 && block.startsWith('{') && block.endsWith('}')) {
+          const innerTokens = this.tokenizeVoiceStream(block.slice(1, -1));
+          for (let r = 0; r < Math.min(32, count); r++) {
+            expandedTokens.push(...innerTokens);
+          }
+          idx += 2;
+          continue;
+        }
+      }
+
+      if (tok.startsWith('$')) {
+        const macroName = tok.slice(1).replace(/\(.*\)$/, '');
+        const macroBody = macros.get(macroName) || macros.get('$' + macroName);
+        if (macroBody) {
+          expandedTokens.push(...macroBody);
+          continue;
+        }
+      }
+      expandedTokens.push(tok);
+    }
+
+```
+
+2. Inside `parseVoiceTokensToEvents()` under `// 3. Chord syntax: [c4 e4 g4]:4.stacc or [c4 e4 g4]`, propagate the first note's `physics` to all notes in the chord and stagger `pullMs` by `28ms` per note (sorted from lowest MIDI pitch to highest) when `physics?.arp` is true:
+
+```typescript
+        // 3. Chord syntax: [c4 e4 g4]:4.stacc or [c4 e4 g4]
+        const chordMatch = token.match(/^\[([^\]]+)\](.*)$/);
+        if (chordMatch) {
+          const chordPitches = chordMatch[1].trim().split(/\s+/).filter(Boolean);
+          const suffix = chordMatch[2] || '';
+
+          let chordDuration: TemporalResult | null = null;
+          let sharedPhysics: any = undefined;
+          const chordEvents: AtomicEvent[] = [];
+
+          for (let i = 0; i < chordPitches.length; i++) {
+            const noteToken = i === 0 ? `${chordPitches[i]}${suffix}` : chordPitches[i];
+            const ev = serializer.parseToken(noteToken, trackDef.style);
+            if (i === 0) {
+              chordDuration = ev.duration;
+              sharedPhysics = ev.physics;
+            } else {
+              if (chordDuration) ev.duration = { ...chordDuration };
+              if (sharedPhysics) {
+                ev.physics = {
+                  ...sharedPhysics,
+                  modifiers: sharedPhysics.modifiers ? [...sharedPhysics.modifiers] : undefined,
+                  fx: sharedPhysics.fx ? [...sharedPhysics.fx] : undefined,
+                };
+              }
+            }
+            ev.rawToken = token;
+            ev.startTime = { ...cursorTime };
+            ev.trackId = trackDef.id;
+            ev.voiceId = voiceId;
+            ev.measureNumber = measureNumber;
+            ev.style = trackDef.style;
+            ev.patch = trackDef.patch;
+            ev.env = trackDef.env;
+
+            if (!ev.pitch.isRest && !ev.pitch.isSpacer) {
+              chordEvents.push(ev);
+            }
+          }
+
+          if (sharedPhysics?.arp && chordEvents.length > 1) {
+            const sortedByPitch = [...chordEvents].sort((a, b) => a.pitch.midi - b.pitch.midi);
+            sortedByPitch.forEach((cev, rollIdx) => {
+              if (!cev.physics) cev.physics = {};
+              cev.physics.pullMs = (cev.physics.pullMs || 0) + rollIdx * 28;
+            });
+          }
+
+          const rollSubdiv = sharedPhysics?.roll && sharedPhysics.roll > 1 ? sharedPhysics.roll : 1;
+          if (rollSubdiv > 1 && chordDuration && !chordDuration.isGrace) {
+            const subNum = chordDuration.numerator;
+            const subDen = chordDuration.denominator * rollSubdiv;
+            const div = this.gcd(subNum, subDen);
+            const sliceDur = { numerator: subNum / div, denominator: subDen / div };
+            let sliceCursor = { ...cursorTime };
+
+            for (let r = 0; r < rollSubdiv; r++) {
+              for (const baseEv of chordEvents) {
+                const cloned: AtomicEvent = {
+                  ...baseEv,
+                  duration: { ...sliceDur },
+                  startTime: { ...sliceCursor },
+                  physics: baseEv.physics ? { ...baseEv.physics, roll: undefined } : undefined,
+                };
+                events.push(cloned);
+              }
+              sliceCursor = this.addFractions(sliceCursor, sliceDur);
+            }
+          } else {
+            events.push(...chordEvents);
+          }
+
+          if (chordDuration && !chordDuration.isGrace) {
+            cursorTime = this.addFractions(cursorTime, chordDuration);
+            voiceDuration = this.addFractions(voiceDuration, chordDuration);
+          }
+          continue;
+        }
+
+```
+
+3. Right below `// 4. Standard atomic note / rest / spacer token`, support `.roll(N)` / `.trem` subdivision on single notes:
+
+```typescript
+        // 4. Standard atomic note / rest / spacer token
+        const ev = serializer.parseToken(token, trackDef.style);
+        ev.rawToken = token;
+        ev.startTime = { ...cursorTime };
+        ev.trackId = trackDef.id;
+        ev.voiceId = voiceId;
+        ev.measureNumber = measureNumber;
+        ev.style = trackDef.style;
+        ev.patch = trackDef.patch;
+        ev.env = trackDef.env;
+
+        const rollCount = ev.physics?.roll && ev.physics.roll > 1 ? ev.physics.roll : 1;
+        if (!ev.pitch.isRest && !ev.pitch.isSpacer) {
+          if (rollCount > 1 && !ev.duration.isGrace) {
+            const subNum = ev.duration.numerator;
+            const subDen = ev.duration.denominator * rollCount;
+            const div = this.gcd(subNum, subDen);
+            const sliceDur = { numerator: subNum / div, denominator: subDen / div };
+            let sliceCursor = { ...cursorTime };
+
+            for (let r = 0; r < rollCount; r++) {
+              events.push({
+                ...ev,
+                duration: { ...sliceDur },
+                startTime: { ...sliceCursor },
+                physics: ev.physics ? { ...ev.physics, roll: undefined } : undefined,
+              });
+              sliceCursor = this.addFractions(sliceCursor, sliceDur);
+            }
+          } else {
+            events.push(ev);
+          }
+        }
+
+```
+
+4. Add a `mergeTiedEvents(events: AtomicEvent[]): AtomicEvent[]` method to `DocumentParser` and call it on `allEvents` right before `return` in `compile()` (both in Sketch Mode and Full Document Mode):
+
+```typescript
+  /**
+   * Merges forward-looking tied notes (`~`) of identical pitch on the same track & voice
+   * into a single continuous AtomicEvent so tied notes sustain seamlessly across beats and barlines.
+   */
+  private mergeTiedEvents(events: AtomicEvent[]): AtomicEvent[] {
+    const merged: AtomicEvent[] = [];
+    const activeTies = new Map<string, AtomicEvent>();
+
+    for (const ev of events) {
+      if (!ev.pitch || ev.pitch.isRest || ev.pitch.isSpacer || !ev.startTime) {
+        merged.push(ev);
+        continue;
+      }
+
+      const key = `${ev.trackId || 'pno'}:${ev.voiceId || 'v1'}:${ev.pitch.midi}`;
+      const prevTied = activeTies.get(key);
+
+      if (prevTied && prevTied.startTime) {
+        const expectedStart = this.addFractions(prevTied.startTime, prevTied.duration);
+        const isContiguous =
+          expectedStart.numerator * ev.startTime.denominator ===
+          ev.startTime.numerator * expectedStart.denominator;
+
+        if (isContiguous) {
+          prevTied.duration = this.addFractions(prevTied.duration, ev.duration);
+          if (!ev.physics?.tie) {
+            activeTies.delete(key);
+          }
+          continue;
+        } else {
+          activeTies.delete(key);
+        }
+      }
+
+      merged.push(ev);
+      if (ev.physics?.tie) {
+        activeTies.set(key, ev);
+      }
+    }
+
+    return merged;
+  }
+
+```
+
+And at the two `return` statements in `DocumentParser.compile()`, return `events: this.mergeTiedEvents(allEvents)`.
+
+### 3.3 `src/audio/StudioAudioEngine.ts` - Synthesize `:grace`, `.ped`, `.legato`, `.pizz`, `.fermata`, `.fp`, `.vib`, `.trill` & `.mordent`
+
+In `src/audio/StudioAudioEngine.ts`:
+
+1. Update `buildScheduledTimeline(score: CompiledScore)` to calculate durations and offsets for `:grace`, `.pedal`, `.legato`, `.fermata`, and `.pizz`:
+
+```typescript
+      const isGrace = Boolean(ev.duration?.isGrace);
+      let startSec = startWhole * secPerWholeNote;
+      if (isGrace) {
+        startSec = Math.max(0, startSec - 0.045);
+      }
+      if (ev.physics?.pullMs) startSec += ev.physics.pullMs / 1000;
+      if (ev.physics?.pushMs) startSec = Math.max(0, startSec - ev.physics.pushMs / 1000);
+
+      let durSec = isGrace ? 0.045 : Math.max(0.05, durWhole * secPerWholeNote);
+      if (ev.physics?.pizz) {
+        durSec = Math.min(0.16, Math.max(0.045, durSec * 0.35));
+      } else if (ev.physics?.articulation === 'stacc' || ev.physics?.articulation === 'staccato') {
+        durSec = Math.max(0.045, durSec * 0.48);
+      } else if (ev.physics?.legato) {
+        durSec = durSec * 1.08;
+      }
+
+      if (ev.physics?.pedal) {
+        durSec = Math.max(durSec * 2.2, Math.min(3.2, secPerWholeNote * 0.75));
+      }
+      if (ev.physics?.fermata) {
+        durSec = durSec * 1.65;
+      }
+
+```
+
+2. Add a helper method `applyPitchOrnamentsToOscillator` in `StudioAudioEngine` to schedule `.trill`, `.mordent`, and `.vibrato` on WebAudio oscillators:
+
+```typescript
+  private applyPitchOrnamentsToOscillator(
+    ctx: BaseAudioContext,
+    osc: OscillatorNode,
+    baseFreq: number,
+    startSec: number,
+    durSec: number,
+    physics?: AtomicEvent['physics']
+  ): { stopExtra: () => void } {
+    const extraOscs: OscillatorNode[] = [];
+    const extraGains: GainNode[] = [];
+
+    if (physics?.mordent && durSec >= 0.08) {
+      const upperFreq = baseFreq * Math.pow(2, 2 / 12);
+      osc.frequency.setValueAtTime(baseFreq, startSec);
+      osc.frequency.setValueAtTime(upperFreq, startSec + 0.025);
+      osc.frequency.setValueAtTime(baseFreq, startSec + 0.065);
+    } else if (physics?.trill && durSec >= 0.1) {
+      const upperFreq = baseFreq * Math.pow(2, 2 / 12);
+      const stepSec = 0.065;
+      const steps = Math.min(48, Math.floor(durSec / stepSec));
+      for (let s = 0; s < steps; s++) {
+        osc.frequency.setValueAtTime(s % 2 === 0 ? baseFreq : upperFreq, startSec + s * stepSec);
+      }
+    }
+
+    if (physics?.vibrato && durSec >= 0.15) {
+      const lfo = ctx.createOscillator();
+      const lfoGain = ctx.createGain();
+      lfo.type = 'sine';
+      lfo.frequency.setValueAtTime(5.5, startSec);
+      const onset = Math.min(startSec + 0.1, startSec + durSec * 0.3);
+      lfoGain.gain.setValueAtTime(0.001, startSec);
+      lfoGain.gain.linearRampToValueAtTime(baseFreq * 0.0085, onset);
+      lfo.connect(lfoGain);
+      lfoGain.connect(osc.frequency);
+      lfo.start(startSec);
+      lfo.stop(startSec + durSec + 0.25);
+      extraOscs.push(lfo);
+      extraGains.push(lfoGain);
+    }
+
+    return {
+      stopExtra: () => {
+        for (const o of extraOscs) {
+          try {
+            o.stop();
+            o.disconnect();
+          } catch {
+            // Ignore
+          }
+        }
+        for (const g of extraGains) {
+          try {
+            g.disconnect();
+          } catch {
+            // Ignore
+          }
+        }
+      },
+    };
+  }
+
+```
+
+3. In `scheduleAcousticPianoVoice` and `scheduleSynthVoice`:
+* Accept `physics?: AtomicEvent['physics']` (passed from `item.event.physics` in `triggerRealtimeVoice`).
+* Call `this.applyPitchOrnamentsToOscillator(ctx, oscFund, freq, startSec, durSec, physics)` (and on `osc1`/`osc2` in `scheduleSynthVoice`) and invoke `stopExtra()` inside `cleanup.stopAndDisconnect()`.
+* Support `physics?.fp` (*forte-piano*) on `env.gain`:
+```typescript
+if (physics?.fp) {
+  const fpPeak = Math.max(0.004, amp * 0.65);
+  const fpDrop = Math.max(0.001, fpPeak * 0.25);
+  env.gain.linearRampToValueAtTime(fpPeak, t0 + 0.008);
+  env.gain.exponentialRampToValueAtTime(fpDrop, Math.min(tDecay, t0 + 0.07));
+  env.gain.exponentialRampToValueAtTime(0.0001, tEnd);
+}
+
+```
+
+
+* Support `physics?.pizz` in `scheduleSynthVoice`: use a fast `0.004s` attack and a snappy `0.06s` release.
+
+
+4. In `exportWavBlob`:
+* Apply `.trill`, `.mordent`, `.vibrato`, and `.fp` inside the per-sample synthesis loop so exported `.wav` files accurately capture all ornaments and articulations:
+```typescript
+   const phys = item.event.physics;
+   let instFreq = item.freq;
+   if (phys?.mordent && t >= 0.025 && t < 0.065) {
+     instFreq = item.freq * Math.pow(2, 2 / 12);
+   } else if (phys?.trill) {
+     const stepIndex = Math.floor(t / 0.065);
+     if (stepIndex % 2 === 1) {
+       instFreq = item.freq * Math.pow(2, 2 / 12);
+     }
+   }
+   if (phys?.vibrato && t > 0.08) {
+     instFreq *= 1 + Math.sin(2 * Math.PI * 5.5 * t) * 0.0075;
+   }
+
+```
+
+
+And for `phys?.fp`, drop `env` to `0.28` after `t > 0.055`.
+
+
+
+### 3.4 `src/components/WebGPUCanvas.tsx` - Display Sheet Music Articulation Badges on Note Blocks
+
+In `src/components/WebGPUCanvas.tsx`, inside `visibleEvents.map((ev, idx) => { ... })`, append compact notation indicators to `label` when present:
+
+```typescript
+          const swell = ev.physics?.swell;
+          const badge =
+            ev.physics?.trill
+              ? ' tr~'
+              : ev.physics?.vibrato
+                ? ' ~'
+                : ev.physics?.pizz
+                  ? ' pizz'
+                  : ev.physics?.fermata
+                    ? ' 𝄐'
+                    : swell === 'crescendo'
+                      ? ' <'
+                      : swell === 'diminuendo'
+                        ? ' >'
+                        : '';
+          const label =
+            (ev.pitch?.noteName || `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`) + badge;
+
+```
+
+### 3.5 `TENUTO_GRAMMAR.md` - Document Ties, Ornaments, Pedal, Rolled Chords & Repeats
+
+In `TENUTO_GRAMMAR.md`, add documentation under **Section 6 & Section 7** for:
+
+* **Tied Notes (`~`):** `c4:2~ c4:4` or `[c4 e4 g4]:1~` (sustains across beats and barlines without re-striking).
+* **Inline Repeats (`repeat N { ... }`):** `repeat 2 { c4:8 d4:8 e4:8 g4:8 }`.
+* **Rolled Chords (`.arp` / `.strum`):** `[c3 g3 c4 e4 g4]:1.arp`.
+* **Sustain Pedal (`.ped` / `.pedal`) & Legato (`.legato` / `.slur`).**
+* **Ornaments & Tremolos:** `.tr` / `.trill`, `.mordent`, `.roll(N)`, `.trem`, and `:grace`.
+* **Expression Markings:** `.vib` / `.vibrato`, `.pizz`, `.fermata`, and `.fp` (*forte-piano*).
+
+### 3.6 `tests/studio_engine_and_ui.test.tsx` - Add Unit Tests for Ties, Rolled Chords, Repeats, Rolls & Ornaments
+
+Append the following test case inside `tests/studio_engine_and_ui.test.tsx`:
+
+```typescript
+  it('merges tied notes (~), staggers .arp chords, subdivides .roll(N), expands repeat blocks, and renders ornaments', async () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+
+    const score = parser.compile(`
+      tenuto "5.0" {
+        meta @{ title: "Sheet Music Expression", tempo: 100, time: "4/4" }
+        def pno "Piano" style=standard patch="salamander_grand"
+        def vln "Violin" style=synth patch="saw_lead"
+        measure 1 {
+          pno: [c3 g3 c4]:2.arp.ped repeat 2 { e4:8.legato g4:8.legato } |
+          vln: d5:2~ d5:4.vib e5:4.trill |
+        }
+        measure 2 {
+          pno: c5:4.roll(4) d5:grace c5:2.fermata.fp |
+          vln: a4:4.pizz b4:4.mordent c5:2 |
+        }
+      }
+    `);
+
+    // 1. Verify .arp chord staggered pullMs across the 3 chord notes (0ms, 28ms, 56ms)
+    const arpChord = score.events.filter(
+      (e) => e.trackId === 'pno' && e.measureNumber === 1 && e.startTime?.numerator === 0
+    );
+    expect(arpChord.length).toBe(3);
+    expect(arpChord[0].physics?.pullMs).toBe(0);
+    expect(arpChord[1].physics?.pullMs).toBe(28);
+    expect(arpChord[2].physics?.pullMs).toBe(56);
+    expect(arpChord[0].physics?.pedal).toBe(true);
+
+    // 2. Verify repeat 2 { e4:8 g4:8 } expanded into 4 eighth-note events in measure 1
+    const pnoM1 = score.events.filter((e) => e.trackId === 'pno' && e.measureNumber === 1);
+    expect(pnoM1.length).toBe(3 + 4);
+
+    // 3. Verify d5:2~ d5:4 merged into a single dotted-half note (3/4 duration) on 'vln'
+    const vlnM1 = score.events.filter((e) => e.trackId === 'vln' && e.measureNumber === 1);
+    expect(vlnM1.length).toBe(2); // Merged d5 (3/4) + e5:4.trill (1/4)
+    expect(vlnM1[0].duration).toEqual({ numerator: 3, denominator: 4 });
+    expect(vlnM1[1].physics?.trill).toBe(true);
+
+    // 4. Verify c5:4.roll(4) subdivided into four 1/16 notes in measure 2
+    const pnoM2 = score.events.filter((e) => e.trackId === 'pno' && e.measureNumber === 2);
+    // 4 roll notes + 1 grace note + 1 fermata note = 6 events
+    expect(pnoM2.length).toBe(6);
+    expect(pnoM2[0].duration).toEqual({ numerator: 1, denominator: 16 });
+    expect(pnoM2[4].duration.isGrace).toBe(true);
+    expect(pnoM2[5].physics?.fermata).toBe(true);
+    expect(pnoM2[5].physics?.fp).toBe(true);
+
+    const wavBlob = await engine.exportWavBlob(score);
+    expect(wavBlob.size).toBeGreaterThan(44100 * 2);
+  });
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/PitchEngine.ts`, `src/parser/TemporalEngine.ts`, `src/parser/IncrementalCompiler.ts`
+* `src/audio/AudioContextManager.ts`, `src/audio/PlaybackOrchestrator.ts`, `src/audio/TenutoProcessor.ts`, `src/audio/TCALManager.ts`
+* `src/components/SplitWorkspace.tsx`, `src/components/Transport.tsx`, `src/components/CodeEditor.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) completes with zero TypeScript errors.
+2. `npx vitest run tests/studio_engine_and_ui.test.tsx tests/ast_serializer.test.ts tests/document_compiler.test.ts` passes 100%.
+3. `npm run build` succeeds cleanly.
+4. Scores using `~`, `.arp`, `.ped`, `.legato`, `.trill`, `.mordent`, `.roll(N)`, `.trem`, `:grace`, `.vib`, `.pizz`, `.fermata`, `.fp`, and `repeat N { ... }` compile, display notation badges on the Piano Roll, and render expressive audio in both live playback and WAV export.
+
+---
+
+## 6. Constraints
+
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 7. Manual Steps
+
+None required.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or restore `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, `src/audio/StudioAudioEngine.ts`, `src/components/WebGPUCanvas.tsx`, `TENUTO_GRAMMAR.md`, and `tests/studio_engine_and_ui.test.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* Modified file(s): `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, `src/audio/StudioAudioEngine.ts`, `src/components/WebGPUCanvas.tsx`, `TENUTO_GRAMMAR.md`, `tests/studio_engine_and_ui.test.tsx`
+* Commit message: `feat(expression): add ties, rolled chords, sustain pedal, ornaments, vibrato, and repeats`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Tied Notes (`~`)** | Emitted two separate notes that re-struck the attack envelope | Merges contiguous tied notes (even across barlines) into a single continuous sustained note |
+| **Rolled Chords (`.arp`) & Sustain Pedal (`.ped`)** | Played all chord notes simultaneously with dry gate cutoffs | Staggers `.arp` chord notes bottom-to-top by 28ms per voice and sustains `.ped` arpeggio notes like a damper pedal |
+| **Ornaments & Rolls (`.trill`, `.mordent`, `.roll(N)`, `:grace`)** | Unimplemented | Renders whole-step trills, upper-neighbor mordents, subdivided timpani/string rolls, and pre-beat grace notes |
+| **Timbre & Expression (`.vib`, `.pizz`, `.fermata`, `.fp`, `repeat`)** | Unimplemented | Adds 5.5 Hz delayed vibrato, plucked pizzicato strings, held fermatas, forte-piano accents, and inline `repeat N { ... }` blocks |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-23
+Implementer: AI Agent
+
+```
+
+```

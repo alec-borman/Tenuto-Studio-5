@@ -4,6 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { PRESET_SCORES } from '../src/presets/presetScores';
 import { DocumentParser } from '../src/parser/DocumentParser';
 import { StudioAudioEngine } from '../src/audio/StudioAudioEngine';
+import { resolveSoundfontInstrument, SoundfontBankLoader } from '../src/audio/SoundfontLibrary';
 import { configureTenutoMonaco } from '../src/components/CodeEditor';
 import Transport from '../src/components/Transport';
 import WebGPUCanvas from '../src/components/WebGPUCanvas';
@@ -213,6 +214,83 @@ describe('TDB-603 & TDB-604: Syntax-Highlighted Code Editor, Scrolling Player & 
 
     const wavBlob = await engine.exportWavBlob(score);
     expect(wavBlob.size).toBeGreaterThan(44100);
+  });
+
+  it('merges tied notes (~), staggers .arp chords, subdivides .roll(N), expands repeat blocks, and renders ornaments', async () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+
+    const score = parser.compile(`
+      tenuto "5.0" {
+        meta @{ title: "Sheet Music Expression", tempo: 100, time: "4/4" }
+        def pno "Piano" style=standard patch="salamander_grand"
+        def vln "Violin" style=synth patch="saw_lead"
+        measure 1 {
+          pno: [c3 g3 c4]:2.arp.ped repeat 2 { e4:8.legato g4:8.legato } |
+          vln: d5:2~ d5:4.vib e5:4.trill |
+        }
+        measure 2 {
+          pno: c5:4.roll(4) d5:grace c5:2.fermata.fp |
+          vln: a4:4.pizz b4:4.mordent c5:2 |
+        }
+      }
+    `);
+
+    // 1. Verify .arp chord staggered pullMs across the 3 chord notes (0ms, 28ms, 56ms)
+    const arpChord = score.events.filter(
+      (e) => e.trackId === 'pno' && e.measureNumber === 1 && e.startTime?.numerator === 0
+    );
+    expect(arpChord.length).toBe(3);
+    expect(arpChord[0].physics?.pullMs).toBe(0);
+    expect(arpChord[1].physics?.pullMs).toBe(28);
+    expect(arpChord[2].physics?.pullMs).toBe(56);
+    expect(arpChord[0].physics?.pedal).toBe(true);
+
+    // 2. Verify repeat 2 { e4:8 g4:8 } expanded into 4 eighth-note events in measure 1
+    const pnoM1 = score.events.filter((e) => e.trackId === 'pno' && e.measureNumber === 1);
+    expect(pnoM1.length).toBe(3 + 4);
+
+    // 3. Verify d5:2~ d5:4 merged into a single dotted-half note (3/4 duration) on 'vln'
+    const vlnM1 = score.events.filter((e) => e.trackId === 'vln' && e.measureNumber === 1);
+    expect(vlnM1.length).toBe(2); // Merged d5 (3/4) + e5:4.trill (1/4)
+    expect(vlnM1[0].duration).toEqual({ numerator: 3, denominator: 4 });
+    expect(vlnM1[1].physics?.trill).toBe(true);
+
+    // 4. Verify c5:4.roll(4) subdivided into four 1/16 notes in measure 2
+    const pnoM2 = score.events.filter((e) => e.trackId === 'pno' && e.measureNumber === 2);
+    // 4 roll notes + 1 grace note + 1 fermata note = 6 events
+    expect(pnoM2.length).toBe(6);
+    expect(pnoM2[0].duration).toEqual({ numerator: 1, denominator: 16 });
+    expect(pnoM2[4].duration.isGrace).toBe(true);
+    expect(pnoM2[5].physics?.fermata).toBe(true);
+    expect(pnoM2[5].physics?.fp).toBe(true);
+
+    const wavBlob = await engine.exportWavBlob(score);
+    expect(wavBlob.size).toBeGreaterThan(44100 * 2);
+  });
+
+  it('resolves 128-instrument SoundFont patches and orchestral track names and parses SoundFont sample banks', () => {
+    expect(resolveSoundfontInstrument('pno', 'Grand Piano', 'salamander_grand', 'standard')).toBe(
+      'acoustic_grand_piano'
+    );
+    expect(resolveSoundfontInstrument('vln1', 'First Violins', 'saw_lead', 'synth')).toBe('violin');
+    expect(resolveSoundfontInstrument('vc', 'Violoncello', 'saw_lead', 'synth')).toBe('cello');
+    expect(resolveSoundfontInstrument('hn', 'French Horns', 'saw_lead', 'synth')).toBe('french_horn');
+    expect(resolveSoundfontInstrument('soprano', 'Soprano Divisi', 'warm_pad', 'synth')).toBe('choir_aahs');
+    expect(resolveSoundfontInstrument('alto', 'Alto Divisi', 'warm_pad', 'synth')).toBe('voice_oohs');
+    expect(resolveSoundfontInstrument('harp', 'Concert Harp', 'salamander_grand', 'standard')).toBe(
+      'orchestral_harp'
+    );
+    expect(resolveSoundfontInstrument('vln1', 'First Violins', 'violin', 'standard', true)).toBe(
+      'pizzicato_strings'
+    );
+    expect(resolveSoundfontInstrument('drums', '808 Kit', 'tenuto_808_kit', 'grid')).toBeNull();
+
+    const loader = new SoundfontBankLoader();
+    const mockSfJs = `MIDI.Soundfont.acoustic_grand_piano = { "C4": "data:audio/mp3;base64,AAAA", "Eb4": "data:audio/mp3;base64,BBBB" };`;
+    const parsedMap = loader.parseSoundfontJs(mockSfJs);
+    expect(parsedMap.get(60)).toBe('AAAA');
+    expect(parsedMap.get(63)).toBe('BBBB');
   });
 });
 
