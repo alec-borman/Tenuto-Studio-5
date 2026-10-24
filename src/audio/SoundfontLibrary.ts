@@ -275,6 +275,21 @@ export function resolveSoundfontInstrument(
   if (id === 'pno' || name.includes('piano') || name.includes('grand')) return 'acoustic_grand_piano';
   if (id === 'org' || name.includes('organ')) return 'church_organ';
 
+  const NATIVE_SYNTH_PATCHES = new Set([
+    'wavetable',
+    'operator',
+    'meld',
+    'drift',
+    'analog',
+    'collision',
+    'tension',
+    'electric',
+    'granulator',
+  ]);
+  if (NATIVE_SYNTH_PATCHES.has(cleanPatch) || cleanPatch.startsWith('wavetable_')) {
+    return null;
+  }
+
   // Direct patch lookup in our 128-instrument map
   if (cleanPatch && SOUNDFONT_PATCH_MAP[cleanPatch]) {
     return SOUNDFONT_PATCH_MAP[cleanPatch];

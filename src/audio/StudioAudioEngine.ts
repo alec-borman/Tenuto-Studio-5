@@ -19,6 +19,7 @@ import { PhonemeEngine } from './PhonemeEngine';
 import { FollowActionEngine } from './FollowActionEngine';
 import { MetronomeAndCaptureEngine } from './MetronomeAndCaptureEngine';
 import { SpatialAudioMatrix, SendTapMode } from './SpatialAudioMatrix';
+import { WavetableEngine } from './synths/WavetableEngine';
 
 export interface PlaybackProgress {
   isPlaying: boolean;
@@ -26,6 +27,7 @@ export interface PlaybackProgress {
   totalQuarterBeats: number;
   currentTimeSec: number;
   totalDurationSec: number;
+  currentTempoBpm?: number;
 }
 
 interface ScheduledNoteEvent {
@@ -569,7 +571,7 @@ export class StudioAudioEngine {
     await this.playScore(subScore);
   }
 
-  private wholeNoteToSeconds(
+  public wholeNoteToSeconds(
     wholeNote: number,
     baseTempo: number,
     tempoMap?: Array<{ startWhole: number; tempo: number }>
@@ -604,22 +606,94 @@ export class StudioAudioEngine {
     return elapsedSec;
   }
 
+  /**
+   * Piecewise inverse of `wholeNoteToSeconds`: converts elapsed playback time (`elapsedSec`)
+   * back into exact whole-note score position across any number of `meta @{ tempo: ... }` changes.
+   */
+  public secondsToWholeNote(
+    elapsedSec: number,
+    baseTempo: number,
+    tempoMap?: Array<{ startWhole: number; tempo: number }>
+  ): number {
+    if (!Number.isFinite(elapsedSec) || elapsedSec <= 0) return 0;
+    const safeBaseTempo = baseTempo > 0 ? baseTempo : 120;
+    if (!tempoMap || tempoMap.length === 0) {
+      return elapsedSec / ((60 / safeBaseTempo) * 4);
+    }
+
+    let remainingSec = elapsedSec;
+    let cursorWhole = 0;
+    let currentTempo = safeBaseTempo;
+
+    for (let i = 0; i < tempoMap.length; i++) {
+      const entry = tempoMap[i];
+      if (entry.startWhole <= cursorWhole) {
+        currentTempo = entry.tempo > 0 ? entry.tempo : currentTempo;
+        continue;
+      }
+      const segWhole = entry.startWhole - cursorWhole;
+      const secPerWhole = (60 / currentTempo) * 4;
+      const segSec = segWhole * secPerWhole;
+
+      if (remainingSec <= segSec) {
+        return cursorWhole + remainingSec / secPerWhole;
+      }
+
+      remainingSec -= segSec;
+      cursorWhole = entry.startWhole;
+      currentTempo = entry.tempo > 0 ? entry.tempo : currentTempo;
+    }
+
+    const finalSecPerWhole = (60 / currentTempo) * 4;
+    return cursorWhole + remainingSec / finalSecPerWhole;
+  }
+
+  /**
+   * Returns the active tempo (BPM) at a given whole-note position in the score.
+   */
+  public getTempoAtWholeNote(
+    wholeNote: number,
+    baseTempo: number,
+    tempoMap?: Array<{ startWhole: number; tempo: number }>
+  ): number {
+    let activeTempo = baseTempo > 0 ? baseTempo : 120;
+    if (!tempoMap || tempoMap.length === 0) return activeTempo;
+
+    for (let i = 0; i < tempoMap.length; i++) {
+      const entry = tempoMap[i];
+      if (wholeNote + 1e-6 >= entry.startWhole && entry.tempo > 0) {
+        activeTempo = entry.tempo;
+      } else if (wholeNote + 1e-6 < entry.startWhole) {
+        break;
+      }
+    }
+    return activeTempo;
+  }
+
   public calculateScoreDuration(score: CompiledScore): { totalQuarterBeats: number; totalSeconds: number } {
     const tempo = Number(score.meta?.tempo) || 120;
-    let maxWholeFraction = 0;
+    let maxLogicalWhole = 0;
+    let maxPhysicalWhole = 0;
 
     for (const ev of score.events) {
       const start = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
       const dur = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
-      if (Number.isFinite(start) && Number.isFinite(dur) && start + dur > maxWholeFraction) {
-        maxWholeFraction = start + dur;
+      if (Number.isFinite(start) && Number.isFinite(dur)) {
+        if (start + dur > maxLogicalWhole) {
+          maxLogicalWhole = start + dur;
+        }
+        const physicalDur = ev.physics?.fermata ? dur * 1.65 : dur;
+        if (start + physicalDur > maxPhysicalWhole) {
+          maxPhysicalWhole = start + physicalDur;
+        }
       }
     }
 
-    if (maxWholeFraction <= 0) maxWholeFraction = 0.25;
+    if (maxLogicalWhole <= 0) maxLogicalWhole = 0.25;
+    if (maxPhysicalWhole <= 0) maxPhysicalWhole = 0.25;
     return {
-      totalQuarterBeats: maxWholeFraction * 4,
-      totalSeconds: this.wholeNoteToSeconds(maxWholeFraction, tempo, score.meta?.tempoMap),
+      totalQuarterBeats: maxLogicalWhole * 4,
+      totalSeconds: this.wholeNoteToSeconds(maxPhysicalWhole, tempo, score.meta?.tempoMap),
     };
   }
 
@@ -1264,6 +1338,29 @@ export class StudioAudioEngine {
         );
         return;
       }
+    }
+
+    if (item.patch.includes('wavetable')) {
+      const wtParams = WavetableEngine.resolveParams(
+        item.def,
+        item.event.physics,
+        item.cutoffHzOverride
+      );
+      const cleanup = WavetableEngine.scheduleRealtimeVoice(
+        ctx,
+        voiceOut,
+        pannerNode,
+        item.freq,
+        safeStart,
+        durSec,
+        item.amp,
+        wtParams,
+        item.swell,
+        item.startAmp,
+        item.endAmp
+      );
+      this.activeVoices.add(cleanup);
+      return;
     }
 
     if (item.style === 'synth') {
@@ -2402,17 +2499,28 @@ export class StudioAudioEngine {
     scheduleLookaheadSlice();
     this.schedulerIntervalId = window.setInterval(scheduleLookaheadSlice, 25);
 
+    const baseTempo = this.tempoBpm;
+    const tempoMap = score.meta?.tempoMap;
+
     const tickVisualProgress = () => {
       if (!this.isPlaying || !this.ctx) return;
-      const elapsed = Math.max(0, this.ctx.currentTime - this.startContextTime);
-      const currentBeat = (elapsed / 60) * this.tempoBpm;
+      const hwLatencySec =
+        Number((this.ctx as any).outputLatency) ||
+        Number((this.ctx as any).baseLatency) ||
+        0;
+      const rawElapsed = Math.max(0, this.ctx.currentTime - this.startContextTime - hwLatencySec);
+      const audibleScoreSec = Math.max(0, rawElapsed - countInSec);
+      const currentWhole = this.secondsToWholeNote(audibleScoreSec, baseTempo, tempoMap);
+      const currentBeat = Math.min(this.totalQuarterBeats, currentWhole * 4);
+      const activeTempo = this.getTempoAtWholeNote(currentWhole, baseTempo, tempoMap);
 
       this.onProgress?.({
         isPlaying: true,
         currentQuarterBeat: currentBeat,
         totalQuarterBeats: this.totalQuarterBeats,
-        currentTimeSec: elapsed,
+        currentTimeSec: rawElapsed,
         totalDurationSec: this.scoreDurationSec,
+        currentTempoBpm: activeTempo,
       });
 
       this.rafId = requestAnimationFrame(tickVisualProgress);
@@ -2444,6 +2552,7 @@ export class StudioAudioEngine {
         totalQuarterBeats: this.totalQuarterBeats,
         currentTimeSec: 0,
         totalDurationSec: this.scoreDurationSec,
+        currentTempoBpm: this.tempoBpm,
       });
     }
   }
@@ -2794,6 +2903,30 @@ export class StudioAudioEngine {
           left[startFrame + i] += lpState0 * gain * gainL;
           right[startFrame + i] += lpState1 * gain * gainR;
         }
+        continue;
+      }
+
+      if (item.patch.includes('wavetable')) {
+        const wtParams = WavetableEngine.resolveParams(
+          item.def,
+          item.event.physics,
+          item.cutoffHzOverride
+        );
+        WavetableEngine.renderNoteToStereoBuffer(
+          left,
+          right,
+          startFrame,
+          noteFrames,
+          sampleRate,
+          item.freq,
+          item.durSec,
+          item.amp,
+          item.pan,
+          wtParams,
+          item.swell,
+          item.startAmp,
+          item.endAmp
+        );
         continue;
       }
 

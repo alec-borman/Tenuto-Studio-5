@@ -394,7 +394,7 @@ export default function WebGPUCanvas({
   const wholeNoteScale = Math.max(48, Math.round(260 * zoomLevel));
   const numRows = maxMidi - minMidi + 1;
   const svgHeight = numRows * rowH;
-  const totalWidthPx = Math.max(800, Math.ceil(maxEndWhole * wholeNoteScale) + 180);
+  const totalWidthPx = Math.max(760, Math.ceil(maxEndWhole * wholeNoteScale) + keyWidth + 24);
   const playheadX = keyWidth + (playheadBeat / 4) * wholeNoteScale;
 
   const handleFitAll = useCallback(() => {
@@ -623,6 +623,18 @@ export default function WebGPUCanvas({
     scaleName,
   ]);
 
+  const currentWholeTime = playheadBeat / 4;
+  const activeNotesAtPlayhead = useMemo(() => {
+    if (!isPlaying && playheadBeat <= 0) return [];
+    return visibleEvents.filter((ev) => {
+      const midi = ev.pitch?.midi ?? 60;
+      if (midi <= 0) return false;
+      const startWhole = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+      const durWhole = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
+      return currentWholeTime >= startWhole && currentWholeTime <= startWhole + durWhole;
+    });
+  }, [visibleEvents, isPlaying, playheadBeat, currentWholeTime]);
+
   return (
     <div
       ref={containerRef}
@@ -747,6 +759,35 @@ export default function WebGPUCanvas({
           aria-label="Tenuto Piano Roll"
         >
           {staticPianoRollContent}
+
+          {activeNotesAtPlayhead.length > 0 && (
+            <g data-testid="active-notes-overlay" className="pointer-events-none">
+              {activeNotesAtPlayhead.map((ev, idx) => {
+                const midi = ev.pitch?.midi ?? 60;
+                const startWhole = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+                const durWhole = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
+                const x = keyWidth + startWhole * wholeNoteScale;
+                const w = Math.max(4, durWhole * wholeNoteScale - 1.5);
+                const clampedMidi = Math.max(minMidi, Math.min(maxMidi, midi));
+                const y = (maxMidi - clampedMidi) * rowH + 1.5;
+                const noteH = Math.max(5, rowH - 3);
+                return (
+                  <rect
+                    key={idx}
+                    x={x}
+                    y={y}
+                    width={w}
+                    height={noteH}
+                    rx={Math.min(4, Math.max(2, rowH / 4))}
+                    fill="#34D399"
+                    fillOpacity={0.85}
+                    stroke="#FFFFFF"
+                    strokeWidth={1.5}
+                  />
+                );
+              })}
+            </g>
+          )}
 
           {/* Glowing Scrolling Playhead */}
           {(isPlaying || playheadBeat > 0) && (

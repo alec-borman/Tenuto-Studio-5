@@ -76,10 +76,24 @@ export default function SplitWorkspace() {
   useEffect(() => {
     studioAudio.onProgress = (progress) => {
       setPlayheadBeat(progress.currentQuarterBeat);
+      if (progress.currentTempoBpm && progress.isPlaying) {
+        setScoreMeta((prev) =>
+          prev.tempo === progress.currentTempoBpm
+            ? prev
+            : { ...prev, tempo: progress.currentTempoBpm! }
+        );
+      }
       if (!progress.isPlaying) {
         setIsPlaying(false);
+        const baseTempo = compiledScoreState?.meta?.tempo || progress.currentTempoBpm;
+        if (baseTempo) {
+          setScoreMeta((prev) => (prev.tempo === baseTempo ? prev : { ...prev, tempo: baseTempo }));
+        }
       }
     };
+  }, [studioAudio, compiledScoreState]);
+
+  useEffect(() => {
     return () => {
       studioAudio.stop();
     };
