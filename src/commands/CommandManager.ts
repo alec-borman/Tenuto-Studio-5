@@ -1,4 +1,5 @@
 export interface MutationCommand {
+  mergeKey?: string;
   execute(): void;
   undo(): void;
 }
@@ -9,7 +10,20 @@ export class CommandManager {
 
   public executeCommand(command: MutationCommand): void {
     command.execute();
-    this.undoStack.push(command);
+
+    const top = this.undoStack[this.undoStack.length - 1];
+    if (command.mergeKey && top && top.mergeKey === command.mergeKey) {
+      const originalUndo = top.undo.bind(top);
+      const latestExecute = command.execute.bind(command);
+      this.undoStack[this.undoStack.length - 1] = {
+        mergeKey: command.mergeKey,
+        execute: latestExecute,
+        undo: originalUndo,
+      };
+    } else {
+      this.undoStack.push(command);
+    }
+
     this.redoStack = [];
   }
 

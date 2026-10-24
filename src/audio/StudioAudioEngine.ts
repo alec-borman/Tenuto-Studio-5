@@ -1,4 +1,4 @@
-import { CompiledScore, TrackDefinition } from '../parser/DocumentParser';
+import { CompiledScore, TrackDefinition, ClipDefinition } from '../parser/DocumentParser';
 import { AtomicEvent } from '../parser/ASTSerializer';
 import {
   SoundfontBankLoader,
@@ -6,6 +6,18 @@ import {
   isSustainingOrchestralInstrument,
   isEnsembleSectionTrack,
 } from './SoundfontLibrary';
+import {
+  AutomationLane,
+  compileAutomationLanes,
+  evaluateAutomationLaneAt,
+  ccOrValueToCutoffHz,
+  ccOrValueToPan,
+  ccOrValueToVolumeScalar,
+} from './AutomationEngine';
+import { GrooveEngine } from './GrooveEngine';
+import { PhonemeEngine } from './PhonemeEngine';
+import { FollowActionEngine } from './FollowActionEngine';
+import { MetronomeAndCaptureEngine } from './MetronomeAndCaptureEngine';
 
 export interface PlaybackProgress {
   isPlaying: boolean;
@@ -36,6 +48,7 @@ interface ScheduledNoteEvent {
   noteIndexInTrack?: number;
   isEnsembleSection?: boolean;
   normalizedVelocity?: number;
+  cutoffHzOverride?: number;
 }
 
 interface ActiveVoiceCleanup {
@@ -69,9 +82,16 @@ export class StudioAudioEngine {
 
   private scheduledTimeline: ScheduledNoteEvent[] = [];
   private nextScheduleIndex: number = 0;
+  private activeClipIdsByTrack: Map<string, string> = new Map();
+  private queuedClipIdsByTrack: Map<string, string> = new Map();
+  private loopStartMeasure: number | null = null;
+  private loopEndMeasure: number | null = null;
+  private isMetronomeEnabled: boolean = false;
+  private countInBars: number = 0;
 
   public soundfontLoader = new SoundfontBankLoader();
   public onProgress?: (progress: PlaybackProgress) => void;
+  public onClipFollowTransition?: (trackId: string, nextClip: ClipDefinition | null) => void;
 
   public setMasterVolume(scalar: number): void {
     this.masterVolumeScalar = Math.max(0, Math.min(2.5, scalar));
@@ -220,6 +240,124 @@ export class StudioAudioEngine {
     this.isLooping = loop;
   }
 
+  public setMetronomeEnabled(enabled: boolean): void {
+    this.isMetronomeEnabled = Boolean(enabled);
+  }
+
+  public getMetronomeEnabled(): boolean {
+    return this.isMetronomeEnabled;
+  }
+
+  public setCountInBars(bars: number): void {
+    this.countInBars = Math.max(0, Math.min(8, Math.round(bars)));
+  }
+
+  public getCountInBars(): number {
+    return this.countInBars;
+  }
+
+  private scheduleMetronomeClick(
+    ctx: BaseAudioContext,
+    startSec: number,
+    frequencyHz: number,
+    isDownbeat: boolean
+  ): void {
+    if (!this.masterGain) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = isDownbeat ? 'triangle' : 'sine';
+    osc.frequency.setValueAtTime(frequencyHz, startSec);
+    osc.frequency.exponentialRampToValueAtTime(frequencyHz * 0.65, startSec + 0.032);
+
+    const peak = isDownbeat ? 0.35 : 0.2;
+    gain.gain.setValueAtTime(0.0001, startSec);
+    gain.gain.linearRampToValueAtTime(peak, startSec + 0.002);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.038);
+
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(startSec);
+    osc.stop(startSec + 0.045);
+  }
+
+  public toggleTrackMute(trackId: string): boolean {
+    if (this.mutedTracks.has(trackId)) {
+      this.mutedTracks.delete(trackId);
+      return false;
+    }
+    this.mutedTracks.add(trackId);
+    return true;
+  }
+
+  public toggleTrackSolo(trackId: string): boolean {
+    if (this.soloedTracks.has(trackId)) {
+      this.soloedTracks.delete(trackId);
+      return false;
+    }
+    this.soloedTracks.add(trackId);
+    return true;
+  }
+
+  public getMutedTracks(): string[] {
+    return Array.from(this.mutedTracks);
+  }
+
+  public getSoloedTracks(): string[] {
+    return Array.from(this.soloedTracks);
+  }
+
+  public setArrangementLoopRange(startMeasure: number | null, endMeasure: number | null): void {
+    if (startMeasure !== null && endMeasure !== null && startMeasure >= 1 && endMeasure >= startMeasure) {
+      this.loopStartMeasure = Math.round(startMeasure);
+      this.loopEndMeasure = Math.round(endMeasure);
+    } else {
+      this.loopStartMeasure = null;
+      this.loopEndMeasure = null;
+    }
+  }
+
+  public getArrangementLoopRange(): { startMeasure: number | null; endMeasure: number | null } {
+    return {
+      startMeasure: this.loopStartMeasure,
+      endMeasure: this.loopEndMeasure,
+    };
+  }
+
+  /**
+   * Starts or seeks playback from a specific 1-based `measureNumber` (and optionally stops at `endMeasure`).
+   */
+  public async seekToMeasure(
+    score: CompiledScore,
+    measureNumber: number,
+    endMeasure?: number | null
+  ): Promise<void> {
+    const startWholeOffset = Math.max(0, measureNumber - 1);
+    const maxWholeOffset =
+      endMeasure && endMeasure >= measureNumber ? endMeasure : Infinity;
+
+    const shiftedEvents: AtomicEvent[] = [];
+    for (const ev of score.events) {
+      const st = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+      if (st + 1e-6 >= startWholeOffset && st < maxWholeOffset - 1e-6) {
+        const shiftedWhole = Math.max(0, st - startWholeOffset);
+        shiftedEvents.push({
+          ...ev,
+          startTime: {
+            numerator: Math.round(shiftedWhole * 1920),
+            denominator: 1920,
+          },
+        });
+      }
+    }
+
+    const subScore: CompiledScore = {
+      ...score,
+      events: shiftedEvents,
+    };
+    await this.playScore(subScore);
+  }
+
   private wholeNoteToSeconds(
     wholeNote: number,
     baseTempo: number,
@@ -288,9 +426,26 @@ export class StudioAudioEngine {
     const numTracks = Math.max(1, score.defs.length);
     this.polyphonyScalar = numTracks >= 10 ? 0.78 : numTracks >= 6 ? 0.85 : numTracks >= 3 ? 0.92 : 1.0;
 
-    const list: ScheduledNoteEvent[] = [];
+    const automationLanes =
+      score.automationLanes && score.automationLanes.length > 0
+        ? score.automationLanes
+        : compileAutomationLanes(score.events);
+    const lanesByTrackAndParam = new Map<string, AutomationLane>();
+    for (const lane of automationLanes) {
+      lanesByTrackAndParam.set(`${lane.trackId}::${lane.param}`, lane);
+    }
 
-    for (const ev of score.events) {
+    const groovesById = new Map<string, any>();
+    if (score.grooves) {
+      for (const g of score.grooves) {
+        groovesById.set(g.id, g);
+      }
+    }
+
+    const list: ScheduledNoteEvent[] = [];
+    const playableEvents = FollowActionEngine.evaluateNoteProbabilities(score.events);
+
+    for (const ev of playableEvents) {
       if (!ev.pitch || ev.pitch.isRest || ev.pitch.isSpacer) continue;
 
       const trackId = ev.trackId || 'pno';
@@ -340,16 +495,73 @@ export class StudioAudioEngine {
       // Map MIDI velocity (1..127) onto an audible studio dynamic curve (0.28..1.0)
       const velToAudibleCurve = (v: number) => 0.25 + 0.75 * Math.pow(Math.max(1, Math.min(127, v)) / 127, 0.85);
 
-      const vel = ev.physics?.velocity ?? 90;
+      let vel = ev.physics?.velocity ?? 90;
+      if (def?.groove && groovesById.has(def.groove)) {
+        const grooved = GrooveEngine.applyGrooveToEvent(
+          groovesById.get(def.groove)!,
+          startWhole,
+          startSec,
+          vel,
+          tempo,
+          list.length
+        );
+        startSec = grooved.startSec;
+        vel = grooved.velocity;
+      }
+
       const normalizedVelocity = Math.max(0.1, Math.min(1.0, vel / 127));
-      const swell = ev.physics?.swell;
+      let swell = ev.physics?.swell;
       const startVel = ev.physics?.startVelocity ?? (swell === 'crescendo' ? 40 : swell === 'diminuendo' ? 116 : vel);
       const endVel = ev.physics?.endVelocity ?? (swell === 'crescendo' ? 120 : swell === 'diminuendo' ? 35 : vel);
 
-      const amp = Math.max(0.15, Math.min(1.35, velToAudibleCurve(vel) * trackGainScalar));
-      const startAmp = Math.max(0.1, Math.min(1.4, velToAudibleCurve(startVel) * trackGainScalar));
-      const endAmp = Math.max(0.1, Math.min(1.4, velToAudibleCurve(endVel) * trackGainScalar));
-      const pan = Math.max(-1, Math.min(1, ev.physics?.pan ?? def?.pan ?? 0));
+      const endWhole = startWhole + durWhole;
+      const midWhole = startWhole + durWhole * 0.5;
+      const volLane =
+        lanesByTrackAndParam.get(`${trackId}::volume`) ||
+        lanesByTrackAndParam.get(`${trackId}::expression`);
+      const panLane = lanesByTrackAndParam.get(`${trackId}::pan`);
+      const cutoffLane = lanesByTrackAndParam.get(`${trackId}::cutoff`);
+
+      let autoStartVolScalar = 1.0;
+      let autoEndVolScalar = 1.0;
+      if (volLane) {
+        const isCcVol = volLane.controller !== undefined;
+        const vStart = evaluateAutomationLaneAt(volLane, startWhole);
+        const vEnd = evaluateAutomationLaneAt(volLane, endWhole);
+        if (vStart !== undefined) autoStartVolScalar = ccOrValueToVolumeScalar(vStart, isCcVol);
+        if (vEnd !== undefined) autoEndVolScalar = ccOrValueToVolumeScalar(vEnd, isCcVol);
+        if (!swell && Math.abs(autoEndVolScalar - autoStartVolScalar) > 0.08) {
+          swell = autoEndVolScalar > autoStartVolScalar ? 'crescendo' : 'diminuendo';
+        }
+      }
+
+      const avgVolScalar = (autoStartVolScalar + autoEndVolScalar) * 0.5;
+      const amp = Math.max(0.05, Math.min(1.4, velToAudibleCurve(vel) * trackGainScalar * avgVolScalar));
+      const startAmp = Math.max(0.05, Math.min(1.4, velToAudibleCurve(startVel) * trackGainScalar * autoStartVolScalar));
+      const endAmp = Math.max(0.05, Math.min(1.4, velToAudibleCurve(endVel) * trackGainScalar * autoEndVolScalar));
+
+      let autoPanOverride: number | undefined;
+      if (panLane) {
+        const rawPan = evaluateAutomationLaneAt(panLane, startWhole);
+        if (rawPan !== undefined) {
+          autoPanOverride = ccOrValueToPan(rawPan, panLane.controller !== undefined);
+        }
+      }
+      const pan = Math.max(-1, Math.min(1, ev.physics?.pan ?? autoPanOverride ?? def?.pan ?? 0));
+
+      let cutoffHzOverride: number | undefined;
+      if (cutoffLane) {
+        const rawCut = evaluateAutomationLaneAt(cutoffLane, midWhole);
+        if (rawCut !== undefined) {
+          cutoffHzOverride = ccOrValueToCutoffHz(rawCut);
+        }
+      } else if (ev.physics?.lyric) {
+        const phoneme = PhonemeEngine.decomposeLyric(ev.physics.lyric);
+        cutoffHzOverride = phoneme.secondaryVowel
+          ? Math.round((phoneme.primaryVowel.f2 + phoneme.secondaryVowel.f2) * 0.5)
+          : phoneme.primaryVowel.f2;
+      }
+
       const freq =
         Number.isFinite(ev.pitch.frequency) && ev.pitch.frequency >= 20 && ev.pitch.frequency <= 10000
           ? ev.pitch.frequency
@@ -382,6 +594,7 @@ export class StudioAudioEngine {
         pan,
         isEnsembleSection,
         normalizedVelocity,
+        cutoffHzOverride,
       });
     }
 
@@ -422,10 +635,13 @@ export class StudioAudioEngine {
         const prevEnd = prev.startSec + prev.durSec;
         const gap = curr.startSec - prevEnd;
 
-        if ((Math.abs(gap) <= 0.06 || (gap >= -0.15 && gap <= 0.06)) && !prevStacc && curr.startSec > prev.startSec + 0.02) {
+        if ((Math.abs(gap) <= 0.08 || (gap >= -0.15 && gap <= 0.08)) && !prevStacc && curr.startSec > prev.startSec + 0.02) {
           curr.isPhraseContinuation = true;
           prev.hasNextConnectedNote = true;
-          prev.durSec = Math.max(prev.durSec, curr.startSec - prev.startSec + 0.065);
+          prev.durSec = Math.max(prev.durSec, curr.startSec - prev.startSec + 0.085);
+        } else if (gap > 0.08 && gap <= 1.2 && !prevStacc) {
+          // Bridge up to 50% of short rests/breaths so notes taper smoothly rather than slamming shut
+          prev.durSec += Math.min(gap * 0.5, 0.38);
         }
       }
 
@@ -457,7 +673,8 @@ export class StudioAudioEngine {
     physics?: AtomicEvent['physics'],
     isPhraseContinuation?: boolean,
     noteIndexInTrack?: number,
-    normalizedVelocity?: number
+    normalizedVelocity?: number,
+    cutoffHzOverride?: number
   ): {
     attackSec: number;
     releaseSec: number;
@@ -472,6 +689,10 @@ export class StudioAudioEngine {
     const isPizz = Boolean(physics?.pizz) || inst.includes('pizz');
     const velScale = 0.48 + 0.68 * (normalizedVelocity ?? 0.72);
     const rrOffset = ((noteIndexInTrack ?? 0) % 3) * 0.008;
+    const applyCutOverride = (defaultCut: number) =>
+      cutoffHzOverride !== undefined && Number.isFinite(cutoffHzOverride)
+        ? Math.round(Math.max(80, Math.min(16000, cutoffHzOverride)))
+        : defaultCut;
 
     if (isPizz) {
       return {
@@ -479,7 +700,7 @@ export class StudioAudioEngine {
         releaseSec: 0.09,
         sampleOffsetSec: 0,
         sustainRatio: 0.35,
-        filterCutoffHz: Math.round(4200 * velScale),
+        filterCutoffHz: applyCutOverride(Math.round(4200 * velScale)),
       };
     }
 
@@ -493,11 +714,11 @@ export class StudioAudioEngine {
     ) {
       return {
         attackSec: isSlurred ? 0.085 : isStacc ? 0.022 : isMarc ? 0.028 : 0.055,
-        releaseSec: isStacc ? 0.09 : 0.26,
+        releaseSec: isStacc ? 0.26 : 0.78,
         // Skip 95ms-125ms past the recorded bow-scrape transient on connected/legato string notes
         sampleOffsetSec: isSlurred ? 0.105 + rrOffset : isStacc || isMarc ? 0.006 : 0.024 + rrOffset * 0.5,
-        sustainRatio: 0.94,
-        filterCutoffHz: Math.round(4400 * velScale),
+        sustainRatio: 0.98,
+        filterCutoffHz: applyCutOverride(Math.round(4400 * velScale)),
       };
     }
 
@@ -505,10 +726,10 @@ export class StudioAudioEngine {
     if (inst.includes('choir') || inst.includes('voice') || inst.includes('pad')) {
       return {
         attackSec: isSlurred ? 0.095 : 0.068,
-        releaseSec: 0.3,
+        releaseSec: 0.95,
         sampleOffsetSec: isSlurred ? 0.11 + rrOffset : 0.035 + rrOffset * 0.5,
-        sustainRatio: 0.96,
-        filterCutoffHz: Math.round(3800 * velScale),
+        sustainRatio: 0.98,
+        filterCutoffHz: applyCutOverride(Math.round(3800 * velScale)),
       };
     }
 
@@ -524,10 +745,10 @@ export class StudioAudioEngine {
     ) {
       return {
         attackSec: isSlurred ? 0.065 : isStacc ? 0.018 : 0.04,
-        releaseSec: isStacc ? 0.08 : 0.2,
+        releaseSec: isStacc ? 0.24 : 0.65,
         sampleOffsetSec: isSlurred ? 0.098 + rrOffset : isStacc ? 0.005 : 0.018 + rrOffset * 0.5,
-        sustainRatio: 0.92,
-        filterCutoffHz: Math.round(5200 * velScale),
+        sustainRatio: 0.96,
+        filterCutoffHz: applyCutOverride(Math.round(5200 * velScale)),
       };
     }
 
@@ -542,20 +763,20 @@ export class StudioAudioEngine {
       const isWarmBrass = inst.includes('horn') || inst.includes('trombone') || inst.includes('tuba');
       return {
         attackSec: isSlurred ? 0.062 : isStacc || isMarc ? 0.016 : 0.036,
-        releaseSec: isStacc ? 0.09 : 0.22,
+        releaseSec: isStacc ? 0.28 : 0.72,
         sampleOffsetSec: isSlurred ? 0.096 + rrOffset : isStacc || isMarc ? 0.004 : 0.016 + rrOffset * 0.5,
-        sustainRatio: 0.9,
-        filterCutoffHz: Math.round((isWarmBrass ? 3600 : 4600) * velScale),
+        sustainRatio: 0.98,
+        filterCutoffHz: applyCutOverride(Math.round((isWarmBrass ? 3600 : 4600) * velScale)),
       };
     }
 
     // 5. Pianos, Harps, Timpani, Chromatic Percussion & Plucked Instruments
     return {
       attackSec: isSlurred ? 0.022 : 0.012,
-      releaseSec: 0.22,
+      releaseSec: 0.85,
       sampleOffsetSec: 0,
-      sustainRatio: 0.65,
-      filterCutoffHz: Math.round(6500 * velScale),
+      sustainRatio: 0.82,
+      filterCutoffHz: applyCutOverride(Math.round(6500 * velScale)),
     };
   }
 
@@ -680,7 +901,9 @@ export class StudioAudioEngine {
             item.event.physics,
             item.isPhraseContinuation,
             item.noteIndexInTrack,
-            item.normalizedVelocity
+            item.normalizedVelocity,
+            item.hasNextConnectedNote,
+            item.cutoffHzOverride
           );
 
           this.scheduleSoundfontBufferVoice(
@@ -698,7 +921,9 @@ export class StudioAudioEngine {
             item.event.physics,
             true,
             (item.noteIndexInTrack ?? 0) + 1,
-            item.normalizedVelocity
+            item.normalizedVelocity,
+            item.hasNextConnectedNote,
+            item.cutoffHzOverride
           );
           return;
         }
@@ -718,7 +943,9 @@ export class StudioAudioEngine {
           item.event.physics,
           item.isPhraseContinuation,
           item.noteIndexInTrack,
-          item.normalizedVelocity
+          item.normalizedVelocity,
+          item.hasNextConnectedNote,
+          item.cutoffHzOverride
         );
         return;
       }
@@ -737,7 +964,8 @@ export class StudioAudioEngine {
         item.swell,
         item.startAmp,
         item.endAmp,
-        item.event.physics
+        item.event.physics,
+        item.cutoffHzOverride
       );
     } else {
       this.scheduleAcousticPianoVoice(
@@ -771,7 +999,9 @@ export class StudioAudioEngine {
     physics?: AtomicEvent['physics'],
     isPhraseContinuation?: boolean,
     noteIndexInTrack?: number,
-    normalizedVelocity?: number
+    normalizedVelocity?: number,
+    hasNextConnectedNote?: boolean,
+    cutoffHzOverride?: number
   ): void {
     const profile = this.getInstrumentArticulationProfile(
       sfInstrument,
@@ -779,12 +1009,19 @@ export class StudioAudioEngine {
       physics,
       isPhraseContinuation,
       noteIndexInTrack,
-      normalizedVelocity
+      normalizedVelocity,
+      cutoffHzOverride
     );
     const env = ctx.createGain();
     const src = ctx.createBufferSource();
     src.buffer = sampleData.buffer;
     src.playbackRate.setValueAtTime(sampleData.playbackRate, startSec);
+
+    if (isSustainingOrchestralInstrument(sfInstrument, sfInstrument) && sampleData.buffer.duration >= 2.5) {
+      src.loop = true;
+      src.loopStart = 0.6;
+      src.loopEnd = Math.max(2.0, sampleData.buffer.duration - 0.3);
+    }
 
     if (physics?.mordent && durSec >= 0.08) {
       src.playbackRate.setValueAtTime(sampleData.playbackRate, startSec);
@@ -826,7 +1063,7 @@ export class StudioAudioEngine {
     const attack = Math.min(profile.attackSec, Math.max(0.01, durSec * 0.45));
     const tAttack = t0 + attack;
     const tSustain = Math.max(tAttack + 0.015, t0 + durSec);
-    const release = profile.releaseSec;
+    const release = hasNextConnectedNote ? 0.16 : Math.max(0.65, profile.releaseSec);
     const tEnd = tSustain + release;
     const sampleScale = 2.1;
 
@@ -1082,9 +1319,18 @@ export class StudioAudioEngine {
     swell?: 'crescendo' | 'diminuendo',
     startAmp?: number,
     endAmp?: number,
-    physics?: AtomicEvent['physics']
+    physics?: AtomicEvent['physics'],
+    cutoffHzOverride?: number
   ): void {
-    const profile = this.getInstrumentArticulationProfile(undefined, patch, physics);
+    const profile = this.getInstrumentArticulationProfile(
+      undefined,
+      patch,
+      physics,
+      undefined,
+      undefined,
+      undefined,
+      cutoffHzOverride
+    );
     const isSub = patch.includes('sub') || patch.includes('808') || freq < 130;
     const isPad = patch.includes('pad') || patch.includes('string');
 
@@ -1092,7 +1338,14 @@ export class StudioAudioEngine {
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
     filter.Q.setValueAtTime(0.707, startSec);
-    const baseCutoff = isSub ? 360 : physics?.pizz ? 1600 : Math.min(3200, profile.filterCutoffHz);
+    const baseCutoff =
+      cutoffHzOverride !== undefined
+        ? profile.filterCutoffHz
+        : isSub
+          ? 360
+          : physics?.pizz
+            ? 1600
+            : Math.min(3200, profile.filterCutoffHz);
     if (swell === 'crescendo') {
       filter.frequency.setValueAtTime(Math.max(220, baseCutoff * 0.55), startSec);
       filter.frequency.exponentialRampToValueAtTime(Math.min(7500, baseCutoff * 1.45), startSec + durSec);
@@ -1625,6 +1878,122 @@ export class StudioAudioEngine {
     src.onended = () => cleanup.stopAndDisconnect();
   }
 
+  public getActiveClipsByTrack(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [k, v] of this.activeClipIdsByTrack.entries()) {
+      out[k] = v;
+    }
+    return out;
+  }
+
+  public getQueuedClipsByTrack(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [k, v] of this.queuedClipIdsByTrack.entries()) {
+      out[k] = v;
+    }
+    return out;
+  }
+
+  /**
+   * Computes the quantization delay in seconds until the next launch boundary
+   * (`"none"`, `"1/8"`, `"1/4"`, `"1/2"`, `"1/1"`, `"2/1"`, `"4/1"`).
+   */
+  public computeQuantizeDelaySec(quantizeSpec?: string, tempoBpm: number = 120): number {
+    const clean = (quantizeSpec || 'none').trim().toLowerCase();
+    if (!this.isPlaying || !this.ctx || clean === 'none' || clean === 'off' || clean === '0') {
+      return 0;
+    }
+
+    const secPerBeat = 60 / (tempoBpm || 120);
+    let boundaryBeats = 4; // Default 1/1 bar (4 quarter beats)
+    if (clean === '1/16') boundaryBeats = 0.25;
+    else if (clean === '1/8') boundaryBeats = 0.5;
+    else if (clean === '1/4') boundaryBeats = 1;
+    else if (clean === '1/2') boundaryBeats = 2;
+    else if (clean === '1/1' || clean === '1 bar') boundaryBeats = 4;
+    else if (clean === '2/1' || clean === '2 bars') boundaryBeats = 8;
+    else if (clean === '4/1' || clean === '4 bars') boundaryBeats = 16;
+
+    const boundarySec = boundaryBeats * secPerBeat;
+    const elapsed = Math.max(0, this.ctx.currentTime - this.startContextTime);
+    const remainder = elapsed % boundarySec;
+    if (remainder < 0.015 || boundarySec - remainder < 0.015) return 0;
+    return boundarySec - remainder;
+  }
+
+  /**
+   * Launches a single Session View clip (or virtual measure clip) on its track,
+   * looping the active set of running Session clips.
+   */
+  public async launchClip(
+    score: CompiledScore,
+    clipId: string,
+    trackId: string,
+    clipEvents: AtomicEvent[],
+    clipDef?: ClipDefinition
+  ): Promise<void> {
+    this.activeClipIdsByTrack.set(trackId, clipId);
+    this.queuedClipIdsByTrack.delete(trackId);
+    this.isLooping = true;
+
+    const subScore: CompiledScore = {
+      ...score,
+      events: clipEvents.map((ev) => ({
+        ...ev,
+        startTime: ev.startTime || { numerator: 0, denominator: 1 },
+      })),
+    };
+    await this.playScore(subScore);
+
+    // If the launched clip defines an Ableton Follow Action, resolve the next clip on the track
+    if (clipDef?.followAction && score.clips && score.clips.length > 0) {
+      const trackClips = score.clips.filter((c) => c.trackId === trackId);
+      const resolution = FollowActionEngine.resolveNextClip(clipDef, trackClips);
+      if (resolution.targetClip) {
+        this.queuedClipIdsByTrack.set(trackId, resolution.targetClip.id);
+      }
+    }
+  }
+
+  /**
+   * Launches an entire horizontal Scene row across all tracks in the scene.
+   */
+  public async launchScene(
+    score: CompiledScore,
+    _sceneIndex: number,
+    sceneEvents: AtomicEvent[],
+    trackClipMap: Record<string, string>,
+    sceneTempo?: number
+  ): Promise<void> {
+    this.activeClipIdsByTrack.clear();
+    this.queuedClipIdsByTrack.clear();
+    for (const [tId, cId] of Object.entries(trackClipMap)) {
+      this.activeClipIdsByTrack.set(tId, cId);
+    }
+    this.isLooping = true;
+
+    const subScore: CompiledScore = {
+      ...score,
+      meta: {
+        ...score.meta,
+        tempo: sceneTempo && sceneTempo > 0 ? sceneTempo : score.meta.tempo,
+      },
+      events: sceneEvents.map((ev) => ({
+        ...ev,
+        startTime: ev.startTime || { numerator: 0, denominator: 1 },
+      })),
+    };
+    await this.playScore(subScore);
+  }
+
+  public stopTrackClip(trackId: string): void {
+    this.activeClipIdsByTrack.delete(trackId);
+    this.queuedClipIdsByTrack.delete(trackId);
+    if (this.activeClipIdsByTrack.size === 0) {
+      this.stop(true);
+    }
+  }
+
   public async playScore(score: CompiledScore): Promise<void> {
     this.stop(false);
 
@@ -1638,6 +2007,25 @@ export class StudioAudioEngine {
     this.scoreDurationSec = totalSeconds;
     this.tempoBpm = Number(score.meta?.tempo) || 120;
     this.scheduledTimeline = this.buildScheduledTimeline(score);
+    const [beatsStr] = (score.meta?.time || '4/4').split('/');
+    const beatsPerBar = Math.max(1, parseInt(beatsStr, 10) || 4);
+    const countInSec = this.countInBars > 0 ? this.countInBars * beatsPerBar * (60 / this.tempoBpm) : 0;
+    if (countInSec > 0) {
+      for (const item of this.scheduledTimeline) {
+        item.startSec += countInSec;
+      }
+      this.scoreDurationSec += countInSec;
+    }
+    const metronomeTicks =
+      this.isMetronomeEnabled || this.countInBars > 0
+        ? MetronomeAndCaptureEngine.buildMetronomeSchedule(
+            this.totalQuarterBeats,
+            this.tempoBpm,
+            score.meta?.time || '4/4',
+            this.countInBars
+          )
+        : [];
+    let nextMetronomeIdx = 0;
     this.nextScheduleIndex = 0;
     this.isPlaying = true;
 
@@ -1653,6 +2041,25 @@ export class StudioAudioEngine {
       if (!this.isPlaying || !this.ctx) return;
       const now = this.ctx.currentTime;
       const elapsed = Math.max(0, now - this.startContextTime);
+
+      while (
+        nextMetronomeIdx < metronomeTicks.length &&
+        metronomeTicks[nextMetronomeIdx].timeSec <= elapsed + LOOKAHEAD_SEC
+      ) {
+        const tick = metronomeTicks[nextMetronomeIdx];
+        if (
+          (this.isMetronomeEnabled || tick.isCountIn) &&
+          tick.timeSec >= elapsed - 0.025
+        ) {
+          this.scheduleMetronomeClick(
+            this.ctx,
+            this.startContextTime + tick.timeSec,
+            tick.frequencyHz,
+            tick.isDownbeat
+          );
+        }
+        nextMetronomeIdx++;
+      }
 
       while (
         this.nextScheduleIndex < this.scheduledTimeline.length &&
@@ -1741,7 +2148,7 @@ export class StudioAudioEngine {
     }
 
     const { totalSeconds } = this.calculateScoreDuration(score);
-    const renderDuration = Math.max(2, totalSeconds + 1.5);
+    const renderDuration = Math.max(2, totalSeconds + 3.4);
     const sampleRate = 44100;
     const totalFrames = Math.ceil(renderDuration * sampleRate);
 
@@ -1760,9 +2167,21 @@ export class StudioAudioEngine {
         item.event.physics,
         item.isPhraseContinuation,
         item.noteIndexInTrack,
-        item.normalizedVelocity
+        item.normalizedVelocity,
+        item.cutoffHzOverride
       );
-      const releaseSec = isDrum ? 0.05 : profile.releaseSec;
+      const isSustainer = isSustainingOrchestralInstrument(item.sfInstrument, item.patch);
+      const isStacc =
+        item.event.physics?.articulation === 'stacc' ||
+        item.event.physics?.articulation === 'staccato' ||
+        Boolean(item.event.physics?.pizz);
+      const releaseSec = isDrum
+        ? item.sfInstrument === 'timpani'
+          ? 1.15
+          : 0.18
+        : isStacc
+        ? 0.32
+        : Math.max(0.85, profile.releaseSec);
       const totalNoteSec = item.durSec + releaseSec;
       const noteFrames = Math.min(totalFrames - startFrame, Math.floor(totalNoteSec * sampleRate));
 
@@ -1965,9 +2384,20 @@ export class StudioAudioEngine {
         let lpState0 = 0;
         let lpState1 = 0;
 
+        const safeLoopStart1 = Math.min(bufLen - 1024, Math.floor(0.6 * (buf.sampleRate || sampleRate)));
+        const safeLoopSpan1 = Math.max(1024, bufLen - 256 - safeLoopStart1);
+        const safeLoopStart2 = desk2Buf ? Math.min(desk2Len - 1024, Math.floor(0.6 * (desk2Buf.sampleRate || sampleRate))) : 0;
+        const safeLoopSpan2 = desk2Buf ? Math.max(1024, desk2Len - 256 - safeLoopStart2) : 1;
+
         for (let i = 0; i < noteFrames; i++) {
+          if (readPos1 >= bufLen - 2) {
+            if (isSustainingSample && bufLen > 4096) {
+              readPos1 = safeLoopStart1 + ((readPos1 - safeLoopStart1) % safeLoopSpan1);
+            } else {
+              break;
+            }
+          }
           const idx1 = Math.floor(readPos1);
-          if (idx1 >= bufLen - 1) break;
           const frac1 = readPos1 - idx1;
 
           let s0 = ch0[idx1] + (ch0[idx1 + 1] - ch0[idx1]) * frac1;
@@ -1975,6 +2405,9 @@ export class StudioAudioEngine {
 
           const t = i / sampleRate;
           if (desk2Ch0 && desk2Ch1 && t >= 0.018) {
+            if (readPos2 >= desk2Len - 2 && isSustainingSample && desk2Len > 4096) {
+              readPos2 = safeLoopStart2 + ((readPos2 - safeLoopStart2) % safeLoopSpan2);
+            }
             const idx2 = Math.floor(readPos2);
             if (idx2 < desk2Len - 1) {
               const frac2 = readPos2 - idx2;
@@ -1989,9 +2422,10 @@ export class StudioAudioEngine {
           let env = 1.0;
           let swellFactor = 1.0;
           if (phys?.fp) {
-            env = t < 0.015 ? t / 0.015 : t < 0.075 ? 1.0 - ((t - 0.015) / 0.06) * 0.7 : 0.3;
+            env = t < 0.015 ? t / 0.015 : t < 0.075 ? 1.0 - ((t - 0.015) / 0.06) * 0.7 : 0.35;
             if (t > item.durSec) {
-              env *= Math.max(0, 1 - (t - item.durSec) / Math.max(0.001, releaseSec));
+              const relProgress = Math.min(1, (t - item.durSec) / Math.max(0.001, releaseSec));
+              env *= Math.pow(1 - relProgress, 1.75);
             }
           } else if (hasSwell) {
             if (t < attackSec) {
@@ -2002,15 +2436,18 @@ export class StudioAudioEngine {
               env = item.startAmp + (item.endAmp - item.startAmp) * swellProgress;
               swellFactor = env;
             } else {
-              const relProgress = (t - item.durSec) / Math.max(0.001, releaseSec);
-              env = item.endAmp * Math.max(0, 1 - relProgress);
+              const relProgress = Math.min(1, (t - item.durSec) / Math.max(0.001, releaseSec));
+              env = item.endAmp * Math.pow(1 - relProgress, 1.75);
               swellFactor = item.endAmp;
             }
           } else {
             if (t < attackSec) {
               env = t / attackSec;
-            } else if (t > item.durSec) {
-              env = Math.max(0, 1 - (t - item.durSec) / Math.max(0.001, releaseSec));
+            } else if (t <= item.durSec) {
+              env = 1.0;
+            } else {
+              const relProgress = Math.min(1, (t - item.durSec) / Math.max(0.001, releaseSec));
+              env = Math.pow(1 - relProgress, 1.75);
             }
           }
 
@@ -2089,6 +2526,20 @@ export class StudioAudioEngine {
         ? 1450
         : 1800;
 
+      const hAmps = new Float32Array(9);
+      let maxHarmonic = 0;
+      if (!isSub && isSustaining) {
+        for (let h = 1; h <= 8; h++) {
+          const hFreq = item.freq * h;
+          if (hFreq > 12000) break;
+          const formantDist = (hFreq - formantCenterHz) / formantCenterHz;
+          const formantGain = 1.0 + 0.65 * Math.exp(-formantDist * formantDist * 1.4);
+          const oddBoost = isWindFamily && h % 2 === 1 ? 1.2 : 1.0;
+          hAmps[h] = (1 / Math.pow(h, 1.15)) * formantGain * oddBoost;
+          maxHarmonic = h;
+        }
+      }
+
       for (let i = 0; i < noteFrames; i++) {
         const t = i / sampleRate;
         let env = 1.0;
@@ -2097,7 +2548,8 @@ export class StudioAudioEngine {
           if (t < attackSec) {
             env = t / attackSec;
           } else if (t > 0.055) {
-            env = 0.28 * Math.max(0, 1 - Math.max(0, t - item.durSec) / Math.max(0.001, releaseSec));
+            const relProgress = Math.min(1, Math.max(0, t - item.durSec) / Math.max(0.001, releaseSec));
+            env = 0.32 * Math.pow(1 - relProgress, 1.75);
           }
         } else if (hasSwell) {
           if (t < attackSec) {
@@ -2108,8 +2560,8 @@ export class StudioAudioEngine {
             env = item.startAmp + (item.endAmp - item.startAmp) * swellProgress;
             swellBrightness = env;
           } else {
-            const relProgress = (t - item.durSec) / Math.max(0.001, releaseSec);
-            env = item.endAmp * Math.max(0, 1 - relProgress);
+            const relProgress = Math.min(1, (t - item.durSec) / Math.max(0.001, releaseSec));
+            env = item.endAmp * Math.pow(1 - relProgress, 1.75);
             swellBrightness = item.endAmp;
           }
         } else {
@@ -2118,12 +2570,12 @@ export class StudioAudioEngine {
           } else if (t <= item.durSec) {
             const decayProgress = (t - attackSec) / Math.max(0.001, item.durSec - attackSec);
             env = isSustaining
-              ? 1.0 - 0.06 * decayProgress
-              : 0.45 + 0.55 * Math.exp(-decayProgress * 2.2);
+              ? 1.0
+              : 0.55 + 0.45 * Math.exp(-decayProgress * 1.8);
           } else {
-            const relProgress = (t - item.durSec) / Math.max(0.001, releaseSec);
-            const sustainEnd = isSustaining ? 0.94 : 0.45;
-            env = sustainEnd * Math.max(0, 1 - relProgress);
+            const relProgress = Math.min(1, (t - item.durSec) / Math.max(0.001, releaseSec));
+            const sustainEnd = isSustaining ? 1.0 : 0.55;
+            env = sustainEnd * Math.pow(1 - relProgress, 1.75);
           }
         }
 
@@ -2149,18 +2601,12 @@ export class StudioAudioEngine {
         if (isSub) {
           wave = Math.sin(ph1) * 0.8 + Math.sin(ph1 * 2) * 0.2;
         } else if (isSustaining) {
-          for (let h = 1; h <= 8; h++) {
-            const hFreq = instFreq * h;
-            if (hFreq > 12000) break;
-            const formantDist = (hFreq - formantCenterHz) / formantCenterHz;
-            const formantGain = 1.0 + 0.65 * Math.exp(-formantDist * formantDist * 1.4);
-            const oddBoost = isWindFamily && h % 2 === 1 ? 1.2 : 1.0;
-            const hAmp = (1 / Math.pow(h, 1.15)) * formantGain * oddBoost;
+          for (let h = 1; h <= maxHarmonic; h++) {
             const ensemblePhase =
               item.isEnsembleSection && h <= 4
                 ? 0.45 * Math.sin(ph1 * h) + 0.3 * Math.sin(ph2 * h) + 0.25 * Math.sin(ph3 * h)
                 : 0.65 * Math.sin(ph1 * h) + 0.35 * Math.sin(ph2 * h);
-            wave += hAmp * ensemblePhase;
+            wave += hAmps[h] * ensemblePhase;
           }
           wave *= 0.48;
         } else {
@@ -2171,7 +2617,9 @@ export class StudioAudioEngine {
             0.06 * Math.sin(ph2 * 4) * Math.exp(-t * 5.5);
         }
 
-        const dynCutoff = Math.max(950, Math.min(6800, profile.filterCutoffHz * swellBrightness));
+        const minCut = item.cutoffHzOverride !== undefined ? 80 : 950;
+        const maxCut = item.cutoffHzOverride !== undefined ? 14000 : 6800;
+        const dynCutoff = Math.max(minCut, Math.min(maxCut, profile.filterCutoffHz * swellBrightness));
         const lpAlpha = Math.min(0.85, (2 * Math.PI * dynCutoff) / sampleRate);
         lpState += lpAlpha * (wave - lpState);
 
@@ -2181,37 +2629,94 @@ export class StudioAudioEngine {
       }
     }
 
-    // Apply strictly feed-forward 6-tap low-pass filtered Concertgebouw Hall reflection network
+    // Apply rich 2.4-second Concertgebouw Hall Diffuser (6 parallel lowpass-damped combs + 2 series all-pass filters)
     const dryL = new Float32Array(left);
     const dryR = new Float32Array(right);
-    const d1 = Math.floor(0.019 * sampleRate);
-    const d2 = Math.floor(0.034 * sampleRate);
-    const d3 = Math.floor(0.053 * sampleRate);
-    const d4 = Math.floor(0.079 * sampleRate);
-    const d5 = Math.floor(0.113 * sampleRate);
-    const d6 = Math.floor(0.163 * sampleRate);
-    let revLpL = 0;
-    let revLpR = 0;
 
-    for (let i = d6; i < totalFrames; i++) {
-      const reflL =
-        dryR[i - d1] * 0.14 +
-        dryL[i - d2] * 0.11 +
-        dryR[i - d3] * 0.09 +
-        dryL[i - d4] * 0.07 +
-        dryR[i - d5] * 0.05 +
-        dryL[i - d6] * 0.035;
-      const reflR =
-        dryL[i - d1] * 0.14 +
-        dryR[i - d2] * 0.11 +
-        dryL[i - d3] * 0.09 +
-        dryR[i - d4] * 0.07 +
-        dryL[i - d5] * 0.05 +
-        dryR[i - d6] * 0.035;
-      revLpL += 0.26 * (reflL - revLpL);
-      revLpR += 0.26 * (reflR - revLpR);
-      left[i] = dryL[i] + revLpL;
-      right[i] = dryR[i] + revLpR;
+    const combTimesSec = [0.0437, 0.0531, 0.0613, 0.0709, 0.0809, 0.0919];
+    const combGains = [0.88, 0.87, 0.86, 0.85, 0.84, 0.83];
+    const combLensL = combTimesSec.map((t) => Math.floor(t * sampleRate));
+    const combLensR = combTimesSec.map((t) => Math.floor((t + 0.0013) * sampleRate));
+    const combBufsL = combLensL.map((len) => new Float32Array(len));
+    const combBufsR = combLensR.map((len) => new Float32Array(len));
+    const combIdxL = new Int32Array(6);
+    const combIdxR = new Int32Array(6);
+    const combLpL = new Float32Array(6);
+    const combLpR = new Float32Array(6);
+
+    const ap1LenL = Math.floor(0.0113 * sampleRate);
+    const ap1LenR = Math.floor(0.0121 * sampleRate);
+    const ap2LenL = Math.floor(0.0037 * sampleRate);
+    const ap2LenR = Math.floor(0.0043 * sampleRate);
+    const ap1BufL = new Float32Array(ap1LenL);
+    const ap1BufR = new Float32Array(ap1LenR);
+    const ap2BufL = new Float32Array(ap2LenL);
+    const ap2BufR = new Float32Array(ap2LenR);
+    let ap1IdxL = 0;
+    let ap1IdxR = 0;
+    let ap2IdxL = 0;
+    let ap2IdxR = 0;
+
+    const er1 = Math.floor(0.019 * sampleRate);
+    const er2 = Math.floor(0.034 * sampleRate);
+
+    for (let i = 0; i < totalFrames; i++) {
+      const inL = dryL[i];
+      const inR = dryR[i];
+      const hallInL = inL * 0.75 + inR * 0.25;
+      const hallInR = inR * 0.75 + inL * 0.25;
+
+      let wetL = 0;
+      let wetR = 0;
+
+      for (let c = 0; c < 6; c++) {
+        const bufL = combBufsL[c];
+        const idxL = combIdxL[c];
+        const delayedL = bufL[idxL];
+        combLpL[c] = delayedL * 0.68 + combLpL[c] * 0.32;
+        bufL[idxL] = hallInL + combLpL[c] * combGains[c];
+        combIdxL[c] = idxL + 1 >= combLensL[c] ? 0 : idxL + 1;
+        wetL += delayedL;
+
+        const bufR = combBufsR[c];
+        const idxR = combIdxR[c];
+        const delayedR = bufR[idxR];
+        combLpR[c] = delayedR * 0.68 + combLpR[c] * 0.32;
+        bufR[idxR] = hallInR + combLpR[c] * combGains[c];
+        combIdxR[c] = idxR + 1 >= combLensR[c] ? 0 : idxR + 1;
+        wetR += delayedR;
+      }
+
+      wetL *= 0.16;
+      wetR *= 0.16;
+
+      // All-pass stage 1
+      const dAp1L = ap1BufL[ap1IdxL];
+      const outAp1L = -0.5 * wetL + dAp1L;
+      ap1BufL[ap1IdxL] = wetL + 0.5 * dAp1L;
+      if (++ap1IdxL >= ap1LenL) ap1IdxL = 0;
+
+      const dAp1R = ap1BufR[ap1IdxR];
+      const outAp1R = -0.5 * wetR + dAp1R;
+      ap1BufR[ap1IdxR] = wetR + 0.5 * dAp1R;
+      if (++ap1IdxR >= ap1LenR) ap1IdxR = 0;
+
+      // All-pass stage 2
+      const dAp2L = ap2BufL[ap2IdxL];
+      const outAp2L = -0.5 * outAp1L + dAp2L;
+      ap2BufL[ap2IdxL] = outAp1L + 0.5 * dAp2L;
+      if (++ap2IdxL >= ap2LenL) ap2IdxL = 0;
+
+      const dAp2R = ap2BufR[ap2IdxR];
+      const outAp2R = -0.5 * outAp1R + dAp2R;
+      ap2BufR[ap2IdxR] = outAp1R + 0.5 * dAp2R;
+      if (++ap2IdxR >= ap2LenR) ap2IdxR = 0;
+
+      const earlyL = (i >= er1 ? dryR[i - er1] * 0.09 : 0) + (i >= er2 ? dryL[i - er2] * 0.07 : 0);
+      const earlyR = (i >= er1 ? dryL[i - er1] * 0.09 : 0) + (i >= er2 ? dryR[i - er2] * 0.07 : 0);
+
+      left[i] = inL + earlyL + outAp2L * 0.34;
+      right[i] = inR + earlyR + outAp2R * 0.34;
     }
 
     // Peak-normalize the rendered stereo mix to 0.90 (-0.9 dBFS) so WAV exports are always full studio volume

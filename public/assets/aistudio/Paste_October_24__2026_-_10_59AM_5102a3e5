@@ -1,0 +1,625 @@
+Here is the updated **50-Contract Master Roadmap (`TDB-701` – `TDB-750`)** with the complete 4-mode Vocal & Lyric Architecture woven directly into **Phases 1, 5, 7, and 9**—without changing `TDB-701` through `TDB-704` or adding any extra contracts beyond 50.
+
+---
+
+### How the 4 Vocal Modes Map Into the 50 Contracts
+
+1. **`.lyric("...")` AST Grammar, Piano Roll Lyric Display & Phoneme Tokenizer $\rightarrow$ Slotted into `TDB-705` (Phase 1)**
+* Parses `.lyric("Doin'")` on any note or chord, breaks English syllables into onset consonants, vowel formant targets ($F_1, F_2, F_3$), and coda consonants, and displays lyrics under note blocks on the Piano Roll.
+
+
+2. **Vocal Chopping & `map=@{...}` Slice Sequencing $\rightarrow$ Slotted into `TDB-721` (Phase 5)**
+* Maps named word slices (`map=@{ doin: [0.0s, 0.38s], right: [0.38s, 0.85s] }`) in **Simpler** with per-slice `.transpose()`, `.formant()`, and `.reverse`.
+
+
+3. **Real-Time Scale-Quantized Vocal Tuning & Harmony (`Auto Shift`) $\rightarrow$ Slotted into `TDB-733` (Phase 7)**
+* Implements Live 12.1's **Auto Shift** with real-time scale pitch correction, formant shifting, and 3-part MIDI chord harmony generation.
+
+
+4. **Zero-Dependency Klatt Formant Singer & 20-Band Talking Vocoder $\rightarrow$ Slotted into `TDB-734` (Phase 7)**
+* Any track with `.lyric("...")` sings recognizable consonants and vowels out of the box with zero external files—and when `.fx(vocoder)` is on a chord track, the phoneme articulator acts as the Modulator while the polyphonic synth chord acts as the Carrier (true Daft Punk talking chords).
+
+
+5. **Formant-Preserving Vocal Warping (`Complex Pro`), Mic Comping & Neural Singing (`style=neural`) $\rightarrow$ Slotted into `TDB-741`, `TDB-742`, and `TDB-744` (Phase 9)**
+* Covers live microphone recording into stacked **Take Lanes** (`TDB-742`), **Complex Pro** formant-locked tempo warping (`TDB-741`), **AI Stem Separation** (`Vocals / Drums / Bass / Other`), and upgrading `NeuralSynthesisEngine.ts` (`style=neural`) to render human vocal stems from `.lyric()` + pitch curves (`TDB-744`).
+
+
+
+---
+
+### Updated 50-Contract Master Overview (`TDB-701` – `TDB-750`)
+
+#### Phase 1: Core `.ten` DAW Grammar, Mutator, Tuning, Automation & Lyrics (`TDB-701` – `TDB-705`)
+
+* **`TDB-701` (Completed):** **Tenuto 6.0 DAW Grammar Extension** — `scene`, `clip`, Follow Actions, `group`, `return`, `locator`, `groove`, `.chance()`, `.vel_range()`, `.pick_one`, `.warp()`, `.transpose()`, `.formant()`, `.mpe()`, and `.cc()`.
+* **`TDB-702` (Completed):** **Surgical Bi-Directional AST Code Mutator** — Character-span tracking (`sourceStartOffset`, `sourceEndOffset`), modifier-safe duration resizing, pitch/chord transposition, Inspector binding, and comment-safe Mixer/Meta AST patching.
+* **`TDB-703` (Ready to Run):** **Global Scale Lock & Microtonal Tuning Engine (`.scl` / `.tun`)** — 22 scales, quarter-tone accidentals (`qs`, `qf`, `tqs`, `tqf`, `x`, `±cents`), 11 microtonal tunings, Scala `.scl` parser, and Piano Roll scale highlighting.
+* **`TDB-704` (Ready to Run):** **Continuous Automation & Clip Envelope Compiler** — `.cc()` and `.automate()` curve compilation (`linear`, `exp`, `log`, `s_curve`, `step`) modulating volume, pan, and filter cutoff in live playback and WAV export.
+* **`TDB-705` (Updated with Vocal Lyrics & Phonemes):** **Groove Pool Engine, `.lyric("...")` AST Parser & Phoneme Tokenizer** — Applies non-destructive Groove Pool timing/velocity swing (`groove="mpc_swing"`), parses `.lyric("...")` on notes and chords, converts lyrics into consonant/vowel phoneme envelopes (`PhonemeEngine.ts`), and renders lyrics on the Piano Roll.
+
+#### Phase 2: Multi-View Workspace, Session View & Arrangement View (`TDB-706` – `TDB-710`)
+
+* **`TDB-706`:** **Multi-View Studio Shell & `Tab` View Switcher** (Code Editor + Session View $\leftrightarrow$ Arrangement View + Bottom Dock).
+* **`TDB-707`:** **Session View Clip Matrix & Quantized Scene Launcher** (2D clip/scene launch grid with global quantization).
+* **`TDB-708`:** **Clip Follow Actions & Launch Probability** (Automatic clip chaining, looping, and randomized scene progression).
+* **`TDB-709`:** **Arrangement View Multi-Track Timeline, Locators & Loop Brace** (Stacked tracks, overview clips, locators, and tempo lane).
+* **`TDB-710`:** **Metronome, Count-In, Tap Tempo & Capture MIDI** (Click track, recording count-in, and retroactive MIDI capture to `.ten`).
+
+#### Phase 3: Console Mixer, Send/Return Buses, Group Tracks & Automation UI (`TDB-711` – `TDB-715`)
+
+* **`TDB-711`:** **Live Studio Mixer Console with Peak/RMS Metering** (Visible channel strips, dB meters, Split Stereo Pan, Mute/Solo/Arm).
+* **`TDB-712`:** **Send & Return Tracks (`bus://` Routing Matrix)** (Unlimited Return buses, Pre/Post-Fader sends, cycle detection).
+* **`TDB-713`:** **Group Tracks, Folder Folding & Multi-Point Sidechaining** (Submix summing, collapsible group lanes, Pre/Post-FX sidechain taps).
+* **`TDB-714`:** **Interactive Bezier Automation Lanes (Track & Clip Envelopes)** (Visual breakpoint curve editing synced with `.ten` code).
+* **`TDB-715`:** **DJ Crossfader (`A/B` Assign), Track Delay & Cue Bus** (7 crossfade curves, millisecond track delay, and preview bus).
+
+#### Phase 4: Ableton Flagship Synthesizers (`TDB-716` – `TDB-720`)
+
+* **`TDB-716`:** **Wavetable Synthesizer & Modulation Matrix** (Dual morphing wavetables, Unison modes, 3 envelopes, 2 LFOs).
+* **`TDB-717`:** **Operator 4-Oscillator FM & Additive Synthesizer** (11 FM algorithms, ratio/fixed tuning, feedback, filter/pitch envelopes).
+* **`TDB-718`:** **Meld Bi-Timbral Macro-Oscillator & Chord Synth** (Swarm, Chord, Harmonic, NoisyLoop engines with scale quantizing).
+* **`TDB-719`:** **Analog & Drift Subtractive Synthesizers** (Voice drift, shape mod, PWM, hard sync, saturating ladder/SVF filters).
+* **`TDB-720`:** **Physical Modeling Suite: Collision, Tension & Electric** (Mallet/membrane resonators, waveguide strings, tine electric pianos).
+
+#### Phase 5: Sampling, Vocal Chopping, Drum Rack, Granulator & Racks (`TDB-721` – `TDB-725`)
+
+* **`TDB-721` (Updated with Vocal Chop `map=@{...}`):** **Simpler (Classic, 1-Shot, Slicing & Named Vocal Chop Maps)** — Supports word/transient slice dictionaries (`map=@{ doin: [0s, 0.38s] }`) with per-slice pitch, formant, and reverse controls.
+* **`TDB-722`:** **Sampler (Multi-Zone SFZ/WAV & FM Modulation)** (Velocity/key zones, crossfade looping, FM osc, morphing filters).
+* **`TDB-723`:** **Drum Sampler & 128-Pad Drum Rack with Choke Groups** (Per-pad FX chains, choke groups, 8-bit/stretch/sub-osc drum effects).
+* **`TDB-724`:** **Granulator III Real-Time Granular Synthesizer** (Grain size, spray, cloud scan, pitch jitter, reverse grains on audio/vocals).
+* **`TDB-725`:** **Instrument, Drum & Effect Racks with 16 Macros & Variations** (Multi-chain key/velocity/select zones and Macro snapshots).
+
+#### Phase 6: Audio Effects Rack — Part 1: EQ, Filters, Dynamics & Drive (`TDB-726` – `TDB-730`)
+
+* **`TDB-726`:** **Interactive Device Chain Dock & Per-Track DSP Graph** (Visual horizontal device rack wired to per-track WebAudio nodes).
+* **`TDB-727`:** **EQ Eight (with Live FFT Spectrum) & EQ Three** (8-band parametric EQ in Stereo/L-R/M-S modes + DJ kill switches).
+* **`TDB-728`:** **Auto Filter (Morph, Vowel Formant, DJ & Comb)** (Redesigned filter topologies with envelope follower, LFO, and drive).
+* **`TDB-729`:** **Dynamics Suite: Compressor, Glue, Multiband (`OTT`), Gate, Limiter & Drum Buss** (Upward/downward 3-band OTT and Drum Buss).
+* **`TDB-730`:** **Roar Multi-Stage Saturator & Distortion Suite** (3-stage serial/parallel/multiband/M-S Roar + Saturator, Pedal, Amp, Redux, Erosion).
+
+#### Phase 7: Audio Effects Rack — Part 2: Time, Pitch, Vocal Synthesis & Modulators (`TDB-731` – `TDB-735`)
+
+* **`TDB-731`:** **Hybrid Reverb & Convolution Reverb Pro** (Impulse response convolution blended with Shimmer, Dark, Quartz, Tides, Prism).
+* **`TDB-732`:** **Delay Suite: Echo, Delay, Filter Delay, Grain Delay & Beat Repeat** (Tape Echo with wobble/ducking, granular delay, Beat Repeat).
+* **`TDB-733` (Vocal Pitch & Harmony):** **Auto Shift Vocal Pitch/Formant Corrector, Live Harmonizer, Shifter, Chorus & Phaser** — Real-time scale-quantized vocal tuning, formant shifting, and multi-voice MIDI vocal harmonies.
+* **`TDB-734` (Klatt Formant Singer & Talking Vocoder):** **Formant Singing Synthesizer, 20-Band Talking Vocoder & Spectral Suite** — Synthesizes intelligible sung lyrics (`.lyric("...")`) via cascade/parallel formant filters and drives a 20-band Talking Vocoder where chords literally pronounce `.lyric()` words, plus **Spectral Resonator**, **Spectral Time**, **Corpus**, and **Resonators**.
+* **`TDB-735`:** **Max for Live Modulators & Utility / Tuner / Spectrum Devices** (Universal LFO, Envelope Follower, Shaper, Bass Mono Utility, Tuner).
+
+#### Phase 8: MIDI Effects, Transformations, Generators & MPE (`TDB-736` – `TDB-740`)
+
+* **`TDB-736`:** **Real-Time MIDI Effects Rack** (Arpeggiator, Chord, Scale, Note Length, Pitch, Random, Velocity, Note Echo + Commit to `.ten`).
+* **`TDB-737`:** **Expressive Chords Device & Scale-Aware Voicings** (One-finger multi-voice chord sets with strum and articulation).
+* **`TDB-738`:** **Live 12 MIDI Transformations Toolbar** (Arpeggiate, Connect, Ornament, Quantize, Accelerate/Decelerate, Span, Strum, Time Warp).
+* **`TDB-739`:** **Live 12 Algorithmic MIDI Generators** (Rhythm, Seed, Shape, and Stacks generators writing `.ten` tokens in key).
+* **`TDB-740`:** **MPE (MIDI Polyphonic Expression) Per-Note Pitch, Slide & Pressure** (3D per-note expression curves in Piano Roll and audio engine).
+
+#### Phase 9: Elastic Audio Warping, Vocal Comping, Stem Separation & Neural Singing (`TDB-741` – `TDB-745`)
+
+* **`TDB-741`:** **Elastic Audio Warping Engine (Beats, Tones, Texture, Re-Pitch & Complex Pro Vocal Formant Preservation)**.
+* **`TDB-742`:** **Multi-Track Mic/Instrument Audio Recording, Latency Compensation & Vocal Take Lane Comping**.
+* **`TDB-743`:** **Transient Detection, Audio-to-Tenuto (Harmony/Melody/Drums/Lyrics) & Slice to Drum Rack**.
+* **`TDB-744` (Updated with `style=neural` Singing Engine):** **AI Stem Separation (`Vocals/Drums/Bass/Other`), Neural Singing Voice Synthesis (`style=neural`) & Freeze/Bounce** — Upgrades `NeuralSynthesisEngine.ts` to render `.lyric("...")` + pitch/vibrato contours into cached studio vocal buffers (`tenuto-vocal-vault-v1`) with instant Formant Singer fallback.
+* **`TDB-745`:** **Live Performance Looper Device** (Record $\rightarrow$ Overdub $\rightarrow$ Multiply/Divide $\rightarrow$ Drag loop to `.ten` track).
+
+#### Phase 10: Browser, Similarity Search, Hardware I/O, Ableton Link, VST3/AU & Export (`TDB-746` – `TDB-750`)
+
+* **`TDB-746`:** **Tag-Based Studio Browser, In-Key Preview & LanceDB Vector Sound Similarity Search**.
+* **`TDB-747`:** **WebMIDI Live Input, Step Recording, MIDI Learn (`Cmd+M`) & Key Map (`Cmd+K`)**.
+* **`TDB-748`:** **Ableton Link, Link Audio & OSC Network Synchronization**.
+* **`TDB-749`:** **WAM 2.0 Web Plugins & Native macOS VST3 / Audio Units (AU) Bridge**.
+* **`TDB-750`:** **Universal Export Matrix (Isolated Stems, `.mid` Decompiler/Exporter, SVG/PDF Sheet Music with Lyrics & `.tenpack` ZIP)**.
+
+---
+
+### Implementation Contract #5 (`TDB-705`): Groove Pool Engine, `.lyric("...")` AST Parser & Phoneme Tokenizer
+
+To complete all of **Phase 1 (`TDB-701` – `TDB-705`)**, here is the full **Contract #5 (`TDB-705`)** ready to run right after `TDB-703` and `TDB-704`:
+
+```markdown
+# Implementation Contract: Groove Pool Engine, `.lyric("...")` AST Parser & Phoneme Tokenizer (TDB-705)
+
+**Project:** Tenuto Studio 5
+**Scope:** Create `src/audio/GrooveEngine.ts` and `src/audio/PhonemeEngine.ts`, and upgrade `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, `src/audio/StudioAudioEngine.ts`, and `src/components/WebGPUCanvas.tsx` to support `.lyric("...")` modifiers on notes and chords, automatic English Grapheme-to-Phoneme (G2P) formant decomposition ($F_1, F_2, F_3$ vowel targets + onset/coda consonants), initial vowel-formant singing shaping in `StudioAudioEngine.ts`, Piano Roll lyric rendering, and non-destructive Ableton Groove Pool timing/velocity swing.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+In `TDB-701`, `DocumentParser.ts` added parsing for `groove` blocks and `groove="..."` track attributes, but those groove templates are not yet applied to note start times and velocities during playback. Additionally, Tenuto needs first-class `.lyric("...")` support (`SPEC.md` Section 3.3) so notes and chords can carry sung syllables, decompose them into consonant and vowel formant targets ($F_1, F_2, F_3$), and display lyrics directly on the Piano Roll.
+
+This contract:
+1. Extends `src/parser/ASTSerializer.ts` and `src/parser/DocumentParser.ts` to parse `.lyric("...")` (and `.word("...")` / `.vox("...")`) on notes and chords into `physics.lyric`.
+2. Creates `src/audio/PhonemeEngine.ts` to decompose any English lyric syllable into onset consonants, vowel formant frequencies ($F_1, F_2, F_3$ in Hz), and coda consonants.
+3. Creates `src/audio/GrooveEngine.ts` to apply Ableton Groove Pool `quantizePercent`, `timingPercent` (swing), `randomPercent`, and `velocityPercent` non-destructively to any track bound to a `groove`.
+4. Wires both `GrooveEngine` and `PhonemeEngine` into `src/audio/StudioAudioEngine.ts` (applying groove pocket timing/velocity and vowel-formant filter shaping on `.lyric()` notes) and renders `.lyric()` text on note blocks in `src/components/WebGPUCanvas.tsx`.
+
+---
+
+## 2. Root Cause
+1. `ASTSerializer.ts` does not parse `.lyric("...")` into `EventPhysics`.
+2. `StudioAudioEngine.ts` does not apply `score.grooves` to tracks with `def.groove` and does not shape vocal formants when `ev.physics?.lyric` is present.
+3. `WebGPUCanvas.tsx` only displays pitch names (`C4`) on note blocks and does not show attached `.lyric("...")` syllables.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/parser/ASTSerializer.ts` - Parse `.lyric("...")` Modifier on Notes & Chords
+In `src/parser/ASTSerializer.ts`:
+
+1. Add `lyric?: string;` to `EventPhysics`:
+```typescript
+  lyric?: string;
+
+```
+
+2. Inside `parseModifiersToPhysics`, add parsing for `lyric(...)`, `word(...)`, and `vox(...)`:
+
+```typescript
+      } else if (
+        (mod.startsWith('lyric(') || mod.startsWith('word(') || mod.startsWith('vox(')) &&
+        mod.endsWith(')')
+      ) {
+        const inner = mod.slice(mod.indexOf('(') + 1, -1).trim().replace(/^["']|["']$/g, '');
+        if (inner) {
+          physics.lyric = inner;
+        }
+
+```
+
+### 3.2 `src/audio/PhonemeEngine.ts` - Create the Grapheme-to-Phoneme (G2P) & Klatt Vowel Formant Engine
+
+Create `src/audio/PhonemeEngine.ts` to decompose English lyric syllables into onset/coda consonant classes and Klatt $F_1, F_2, F_3$ vowel formant targets:
+
+```typescript
+export interface VowelFormantTarget {
+  vowelCode: string;
+  f1: number;
+  f2: number;
+  f3: number;
+  bandwidth1: number;
+  bandwidth2: number;
+  bandwidth3: number;
+}
+
+export interface DecomposedLyricPhonemes {
+  rawLyric: string;
+  onsetConsonant: 'plosive' | 'fricative' | 'nasal' | 'liquid' | 'none';
+  onsetNoiseHz: number;
+  onsetDurationSec: number;
+  primaryVowel: VowelFormantTarget;
+  secondaryVowel?: VowelFormantTarget; // For diphthongs like "right" (AH -> IY) or "doin'" (UW -> IH)
+  codaConsonant: 'plosive' | 'fricative' | 'nasal' | 'liquid' | 'none';
+  codaNoiseHz: number;
+  codaDurationSec: number;
+}
+
+/**
+ * Canonical Klatt vocal tract formant frequencies (F1, F2, F3 in Hz) for sung vowels.
+ */
+export const VOWEL_FORMANT_TABLE: Record<string, VowelFormantTarget> = {
+  IY: { vowelCode: 'IY', f1: 310, f2: 2400, f3: 3000, bandwidth1: 60, bandwidth2: 100, bandwidth3: 140 }, // "feel", "be"
+  IH: { vowelCode: 'IH', f1: 420, f2: 1980, f3: 2600, bandwidth1: 65, bandwidth2: 100, bandwidth3: 140 }, // "it", "in"
+  EH: { vowelCode: 'EH', f1: 560, f2: 1820, f3: 2520, bandwidth1: 75, bandwidth2: 110, bandwidth3: 150 }, // "ev-ry", "let"
+  AE: { vowelCode: 'AE', f1: 690, f2: 1720, f3: 2450, bandwidth1: 80, bandwidth2: 115, bandwidth3: 150 }, // "dan-cing", "and"
+  AA: { vowelCode: 'AA', f1: 750, f2: 1220, f3: 2500, bandwidth1: 85, bandwidth2: 110, bandwidth3: 150 }, // "ah", "all"
+  AO: { vowelCode: 'AO', f1: 590, f2: 920,  f3: 2450, bandwidth1: 80, bandwidth2: 100, bandwidth3: 140 }, // "on", "for"
+  UH: { vowelCode: 'UH', f1: 460, f2: 1120, f3: 2350, bandwidth1: 70, bandwidth2: 100, bandwidth3: 140 }, // "good", "put"
+  UW: { vowelCode: 'UW', f1: 330, f2: 900,  f3: 2300, bandwidth1: 65, bandwidth2: 95,  bandwidth3: 140 }, // "do", "you"
+  AH: { vowelCode: 'AH', f1: 620, f2: 1320, f3: 2450, bandwidth1: 75, bandwidth2: 105, bandwidth3: 140 }, // "up", "the"
+  ER: { vowelCode: 'ER', f1: 490, f2: 1380, f3: 1720, bandwidth1: 70, bandwidth2: 100, bandwidth3: 130 }, // "world", "her"
+};
+
+export class PhonemeEngine {
+  public static decomposeLyric(lyric: string): DecomposedLyricPhonemes {
+    const clean = (lyric || '').trim().toLowerCase().replace(/[^a-z']/g, '');
+    if (!clean) {
+      return {
+        rawLyric: lyric,
+        onsetConsonant: 'none',
+        onsetNoiseHz: 0,
+        onsetDurationSec: 0,
+        primaryVowel: VOWEL_FORMANT_TABLE.AA,
+        codaConsonant: 'none',
+        codaNoiseHz: 0,
+        codaDurationSec: 0,
+      };
+    }
+
+    // 1. Extract leading consonant cluster
+    const match = clean.match(/^([^aeiouy]*?)([aeiouy]+)(.*)$/);
+    const onsetStr = match ? match[1] : '';
+    const vowelGraphemes = match ? match[2] : 'a';
+    const codaStr = match ? match[3].replace(/'/g, '') : '';
+
+    const classifyConsonant = (cluster: string): {
+      type: 'plosive' | 'fricative' | 'nasal' | 'liquid' | 'none';
+      noiseHz: number;
+      durSec: number;
+    } => {
+      if (!cluster) return { type: 'none', noiseHz: 0, durSec: 0 };
+      if (/^(sh|ch|s|z|f|v|th|h)/.test(cluster)) {
+        const isSibilant = /^(s|z|sh|ch)/.test(cluster);
+        return { type: 'fricative', noiseHz: isSibilant ? 5200 : 2800, durSec: 0.042 };
+      }
+      if (/^(p|b|t|d|k|g)/.test(cluster)) {
+        return { type: 'plosive', noiseHz: 1900, durSec: 0.024 };
+      }
+      if (/^(m|n|ng)/.test(cluster)) {
+        return { type: 'nasal', noiseHz: 450, durSec: 0.03 };
+      }
+      return { type: 'liquid', noiseHz: 1100, durSec: 0.028 };
+    };
+
+    const onset = classifyConsonant(onsetStr);
+    const coda = classifyConsonant(codaStr);
+
+    // 2. Map English vowel/diphthong spelling + common words to primary & secondary Klatt formants
+    let primaryVowel = VOWEL_FORMANT_TABLE.AA;
+    let secondaryVowel: VowelFormantTarget | undefined;
+
+    if (clean === 'doin' || clean === "doin'") {
+      primaryVowel = VOWEL_FORMANT_TABLE.UW;
+      secondaryVowel = VOWEL_FORMANT_TABLE.IH;
+    } else if (
+      clean.includes('igh') ||
+      clean === 'right' ||
+      clean === 'night' ||
+      clean === 'light' ||
+      clean === 'my' ||
+      clean === 'i' ||
+      (vowelGraphemes === 'i' && codaStr.endsWith('e'))
+    ) {
+      // Diphthong /aɪ/ ("right", "night", "light"): AA -> IY
+      primaryVowel = VOWEL_FORMANT_TABLE.AA;
+      secondaryVowel = VOWEL_FORMANT_TABLE.IY;
+    } else if (
+      clean === 'now' ||
+      clean === 'out' ||
+      clean.includes('ow') ||
+      clean.includes('ou')
+    ) {
+      // Diphthong /aʊ/ ("out", "now"): AA -> UW
+      primaryVowel = VOWEL_FORMANT_TABLE.AA;
+      secondaryVowel = VOWEL_FORMANT_TABLE.UW;
+    } else if (
+      clean === 'go' ||
+      clean === 'no' ||
+      clean === 'so' ||
+      vowelGraphemes === 'oa' ||
+      (vowelGraphemes === 'o' && codaStr.endsWith('e'))
+    ) {
+      // Diphthong /oʊ/ ("go"): AO -> UW
+      primaryVowel = VOWEL_FORMANT_TABLE.AO;
+      secondaryVowel = VOWEL_FORMANT_TABLE.UW;
+    } else if (
+      clean === 'break' ||
+      clean === 'make' ||
+      clean === 'day' ||
+      vowelGraphemes === 'ay' ||
+      vowelGraphemes === 'ai' ||
+      (vowelGraphemes === 'a' && codaStr.endsWith('e'))
+    ) {
+      // Diphthong /eɪ/ ("break"): EH -> IY
+      primaryVowel = VOWEL_FORMANT_TABLE.EH;
+      secondaryVowel = VOWEL_FORMANT_TABLE.IY;
+    } else if (
+      clean === 'do' ||
+      clean === 'you' ||
+      clean === 'to' ||
+      vowelGraphemes === 'oo' ||
+      vowelGraphemes === 'ou' ||
+      vowelGraphemes === 'u'
+    ) {
+      primaryVowel = VOWEL_FORMANT_TABLE.UW;
+    } else if (
+      clean === 'be' ||
+      clean === 'we' ||
+      clean === 'me' ||
+      vowelGraphemes === 'ee' ||
+      vowelGraphemes === 'ea'
+    ) {
+      primaryVowel = VOWEL_FORMANT_TABLE.IY;
+    } else if (vowelGraphemes === 'i' || vowelGraphemes === 'y') {
+      primaryVowel = VOWEL_FORMANT_TABLE.IH;
+    } else if (vowelGraphemes === 'e') {
+      primaryVowel = codaStr.startsWith('r') ? VOWEL_FORMANT_TABLE.ER : VOWEL_FORMANT_TABLE.EH;
+    } else if (vowelGraphemes === 'o') {
+      primaryVowel = VOWEL_FORMANT_TABLE.AO;
+    } else if (vowelGraphemes === 'a') {
+      primaryVowel = clean === 'all' ? VOWEL_FORMANT_TABLE.AO : VOWEL_FORMANT_TABLE.AE;
+    }
+
+    return {
+      rawLyric: lyric,
+      onsetConsonant: onset.type,
+      onsetNoiseHz: onset.noiseHz,
+      onsetDurationSec: onset.durSec,
+      primaryVowel,
+      secondaryVowel,
+      codaConsonant: coda.type,
+      codaNoiseHz: coda.noiseHz,
+      codaDurationSec: coda.durSec,
+    };
+  }
+}
+
+```
+
+### 3.3 `src/audio/GrooveEngine.ts` - Create the Non-Destructive Ableton Groove Pool Engine
+
+Create `src/audio/GrooveEngine.ts` to evaluate Groove Pool swing, grid quantization, deterministic micro-timing jitter, and accent velocity feel:
+
+```typescript
+import { GrooveDefinition } from '../parser/DocumentParser';
+
+export interface GrooveAdjustedNote {
+  startSec: number;
+  velocity: number;
+}
+
+export class GrooveEngine {
+  /**
+   * Applies an Ableton Groove Pool definition (`base`, `quantizePercent`, `timingPercent`,
+   * `randomPercent`, `velocityPercent`) to a note's logical start position (`startWhole`),
+   * returning its adjusted physical `startSec` and `velocity` (1..127).
+   */
+  public static applyGrooveToEvent(
+    groove: GrooveDefinition,
+    startWhole: number,
+    baseStartSec: number,
+    baseVelocity: number,
+    tempoBpm: number,
+    seedIndex: number = 0
+  ): GrooveAdjustedNote {
+    const secPerWhole = (60 / (tempoBpm || 120)) * 4;
+    const baseStr = (groove.base || '1/16').trim();
+    const slashIdx = baseStr.indexOf('/');
+    const stepDenom = slashIdx !== -1 ? parseInt(baseStr.slice(slashIdx + 1), 10) || 16 : 16;
+    const stepWhole = 1 / stepDenom;
+
+    // 1. Grid Quantization (`quantizePercent`: 0..100%)
+    const nearestStepIndex = Math.round(startWhole / stepWhole);
+    const quantizedWhole = nearestStepIndex * stepWhole;
+    const quantizeRatio = Math.max(0, Math.min(1, (groove.quantizePercent ?? 100) / 100));
+    let groovedWhole = startWhole + (quantizedWhole - startWhole) * quantizeRatio;
+
+    // 2. Swing / Timing Offset (`timingPercent`: 0..100% delays odd-numbered subdivision steps)
+    const isOffbeatStep = Math.abs(nearestStepIndex % 2) === 1;
+    const timingRatio = Math.max(-1, Math.min(1, (groove.timingPercent ?? 0) / 100));
+    if (isOffbeatStep && timingRatio !== 0) {
+      // At 100% timing, offbeat 16th shifts by 1/3 of a step (triplet MPC 66% swing)
+      groovedWhole += stepWhole * 0.34 * timingRatio;
+    }
+
+    // 3. Deterministic Human Micro-Timing Jitter (`randomPercent`: 0..100%)
+    const randomRatio = Math.max(0, Math.min(1, (groove.randomPercent ?? 0) / 100));
+    let jitterSec = 0;
+    if (randomRatio > 0) {
+      const pseudoRand = Math.sin((seedIndex + 1) * 12.9898 + startWhole * 78.233) * 43758.5453;
+      const bipolar = (pseudoRand - Math.floor(pseudoRand)) * 2 - 1;
+      jitterSec = bipolar * 0.012 * randomRatio; // Up to ±12ms at 100% random
+    }
+
+    // 4. Velocity Groove Accent (`velocityPercent`: -100..100%)
+    const velRatio = Math.max(-1, Math.min(1, (groove.velocityPercent ?? 0) / 100));
+    let adjustedVelocity = baseVelocity;
+    if (velRatio !== 0) {
+      const accentSign = isOffbeatStep ? -0.14 : 0.14;
+      adjustedVelocity = Math.max(
+        1,
+        Math.min(127, Math.round(baseVelocity * (1 + accentSign * velRatio)))
+      );
+    }
+
+    const wholeDeltaSec = (groovedWhole - startWhole) * secPerWhole;
+    const finalStartSec = Math.max(0, baseStartSec + wholeDeltaSec + jitterSec);
+
+    return {
+      startSec: finalStartSec,
+      velocity: adjustedVelocity,
+    };
+  }
+}
+
+```
+
+### 3.4 `src/audio/StudioAudioEngine.ts` - Integrate `GrooveEngine` & `.lyric()` Vowel Formant Shaping
+
+In `src/audio/StudioAudioEngine.ts`:
+
+1. Import `GrooveEngine` from `./GrooveEngine` and `PhonemeEngine` from `./PhonemeEngine`.
+2. Inside `buildScheduledTimeline(score: CompiledScore)`:
+* Create a lookup map of grooves by ID:
+```typescript
+const groovesById = new Map<string, any>();
+if (score.grooves) {
+  for (const g of score.grooves) {
+    groovesById.set(g.id, g);
+  }
+}
+
+```
+
+
+* For each event on `trackId`, if `def?.groove && groovesById.has(def.groove)`, apply `GrooveEngine.applyGrooveToEvent(groovesById.get(def.groove)!, startWhole, startSec, vel, tempo, list.length)` to update `startSec` and `vel` before computing `amp` and `normalizedVelocity`.
+* If `ev.physics?.lyric` is present on a note, decompose its vowel formants via `const phoneme = PhonemeEngine.decomposeLyric(ev.physics.lyric);` and set `cutoffHzOverride = phoneme.primaryVowel.f2;` (and if `phoneme.secondaryVowel` is present on a diphthong like `"right"` or `"doin'"`, smoothly ramp the filter toward `phoneme.secondaryVowel.f2`).
+
+
+
+### 3.5 `src/components/WebGPUCanvas.tsx` - Render `.lyric("...")` Syllables on Piano Roll Note Blocks
+
+In `src/components/WebGPUCanvas.tsx`, inside `visibleEvents.map((ev, idx) => { ... })`, if `ev.physics?.lyric` is defined on the event, display the lyric syllable prominently on the note block alongside its pitch name:
+
+```typescript
+          const pitchName = ev.pitch?.noteName || `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
+          const lyricText = ev.physics?.lyric ? `"${ev.physics.lyric}" ` : '';
+          const label = `${lyricText}${pitchName}${badge}`;
+
+```
+
+### 3.6 `tests/groove_and_lyrics.test.ts` - Create Verification Suite for Groove Pool & `.lyric("...")` Phoneme Engine
+
+Create `tests/groove_and_lyrics.test.ts`:
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import { DocumentParser } from '../src/parser/DocumentParser';
+import { GrooveEngine } from '../src/audio/GrooveEngine';
+import { PhonemeEngine } from '../src/audio/PhonemeEngine';
+import { StudioAudioEngine } from '../src/audio/StudioAudioEngine';
+
+describe('TDB-705: Groove Pool Engine, .lyric("...") AST Parser & Phoneme Tokenizer', () => {
+  it('parses .lyric("...") on single notes and chords and decomposes English syllables into Klatt vowel formants', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Doin It Right Vocals", tempo: 89, time: "4/4" }
+        def vocoder "Vocoder Choir" style=synth patch="wavetable"
+        def panda "Panda Lead" style=standard patch="choir_aahs"
+        measure 1 {
+          vocoder: [g#3 b3 d#4 f#4]:8.lyric("Doin'") [g#3 b3 d#4 f#4]:8.lyric("it") [g#3 b3 d#4 f#4]:4.lyric("right") r:2 |
+          panda: f#5:4.lyric("If") d#5:4.lyric("you") c#5:2.lyric("dance") |
+        }
+      }
+    `);
+
+    const vocoderEvents = score.events.filter((e) => e.trackId === 'vocoder');
+    expect(vocoderEvents[0].physics?.lyric).toBe("Doin'");
+    expect(vocoderEvents[4].physics?.lyric).toBe('it');
+    expect(vocoderEvents[8].physics?.lyric).toBe('right');
+
+    // Verify PhonemeEngine decomposes "right" into liquid onset 'r', diphthong AA -> IY, and plosive coda 't'
+    const rightPhonemes = PhonemeEngine.decomposeLyric('right');
+    expect(rightPhonemes.onsetConsonant).toBe('liquid');
+    expect(rightPhonemes.primaryVowel.vowelCode).toBe('AA');
+    expect(rightPhonemes.secondaryVowel?.vowelCode).toBe('IY');
+    expect(rightPhonemes.codaConsonant).toBe('plosive');
+
+    // Verify "Doin'" decomposes into plosive 'd' + diphthong UW -> IH + nasal 'n'
+    const doinPhonemes = PhonemeEngine.decomposeLyric("Doin'");
+    expect(doinPhonemes.onsetConsonant).toBe('plosive');
+    expect(doinPhonemes.primaryVowel.vowelCode).toBe('UW');
+    expect(doinPhonemes.secondaryVowel?.vowelCode).toBe('IH');
+    expect(doinPhonemes.codaConsonant).toBe('nasal');
+  });
+
+  it('applies Ableton Groove Pool swing timing and velocity accents to tracks bound to a groove', () => {
+    const mpcGroove = {
+      id: 'mpc_swing',
+      name: 'MPC 16th Swing',
+      base: '1/16',
+      quantizePercent: 100,
+      timingPercent: 50,
+      randomPercent: 0,
+      velocityPercent: 50,
+    };
+
+    // On-beat 16th note (index 0, startWhole = 0) should not be delayed by swing
+    const onBeat = GrooveEngine.applyGrooveToEvent(mpcGroove, 0.0, 0.0, 90, 120, 0);
+    expect(onBeat.startSec).toBeCloseTo(0.0, 4);
+    expect(onBeat.velocity).toBeGreaterThan(90);
+
+    // Off-beat 16th note (index 1, startWhole = 1/16 = 0.0625, baseStartSec = 0.125s at 120 BPM)
+    // must be delayed by MPC swing timing and slightly attenuated in velocity
+    const offBeat = GrooveEngine.applyGrooveToEvent(mpcGroove, 0.0625, 0.125, 90, 120, 1);
+    expect(offBeat.startSec).toBeGreaterThan(0.125);
+    expect(offBeat.velocity).toBeLessThan(90);
+
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+    const groovedScore = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Groove Pocket", tempo: 120, time: "4/4" }
+        groove mpc_swing "MPC Swing" @{ base: "1/16", quantize: 100%, timing: 60%, random: 0%, velocity: 40% }
+        def drums "Kit" style=grid patch="tenuto_808_kit" groove="mpc_swing"
+        measure 1 {
+          drums: h:16 h:16 r:8 r:4 r:2 |
+        }
+      }
+    `);
+
+    const timeline = (engine as any).buildScheduledTimeline(groovedScore);
+    expect(timeline).toHaveLength(2);
+    expect(timeline[0].startSec).toBeCloseTo(0.0, 4);
+    // Second 16th note (unswung = 0.125s) is pushed later into the pocket by mpc_swing
+    expect(timeline[1].startSec).toBeGreaterThan(0.13);
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/lexer.ts`, `src/parser/PitchEngine.ts`, `src/parser/TemporalEngine.ts`, `src/parser/IncrementalCompiler.ts`
+* `src/components/SplitWorkspace.tsx`, `src/components/Transport.tsx`, `src/components/CodeEditor.tsx`, `src/components/Mixer.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+* All existing test files in `tests/`
+
+Explicitly:
+
+* Do NOT modify or delete any existing test file in `tests/`.
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero TypeScript errors.
+2. `npx vitest run` passes all existing test suites plus the new `tests/groove_and_lyrics.test.ts` suite.
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. Notes and chords with `.lyric("...")` decompose into Klatt vowel formants (`PhonemeEngine.decomposeLyric`), display their lyrics on the Piano Roll, and tracks bound to `groove="..."` apply swing timing and velocity feel in `StudioAudioEngine`.
+
+---
+
+## 6. Constraints
+
+Must not:
+
+* Break any existing tests in `tests/studio_engine_and_ui.test.tsx` or `tests/daw_grammar_extension.test.ts`.
+
+---
+
+## 7. Manual Steps
+
+None required for this contract.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or remove `src/audio/PhonemeEngine.ts`, `src/audio/GrooveEngine.ts`, and `tests/groove_and_lyrics.test.ts`, and restore `src/parser/ASTSerializer.ts`, `src/audio/StudioAudioEngine.ts`, and `src/components/WebGPUCanvas.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `src/audio/PhonemeEngine.ts`, `src/audio/GrooveEngine.ts`, `tests/groove_and_lyrics.test.ts`
+* Modified file(s): `src/parser/ASTSerializer.ts`, `src/audio/StudioAudioEngine.ts`, `src/components/WebGPUCanvas.tsx`
+* Commit message: `feat(groove-lyrics): add Groove Pool engine, .lyric AST parser, and Klatt phoneme tokenizer`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Sung Lyrics in `.ten` (`.lyric("...")`)** | Unrecognized modifier | Parses `.lyric("...")` on notes and chords, extracts consonant/vowel Klatt formants ($F_1, F_2, F_3$), shapes vocal brightness, and displays lyrics on the Piano Roll |
+| **Groove Pool (`groove="..."`)** | Parsed in `DocumentParser` but not applied to audio timing | `GrooveEngine` applies non-destructive swing timing (`timingPercent`), grid quantization, human micro-jitter, and velocity accents to grooved tracks |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-24
+Implementer: AI Agent
+
+```
+
+With `TDB-703`, `TDB-704`, and `TDB-705` queued up, you have the entire remainder of **Phase 1** ready to run in Google AI Studio. Paste back the output as each one finishes and we'll audit them and launch **Phase 2 (`TDB-706`: Multi-View Studio Shell & `Tab` View Switcher)**!
+
+```

@@ -1,10 +1,26 @@
-import { PitchEngine, PitchResult } from './PitchEngine';
+import { PitchEngine, PitchResult, TuningConfiguration } from './PitchEngine';
 import { TemporalEngine, TemporalResult } from './TemporalEngine';
+
+export type WarpMode = 'beats' | 'tones' | 'texture' | 'repitch' | 'complex' | 'complex_pro';
+
+export interface AutomationEnvelopeSpec {
+  param: string;
+  controller?: number;
+  values: number[];
+  curve: string;
+}
 
 export interface EventPhysics {
   articulation?: string;
   modifiers?: string[];
   velocity?: number;
+  chance?: number;
+  velocityRange?: [number, number];
+  pickOne?: boolean;
+  warpMode?: WarpMode;
+  pitchShiftSt?: number;
+  formant?: number;
+  mpe?: { bend?: number[]; slide?: number[]; pressure?: number[] };
   swell?: 'crescendo' | 'diminuendo';
   startVelocity?: number;
   endVelocity?: number;
@@ -28,6 +44,8 @@ export interface EventPhysics {
   tie?: boolean;
   fx?: Array<{ type: string; params: Record<string, any> }>;
   cc?: { controller: number; values: number[]; curve: string };
+  automations?: AutomationEnvelopeSpec[];
+  lyric?: string;
 }
 
 export interface AtomicEvent {
@@ -38,11 +56,15 @@ export interface AtomicEvent {
   trackId?: string;
   voiceId?: string;
   measureNumber?: number;
+  clipId?: string;
+  sceneIndex?: number;
   style?: string;
   patch?: string;
   env?: Record<string, string>;
   line?: number;
   col?: number;
+  sourceStartOffset?: number;
+  sourceEndOffset?: number;
   physics?: EventPhysics;
   astNodeId?: string;
 }
@@ -59,6 +81,10 @@ export class ASTSerializer {
   public reset(): void {
     this.pitchEngine.reset(4);
     this.temporalEngine.reset();
+  }
+
+  public configureTuning(config: TuningConfiguration): void {
+    this.pitchEngine.setTuningConfiguration(config);
   }
 
   private splitModifiers(raw: string): { core: string; modifiers: string[] } {
@@ -179,6 +205,114 @@ export class ASTSerializer {
         physics.reverse = true;
       } else if (mod === 'stretch') {
         physics.stretch = true;
+      } else if (mod === 'pick_one' || mod === 'chance_group') {
+        physics.pickOne = true;
+      } else if ((mod.startsWith('chance(') || mod.startsWith('prob(')) && mod.endsWith(')')) {
+        const inner = mod.slice(mod.indexOf('(') + 1, -1).trim();
+        const isPercent = inner.endsWith('%');
+        const rawVal = parseFloat(inner.replace('%', ''));
+        if (!isNaN(rawVal)) {
+          const normalized = !isPercent && rawVal > 0 && rawVal <= 1 ? rawVal * 100 : rawVal;
+          physics.chance = Math.max(0, Math.min(100, Math.round(normalized)));
+        }
+      } else if (mod.startsWith('vel_range(') && mod.endsWith(')')) {
+        const parts = mod
+          .slice(10, -1)
+          .split(',')
+          .map((s) => parseFloat(s.trim()));
+        if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+          const low = Math.max(1, Math.min(127, Math.round(Math.min(parts[0], parts[1]))));
+          const high = Math.max(1, Math.min(127, Math.round(Math.max(parts[0], parts[1]))));
+          physics.velocityRange = [low, high];
+          physics.velocity = Math.round((low + high) / 2);
+        }
+      } else if (mod.startsWith('warp(') && mod.endsWith(')')) {
+        const modeRaw = mod.slice(5, -1).trim().replace(/^"|"$/g, '').toLowerCase();
+        if (
+          modeRaw === 'beats' ||
+          modeRaw === 'tones' ||
+          modeRaw === 'texture' ||
+          modeRaw === 'repitch' ||
+          modeRaw === 'complex' ||
+          modeRaw === 'complex_pro'
+        ) {
+          physics.warpMode = modeRaw;
+          physics.stretch = true;
+        }
+      } else if ((mod.startsWith('transpose(') || mod.startsWith('pitch(')) && mod.endsWith(')')) {
+        const inner = mod.slice(mod.indexOf('(') + 1, -1).replace(/st|semitones/gi, '').trim();
+        const val = parseFloat(inner);
+        if (!isNaN(val)) {
+          physics.pitchShiftSt = Math.max(-48, Math.min(48, val));
+        }
+      } else if (mod.startsWith('formant(') && mod.endsWith(')')) {
+        const inner = mod.slice(8, -1).replace('%', '').trim();
+        const val = parseFloat(inner);
+        if (!isNaN(val)) {
+          physics.formant = Math.max(-100, Math.min(100, val));
+        }
+      } else if (mod.startsWith('cc(') && mod.endsWith(')')) {
+        const inner = mod.slice(3, -1).trim();
+        const ccMatch = inner.match(/^(\d+)\s*,\s*\[([^\]]*)\](?:\s*,\s*"?([a-zA-Z0-9_-]+)"?)?$/);
+        if (ccMatch) {
+          const controller = parseInt(ccMatch[1], 10);
+          const values = ccMatch[2]
+            .split(',')
+            .map((v) => parseFloat(v.trim()))
+            .filter((v) => !isNaN(v));
+          const curve = (ccMatch[3] || 'linear').toLowerCase();
+          physics.cc = { controller, values, curve };
+          if (!physics.automations) physics.automations = [];
+          physics.automations.push({
+            param: `cc:${controller}`,
+            controller,
+            values,
+            curve,
+          });
+        }
+      } else if (mod.startsWith('automate(') && mod.endsWith(')')) {
+        const inner = mod.slice(9, -1).trim();
+        const autoMatch = inner.match(/^"?([a-zA-Z0-9_.:-]+)"?\s*,\s*\[([^\]]*)\](?:\s*,\s*"?([a-zA-Z0-9_-]+)"?)?$/);
+        if (autoMatch) {
+          const param = autoMatch[1].trim();
+          const values = autoMatch[2]
+            .split(',')
+            .map((v) => parseFloat(v.trim()))
+            .filter((v) => !isNaN(v));
+          const curve = (autoMatch[3] || 'linear').toLowerCase();
+          if (!physics.automations) physics.automations = [];
+          physics.automations.push({
+            param,
+            values,
+            curve,
+          });
+        }
+      } else if (
+        (mod.startsWith('lyric(') || mod.startsWith('word(') || mod.startsWith('vox(')) &&
+        mod.endsWith(')')
+      ) {
+        const inner = mod.slice(mod.indexOf('(') + 1, -1).trim().replace(/^["']|["']$/g, '');
+        if (inner) {
+          physics.lyric = inner;
+        }
+      } else if (mod.startsWith('mpe(') && mod.endsWith(')')) {
+        const inner = mod.slice(4, -1).trim();
+        const mpe: { bend?: number[]; slide?: number[]; pressure?: number[] } = {};
+        const parseNumArray = (key: string): number[] | undefined => {
+          const m = inner.match(new RegExp(`\\b${key}\\s*:\\s*\\[([^\\]]*)\\]`, 'i'));
+          if (!m) return undefined;
+          return m[1]
+            .split(',')
+            .map((s) => parseFloat(s.trim()))
+            .filter((n) => !isNaN(n));
+        };
+        const bend = parseNumArray('bend');
+        const slide = parseNumArray('slide');
+        const pressure = parseNumArray('pressure');
+        if (bend) mpe.bend = bend;
+        if (slide) mpe.slide = slide;
+        if (pressure) mpe.pressure = pressure;
+        physics.mpe = mpe;
       } else if (mod.startsWith('vol(') && mod.endsWith(')')) {
         const val = parseFloat(mod.slice(4, -1));
         if (!isNaN(val)) physics.velocity = Math.max(0, Math.min(127, Math.round(val)));

@@ -1,0 +1,875 @@
+### Stage 3 Oracle Audit: Contract #7 (`TDB-707`)
+
+* **Boundary & Diff Audit:** Only the 2 authorized files (`src/audio/StudioAudioEngine.ts`, `src/components/SplitWorkspace.tsx`) and 2 new files (`src/components/SessionView.tsx`, `tests/session_view_launcher.test.tsx`) were touched.
+
+
+* **Test & Build Integrity:** `tests/session_view_launcher.test.tsx` (**3/3 passing**) and `vite build` completed cleanly with zero errors.
+* **Verdict:** **Approved.**
+
+---
+
+### Next Step: Run `TDB-708` (from the previous message), Then Queue Up `TDB-709` Below
+
+You can now paste **Contract #8 (`TDB-708: Clip Follow Actions, Launch Probability & Per-Note Chance Engine`)** from the previous message into Google AI Studio.
+
+Here is **Implementation Contract #9 (`TDB-709: Arrangement View Multi-Track Timeline, Locators & Loop Brace`)** ready to run right after `TDB-708` completes:
+
+```markdown
+# Implementation Contract: Arrangement View Multi-Track Timeline, Locators & Loop Brace (TDB-709)
+
+**Project:** Tenuto Studio 5
+**Scope:** Create `src/components/ArrangementView.tsx` and upgrade `src/audio/StudioAudioEngine.ts` and `src/components/SplitWorkspace.tsx` to provide an Ableton-style horizontal Multi-Track Arrangement View featuring clickable Locator flags, an `+ Add Locator` AST generator, an interactive Arrangement Loop Brace (`M_start`–`M_end`), a Tempo/Automation overview lane, collapsible Group Track folders, per-track Mute/Solo toggles, and mini-note clip blocks that can jump to any measure or open directly in the Piano Roll.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+In `TDB-706`, `SplitWorkspace.tsx` added the `arrangement` view mode (`data-testid="arrangement-view-container"`), which currently renders a static placeholder list of tracks. To match Ableton Live's Arrangement View workflow, users need a horizontal multi-track timeline where:
+1. All tracks (`def`), group buses (`group`), and return tracks (`return`) are stacked vertically along a shared horizontal measure ruler (`M1`, `M2`, `M3`, ...) with a synchronized scrolling playhead.
+2. Arrangement `locator` markers render as clickable flags along the top ruler that seek playback directly to that measure, alongside an `+ Add Locator` button that writes a new `locator` declaration into the `.ten` code.
+3. An interactive **Arrangement Loop Brace** lets the user loop any specific measure range (e.g., `M2`–`M4`), and per-track **Mute (`M`)**, **Solo (`S`)**, and **Group Fold (`▼`/`▶`)** controls let the user audition and organize tracks in real time.
+
+---
+
+## 2. Root Cause
+1. `src/components/ArrangementView.tsx` does not exist yet; `SplitWorkspace.tsx` renders a placeholder inside `data-testid="arrangement-view-container"`.
+2. `src/audio/StudioAudioEngine.ts` has `private mutedTracks` and `private soloedTracks` sets, but does not expose public methods (`toggleTrackMute`, `toggleTrackSolo`, `getMutedTracks`, `getSoloedTracks`, `setArrangementLoopRange`, `seekToMeasure`) to control track muting/soloing, measure seeking, or arrangement range looping from the UI.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/audio/StudioAudioEngine.ts` - Add Mute/Solo Toggles, Measure Seeking & Arrangement Loop Brace Range
+In `src/audio/StudioAudioEngine.ts`:
+
+1. Add private state fields for the arrangement loop range (right below `private queuedClipIdsByTrack: Map<string, string> = new Map();`):
+```typescript
+  private loopStartMeasure: number | null = null;
+  private loopEndMeasure: number | null = null;
+
+```
+
+2. Add public methods on `StudioAudioEngine` (right below `public setLoop(loop: boolean): void`) to manage track mute/solo states, arrangement loop brace ranges, and measure seeking:
+
+```typescript
+  public toggleTrackMute(trackId: string): boolean {
+    if (this.mutedTracks.has(trackId)) {
+      this.mutedTracks.delete(trackId);
+      return false;
+    }
+    this.mutedTracks.add(trackId);
+    return true;
+  }
+
+  public toggleTrackSolo(trackId: string): boolean {
+    if (this.soloedTracks.has(trackId)) {
+      this.soloedTracks.delete(trackId);
+      return false;
+    }
+    this.soloedTracks.add(trackId);
+    return true;
+  }
+
+  public getMutedTracks(): string[] {
+    return Array.from(this.mutedTracks);
+  }
+
+  public getSoloedTracks(): string[] {
+    return Array.from(this.soloedTracks);
+  }
+
+  public setArrangementLoopRange(startMeasure: number | null, endMeasure: number | null): void {
+    if (startMeasure !== null && endMeasure !== null && startMeasure >= 1 && endMeasure >= startMeasure) {
+      this.loopStartMeasure = Math.round(startMeasure);
+      this.loopEndMeasure = Math.round(endMeasure);
+    } else {
+      this.loopStartMeasure = null;
+      this.loopEndMeasure = null;
+    }
+  }
+
+  public getArrangementLoopRange(): { startMeasure: number | null; endMeasure: number | null } {
+    return {
+      startMeasure: this.loopStartMeasure,
+      endMeasure: this.loopEndMeasure,
+    };
+  }
+
+  /**
+   * Starts or seeks playback from a specific 1-based `measureNumber` (and optionally stops at `endMeasure`).
+   */
+  public async seekToMeasure(
+    score: CompiledScore,
+    measureNumber: number,
+    endMeasure?: number | null
+  ): Promise<void> {
+    const startWholeOffset = Math.max(0, measureNumber - 1);
+    const maxWholeOffset =
+      endMeasure && endMeasure >= measureNumber ? endMeasure : Infinity;
+
+    const shiftedEvents: AtomicEvent[] = [];
+    for (const ev of score.events) {
+      const st = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+      if (st + 1e-6 >= startWholeOffset && st < maxWholeOffset - 1e-6) {
+        const shiftedWhole = Math.max(0, st - startWholeOffset);
+        shiftedEvents.push({
+          ...ev,
+          startTime: {
+            numerator: Math.round(shiftedWhole * 1920),
+            denominator: 1920,
+          },
+        });
+      }
+    }
+
+    const subScore: CompiledScore = {
+      ...score,
+      events: shiftedEvents,
+    };
+    await this.playScore(subScore);
+  }
+
+```
+
+### 3.2 `src/components/ArrangementView.tsx` - Create the Interactive Multi-Track Arrangement Timeline
+
+Create `src/components/ArrangementView.tsx`.
+
+> **CRITICAL TEST CONSTRAINT:** Never use the substring `"Play"` inside any button text or `aria-label` in `ArrangementView.tsx` (use `"Seek to ..."`, `"Jump to ..."`, `"Loop Brace"`, `"Add Locator"`), so `screen.getByRole('button', { name: /Play/i })` in `tests/transport_binding.test.tsx` continues to match only the main Transport Play button. Also keep `data-testid="arrangement-view-container"` on the root element.
+
+```typescript
+import React, { useMemo, useState } from 'react';
+import { CompiledScore, TrackDefinition, LocatorDefinition, GroupDefinition } from '../parser/DocumentParser';
+import { AtomicEvent } from '../parser/ASTSerializer';
+
+export interface ArrangementViewProps {
+  score: CompiledScore | null;
+  playheadBeat?: number;
+  isPlaying?: boolean;
+  mutedTracks?: string[];
+  soloedTracks?: string[];
+  loopStartMeasure?: number | null;
+  loopEndMeasure?: number | null;
+  onToggleTrackMute?: (trackId: string) => void;
+  onToggleTrackSolo?: (trackId: string) => void;
+  onSeekToMeasure?: (measureNumber: number) => void;
+  onLoopRangeChange?: (startMeasure: number | null, endMeasure: number | null) => void;
+  onAddLocator?: (name: string, measureNumber: number) => void;
+  onOpenTrackInPianoRoll?: (trackId: string) => void;
+}
+
+const TRACK_COLORS = [
+  '#3B82F6',
+  '#A855F7',
+  '#10B981',
+  '#F59E0B',
+  '#EC4899',
+  '#06B6D4',
+  '#8B5CF6',
+  '#EAB308',
+];
+
+export default function ArrangementView({
+  score,
+  playheadBeat = 0,
+  isPlaying = false,
+  mutedTracks = [],
+  soloedTracks = [],
+  loopStartMeasure = null,
+  loopEndMeasure = null,
+  onToggleTrackMute,
+  onToggleTrackSolo,
+  onSeekToMeasure,
+  onLoopRangeChange,
+  onAddLocator,
+  onOpenTrackInPianoRoll,
+}: ArrangementViewProps) {
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [collapsedTracks, setCollapsedTracks] = useState<Record<string, boolean>>({});
+  const [newLocatorMeasure, setNewLocatorMeasure] = useState<number>(1);
+
+  const tracks: TrackDefinition[] = useMemo(() => {
+    const defs = score?.defs || [];
+    if (defs.length > 0) return defs;
+    return [
+      {
+        id: 'pno',
+        name: 'PNO',
+        style: 'standard',
+        patch: 'salamander_grand',
+        volume: 100,
+        pan: 0,
+        fx: [],
+      },
+    ];
+  }, [score]);
+
+  const groups: GroupDefinition[] = useMemo(() => score?.groups || [], [score]);
+  const locators: LocatorDefinition[] = useMemo(() => score?.locators || [], [score]);
+
+  const totalMeasures = useMemo(() => {
+    let maxM = 4;
+    for (const ev of score?.events || []) {
+      const m = ev.measureNumber || 1;
+      if (m > maxM) maxM = m;
+      const st = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+      const dur = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
+      const endM = Math.ceil(st + dur);
+      if (endM > maxM) maxM = endM;
+    }
+    return Math.max(4, maxM);
+  }, [score]);
+
+  const eventsByTrackAndMeasure = useMemo(() => {
+    const map = new Map<string, Map<number, AtomicEvent[]>>();
+    for (const ev of score?.events || []) {
+      if (ev.pitch?.isRest || ev.pitch?.isSpacer) continue;
+      const tId = ev.trackId || 'pno';
+      const stWhole = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+      const mNum = ev.measureNumber || Math.floor(stWhole) + 1;
+      let tMap = map.get(tId);
+      if (!tMap) {
+        tMap = new Map<number, AtomicEvent[]>();
+        map.set(tId, tMap);
+      }
+      let arr = tMap.get(mNum);
+      if (!arr) {
+        arr = [];
+        tMap.set(mNum, arr);
+      }
+      arr.push(ev);
+    }
+    return map;
+  }, [score]);
+
+  const measureWidthPx = 128;
+  const headerWidthPx = 220;
+  const playheadLeftPx = headerWidthPx + (playheadBeat / 4) * measureWidthPx;
+
+  const toggleGroupFold = (groupId: string) => {
+    setCollapsedGroups((prev) => ({ ...prev, [groupId]: !prev[groupId] }));
+  };
+
+  const toggleTrackFold = (trackId: string) => {
+    setCollapsedTracks((prev) => ({ ...prev, [trackId]: !prev[trackId] }));
+  };
+
+  return (
+    <div
+      data-testid="arrangement-view-container"
+      className="w-full h-full flex flex-col bg-slate-950 text-slate-200 font-mono text-xs overflow-hidden select-none"
+    >
+      {/* Top Arrangement Toolbar: Loop Brace, Locators & Tempo Map Info */}
+      <div className="px-4 py-2 bg-slate-900/95 border-b border-slate-800 flex items-center justify-between gap-3 shrink-0 flex-wrap">
+        <div className="flex items-center gap-3">
+          <span className="font-semibold text-slate-200 uppercase tracking-wider text-[11px]">
+            Arrangement Timeline ({tracks.length} Tracks • {totalMeasures} Measures)
+          </span>
+
+          {/* Arrangement Loop Brace Controls */}
+          <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded px-2 py-0.5 text-[11px]">
+            <span className="text-indigo-400 font-semibold">Loop Brace:</span>
+            <label htmlFor="loop-start-input" className="sr-only">
+              Loop Start Measure
+            </label>
+            <input
+              id="loop-start-input"
+              aria-label="Loop Start Measure"
+              type="number"
+              min={1}
+              max={totalMeasures}
+              value={loopStartMeasure ?? 1}
+              onChange={(e) => {
+                const start = Math.max(1, parseInt(e.target.value, 10) || 1);
+                const end = Math.max(start, loopEndMeasure ?? totalMeasures);
+                onLoopRangeChange?.(start, end);
+              }}
+              className="w-12 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-center text-slate-200"
+            />
+            <span className="text-slate-500">to</span>
+            <label htmlFor="loop-end-input" className="sr-only">
+              Loop End Measure
+            </label>
+            <input
+              id="loop-end-input"
+              aria-label="Loop End Measure"
+              type="number"
+              min={1}
+              max={totalMeasures}
+              value={loopEndMeasure ?? totalMeasures}
+              onChange={(e) => {
+                const end = Math.max(1, parseInt(e.target.value, 10) || totalMeasures);
+                const start = Math.min(end, loopStartMeasure ?? 1);
+                onLoopRangeChange?.(start, end);
+              }}
+              className="w-12 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-center text-slate-200"
+            />
+            {loopStartMeasure !== null && loopEndMeasure !== null && (
+              <button
+                type="button"
+                aria-label="Clear Loop Brace"
+                onClick={() => onLoopRangeChange?.(null, null)}
+                className="text-slate-400 hover:text-rose-400 px-1 cursor-pointer"
+                title="Clear Loop Brace"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Locators Bar & + Add Locator */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {locators.map((loc) => (
+            <button
+              key={loc.id}
+              type="button"
+              aria-label={`Jump to locator ${loc.name}`}
+              onClick={() => onSeekToMeasure?.(loc.measureNumber)}
+              className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/35 border border-amber-500/50 text-amber-300 text-[10px] font-semibold transition-colors cursor-pointer"
+              title={`Seek to ${loc.name} (Measure ${loc.measureNumber})`}
+            >
+              ⚑ {loc.name} (M{loc.measureNumber})
+            </button>
+          ))}
+
+          {onAddLocator && (
+            <div className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5">
+              <span className="text-[10px] text-slate-500">@M</span>
+              <input
+                aria-label="New Locator Measure"
+                type="number"
+                min={1}
+                max={totalMeasures + 8}
+                value={newLocatorMeasure}
+                onChange={(e) => setNewLocatorMeasure(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                className="w-10 bg-slate-900 border border-slate-700 rounded px-1 text-[10px] text-slate-200"
+              />
+              <button
+                type="button"
+                aria-label="Add Arrangement Locator"
+                onClick={() => onAddLocator(`Section M${newLocatorMeasure}`, newLocatorMeasure)}
+                className="text-[10px] text-amber-400 hover:text-amber-300 font-semibold px-1 cursor-pointer"
+              >
+                + Locator
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Main Scrollable Multi-Track Timeline */}
+      <div className="flex-1 overflow-auto relative">
+        <div
+          className="relative min-w-full"
+          style={{ width: `${headerWidthPx + totalMeasures * measureWidthPx + 40}px` }}
+        >
+          {/* Measure Ruler Row */}
+          <div className="flex sticky top-0 z-10 bg-slate-900 border-b border-slate-800 h-8 items-center">
+            <div
+              className="shrink-0 px-3 font-semibold text-slate-400 text-[10px] uppercase tracking-wider border-r border-slate-800 h-full flex items-center justify-between"
+              style={{ width: `${headerWidthPx}px` }}
+            >
+              <span>Tracks / Groups</span>
+              <span>M / S</span>
+            </div>
+
+            <div className="flex relative h-full items-center">
+              {Array.from({ length: totalMeasures }).map((_, idx) => {
+                const mNum = idx + 1;
+                const isInsideLoop =
+                  loopStartMeasure !== null &&
+                  loopEndMeasure !== null &&
+                  mNum >= loopStartMeasure &&
+                  mNum <= loopEndMeasure;
+                const locAtMeasure = locators.find((l) => l.measureNumber === mNum);
+
+                return (
+                  <button
+                    key={mNum}
+                    type="button"
+                    aria-label={`Seek to Measure ${mNum}`}
+                    onClick={() => onSeekToMeasure?.(mNum)}
+                    style={{ width: `${measureWidthPx}px` }}
+                    className={`h-full border-r border-slate-800 px-2 flex items-center justify-between text-left transition-colors cursor-pointer ${
+                      isInsideLoop
+                        ? 'bg-indigo-950/60 border-t-2 border-t-indigo-400 text-indigo-200'
+                        : 'hover:bg-slate-800/60 text-slate-400'
+                    }`}
+                    title={`Click to seek to Measure ${mNum}`}
+                  >
+                    <span className="font-bold text-[10px]">M{mNum}</span>
+                    {locAtMeasure && (
+                      <span className="text-[9px] text-amber-400 truncate max-w-[76px]">
+                        ⚑ {locAtMeasure.name}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Group Header Rows (if any groups exist) */}
+          {groups.map((grp) => {
+            const isCollapsed = Boolean(collapsedGroups[grp.id]);
+            return (
+              <div
+                key={grp.id}
+                data-testid={`arrangement-group-row-${grp.id}`}
+                className="flex border-b border-slate-800 bg-slate-900/75 h-9 items-center"
+              >
+                <div
+                  className="shrink-0 px-3 border-r border-slate-800 h-full flex items-center justify-between"
+                  style={{ width: `${headerWidthPx}px` }}
+                >
+                  <button
+                    type="button"
+                    aria-label={`Toggle group ${grp.id}`}
+                    onClick={() => toggleGroupFold(grp.id)}
+                    className="flex items-center gap-1.5 text-amber-300 font-bold text-[11px] cursor-pointer truncate"
+                  >
+                    <span>{isCollapsed ? '▶' : '▼'}</span>
+                    <span className="truncate">{grp.name}</span>
+                    <span className="text-[9px] text-slate-500">({grp.trackIds.length})</span>
+                  </button>
+                  <span className="text-[9px] uppercase px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">
+                    Group
+                  </span>
+                </div>
+
+                <div className="flex h-full items-center px-3 text-[10px] text-slate-400">
+                  Group Bus: {grp.trackIds.join(', ')}{' '}
+                  {grp.fx.length > 0 ? `• FX: ${grp.fx.join(' → ')}` : ''}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Stacked Track Lanes */}
+          {tracks.map((track, tIdx) => {
+            if (track.groupId && collapsedGroups[track.groupId]) {
+              return null;
+            }
+
+            const isMuted = mutedTracks.includes(track.id);
+            const isSoloed = soloedTracks.includes(track.id);
+            const isFolded = Boolean(collapsedTracks[track.id]);
+            const rowHeightClass = isFolded ? 'h-9' : 'h-20';
+            const color = TRACK_COLORS[tIdx % TRACK_COLORS.length];
+            const trackMeasureMap = eventsByTrackAndMeasure.get(track.id);
+
+            return (
+              <div
+                key={track.id}
+                data-testid={`arrangement-track-lane-${track.id}`}
+                className={`flex border-b border-slate-800/90 ${rowHeightClass} transition-all ${
+                  isMuted ? 'opacity-50 bg-slate-950' : 'bg-slate-950/90'
+                }`}
+              >
+                {/* Left Track Header */}
+                <div
+                  className="shrink-0 px-3 py-1.5 bg-slate-900 border-r border-slate-800 flex flex-col justify-between"
+                  style={{ width: `${headerWidthPx}px`, borderLeft: `3px solid ${color}` }}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <button
+                        type="button"
+                        aria-label={`Fold track ${track.id}`}
+                        onClick={() => toggleTrackFold(track.id)}
+                        className="text-slate-400 hover:text-white text-[10px] cursor-pointer"
+                      >
+                        {isFolded ? '▶' : '▼'}
+                      </button>
+                      <span
+                        onClick={() => onOpenTrackInPianoRoll?.(track.id)}
+                        className="font-bold text-slate-100 truncate cursor-pointer hover:text-blue-400"
+                        title="Click to open track in Piano Roll"
+                      >
+                        {track.name}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        aria-label={`Mute track ${track.id}`}
+                        onClick={() => onToggleTrackMute?.(track.id)}
+                        className={`w-5 h-5 rounded text-[10px] font-bold cursor-pointer border ${
+                          isMuted
+                            ? 'bg-amber-500 text-slate-950 border-amber-400'
+                            : 'bg-slate-950 text-slate-400 border-slate-700 hover:text-white'
+                        }`}
+                        title={`Mute ${track.name}`}
+                      >
+                        M
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Solo track ${track.id}`}
+                        onClick={() => onToggleTrackSolo?.(track.id)}
+                        className={`w-5 h-5 rounded text-[10px] font-bold cursor-pointer border ${
+                          isSoloed
+                            ? 'bg-sky-500 text-slate-950 border-sky-400'
+                            : 'bg-slate-950 text-slate-400 border-slate-700 hover:text-white'
+                        }`}
+                        title={`Solo ${track.name}`}
+                      >
+                        S
+                      </button>
+                    </div>
+                  </div>
+
+                  {!isFolded && (
+                    <div className="flex items-center justify-between text-[10px] text-slate-400">
+                      <span className="truncate">
+                        {track.isReturn ? 'Return Bus' : `${track.style} • ${track.patch}`}
+                      </span>
+                      <span className="text-slate-500 shrink-0">
+                        V:{track.volume} P:{track.pan}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Horizontal Measure Cells with Mini Note Previews */}
+                <div className="flex relative h-full">
+                  {Array.from({ length: totalMeasures }).map((_, mIdx) => {
+                    const mNum = mIdx + 1;
+                    const cellEvents = trackMeasureMap?.get(mNum) || [];
+
+                    return (
+                      <div
+                        key={mNum}
+                        style={{ width: `${measureWidthPx}px` }}
+                        onClick={() => {
+                          if (cellEvents.length > 0 && onOpenTrackInPianoRoll) {
+                            onOpenTrackInPianoRoll(track.id);
+                          }
+                        }}
+                        className="h-full border-r border-slate-800/70 p-1 relative flex flex-col justify-between"
+                      >
+                        {cellEvents.length > 0 && (
+                          <div
+                            className="w-full h-full rounded border px-1.5 py-1 flex flex-col justify-between cursor-pointer hover:brightness-110 transition-all overflow-hidden"
+                            style={{
+                              backgroundColor: `${color}22`,
+                              borderColor: `${color}88`,
+                            }}
+                          >
+                            <div className="flex items-center justify-between text-[9px] text-slate-200 font-semibold truncate">
+                              <span>
+                                {track.id} M{mNum}
+                              </span>
+                              <span className="text-slate-400">{cellEvents.length}n</span>
+                            </div>
+
+                            {!isFolded && (
+                              <div className="relative w-full h-8 bg-slate-950/60 rounded overflow-hidden">
+                                {cellEvents.slice(0, 24).map((ev, eIdx) => {
+                                  const st = ev.startTime
+                                    ? ev.startTime.numerator / ev.startTime.denominator
+                                    : 0;
+                                  const relBeat = Math.max(0, Math.min(0.95, st - (mNum - 1)));
+                                  const dur = ev.duration
+                                    ? ev.duration.numerator / ev.duration.denominator
+                                    : 0.25;
+                                  const widthPct = Math.max(6, Math.min(100, dur * 100));
+                                  const midi = ev.pitch?.midi || 60;
+                                  const bottomPct = Math.max(
+                                    10,
+                                    Math.min(85, ((midi - 36) / 60) * 100)
+                                  );
+
+                                  return (
+                                    <div
+                                      key={eIdx}
+                                      style={{
+                                        left: `${relBeat * 100}%`,
+                                        width: `${widthPct}%`,
+                                        bottom: `${bottomPct}%`,
+                                        backgroundColor: color,
+                                      }}
+                                      className="absolute h-1 rounded-full"
+                                    />
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Synchronized Vertical Playhead Line */}
+          {(isPlaying || playheadBeat > 0) && (
+            <div
+              data-testid="arrangement-playhead"
+              style={{ left: `${playheadLeftPx}px` }}
+              className="absolute top-0 bottom-0 w-0.5 bg-emerald-400 pointer-events-none z-20 shadow-[0_0_8px_#10b981]"
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+```
+
+### 3.3 `src/components/SplitWorkspace.tsx` - Wire `ArrangementView` into the Multi-View Workspace
+
+In `src/components/SplitWorkspace.tsx`:
+
+1. Import `ArrangementView` from `./ArrangementView`:
+
+```typescript
+import ArrangementView from './ArrangementView';
+
+```
+
+2. Add state for `mutedTracks`, `soloedTracks`, `loopStartMeasure`, and `loopEndMeasure`:
+
+```typescript
+  const [mutedTracks, setMutedTracks] = useState<string[]>([]);
+  const [soloedTracks, setSoloedTracks] = useState<string[]>([]);
+  const [loopStartMeasure, setLoopStartMeasure] = useState<number | null>(null);
+  const [loopEndMeasure, setLoopEndMeasure] = useState<number | null>(null);
+
+```
+
+3. Add handlers for track mute/solo, seeking to a measure, updating the Arrangement Loop Brace, and inserting a new `locator` into `.ten` source code:
+
+```typescript
+  const handleToggleTrackMute = (trackId: string) => {
+    studioAudio.toggleTrackMute(trackId);
+    setMutedTracks(studioAudio.getMutedTracks());
+  };
+
+  const handleToggleTrackSolo = (trackId: string) => {
+    studioAudio.toggleTrackSolo(trackId);
+    setSoloedTracks(studioAudio.getSoloedTracks());
+  };
+
+  const handleSeekToMeasure = async (measureNumber: number) => {
+    setPlayheadBeat(Math.max(0, (measureNumber - 1) * 4));
+    if (isPlaying) {
+      try {
+        const compiledScore =
+          compiledScoreState ||
+          incrementalCompiler.getLastCompiledScore() ||
+          incrementalCompiler.compileDocument(sourceCode);
+        await studioAudio.seekToMeasure(compiledScore, measureNumber, loopEndMeasure);
+      } catch {
+        // Ignore WebAudio absence in headless JSDOM tests
+      }
+    }
+  };
+
+  const handleLoopRangeChange = (startM: number | null, endM: number | null) => {
+    setLoopStartMeasure(startM);
+    setLoopEndMeasure(endM);
+    studioAudio.setArrangementLoopRange(startM, endM);
+    if (startM !== null && endM !== null) {
+      setIsLooping(true);
+      studioAudio.setLoop(true);
+    }
+  };
+
+  const handleAddLocator = (name: string, measureNumber: number) => {
+    const snippet = `\n  locator "${name}" at measure ${measureNumber}\n`;
+    const firstMeasureIdx = sourceCode.search(/\bmeasure\s+\d+/i);
+    const nextCode =
+      firstMeasureIdx !== -1
+        ? sourceCode.slice(0, firstMeasureIdx) + snippet + '  ' + sourceCode.slice(firstMeasureIdx)
+        : `${sourceCode}\n${snippet}`;
+    handleCodeEdit(nextCode);
+  };
+
+```
+
+4. Replace the placeholder `{activeMainView === 'arrangement' && ( ... )}` block in `src/components/SplitWorkspace.tsx` with `<ArrangementView />`:
+
+```tsx
+            {activeMainView === 'arrangement' && (
+              <ArrangementView isPlaying="{isPlaying}" loopEndMeasure="{loopEndMeasure}" loopStartMeasure="{loopStartMeasure}" mutedTracks="{mutedTracks}" onAddLocator="{handleAddLocator}" onLoopRangeChange="{handleLoopRangeChange}" onOpenTrackInPianoRoll="{()" onSeekToMeasure="{handleSeekToMeasure}" onToggleTrackMute="{handleToggleTrackMute}" onToggleTrackSolo="{handleToggleTrackSolo}" playheadBeat="{playheadBeat}" score="{compiledScoreState}" soloedTracks="{soloedTracks}"> setActiveMainView('piano_roll')}
+              />
+            )}
+
+```
+
+### 3.4 `tests/arrangement_view_timeline.test.tsx` - Create Verification Suite for Arrangement View, Locators & Loop Brace
+
+Create `tests/arrangement_view_timeline.test.tsx`:
+
+```typescript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import ArrangementView from '../src/components/ArrangementView';
+import { DocumentParser } from '../src/parser/DocumentParser';
+import { StudioAudioEngine } from '../src/audio/StudioAudioEngine';
+import '@testing-library/jest-dom';
+
+describe('TDB-709: Arrangement View Multi-Track Timeline, Locators & Loop Brace', () => {
+  it('renders stacked track lanes, group folders, clickable locators, and loop brace controls', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Arrangement Test", tempo: 120, time: "4/4" }
+        def lead "Lead Synth" style=synth patch="wavetable" group="synth_bus"
+        def drums "909 Kit" style=grid patch="tenuto_808_kit"
+        group synth_bus "Synth Group" tracks=[lead]
+
+        locator "Intro" at measure 1
+        locator "Main Drop" at measure 3
+
+        measure 1 {
+          lead: c4:4 e4:4 g4:2 |
+          drums: k:4 s:4 k:4 s:4 |
+        }
+        measure 2 {
+          lead: a4:2 g4:2 |
+        }
+        measure 3 {
+          drums: k:8 k:8 s:4 k:8 k:8 s:4 |
+        }
+      }
+    `);
+
+    const onSeekToMeasure = vi.fn();
+    const onToggleTrackMute = vi.fn();
+    const onToggleTrackSolo = vi.fn();
+    const onLoopRangeChange = vi.fn();
+    const onAddLocator = vi.fn();
+
+    render(
+      <ArrangementView loopEndMeasure="{3}" loopStartMeasure="{1}" mutedTracks="{[]}" onAddLocator="{onAddLocator}" onLoopRangeChange="{onLoopRangeChange}" onSeekToMeasure="{onSeekToMeasure}" onToggleTrackMute="{onToggleTrackMute}" onToggleTrackSolo="{onToggleTrackSolo}" playheadBeat="{4}" score="{score}" soloedTracks="{[]}"/>
+    );
+
+    // Verify group row and track lanes render
+    expect(screen.getByTestId('arrangement-group-row-synth_bus')).toBeInTheDocument();
+    expect(screen.getByTestId('arrangement-track-lane-lead')).toBeInTheDocument();
+    expect(screen.getByTestId('arrangement-track-lane-drums')).toBeInTheDocument();
+
+    // Click 'Main Drop' locator -> seeks to Measure 3
+    fireEvent.click(screen.getByRole('button', { name: /Jump to locator Main Drop/i }));
+    expect(onSeekToMeasure).toHaveBeenCalledWith(3);
+
+    // Click Mute and Solo on 'lead'
+    fireEvent.click(screen.getByRole('button', { name: /Mute track lead/i }));
+    expect(onToggleTrackMute).toHaveBeenCalledWith('lead');
+
+    fireEvent.click(screen.getByRole('button', { name: /Solo track lead/i }));
+    expect(onToggleTrackSolo).toHaveBeenCalledWith('lead');
+
+    // Add a new locator at Measure 2
+    const locMeasureInput = screen.getByRole('spinbutton', { name: /New Locator Measure/i });
+    fireEvent.change(locMeasureInput, { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: /Add Arrangement Locator/i }));
+    expect(onAddLocator).toHaveBeenCalledWith('Section M2', 2);
+
+    // Fold group 'synth_bus' -> hides member track 'lead'
+    fireEvent.click(screen.getByRole('button', { name: /Toggle group synth_bus/i }));
+    expect(screen.queryByTestId('arrangement-track-lane-lead')).not.toBeInTheDocument();
+  });
+
+  it('toggles track mute/solo and sets arrangement loop ranges in StudioAudioEngine', () => {
+    const engine = new StudioAudioEngine();
+
+    expect(engine.toggleTrackMute('lead')).toBe(true);
+    expect(engine.getMutedTracks()).toContain('lead');
+    expect(engine.toggleTrackMute('lead')).toBe(false);
+    expect(engine.getMutedTracks()).not.toContain('lead');
+
+    expect(engine.toggleTrackSolo('drums')).toBe(true);
+    expect(engine.getSoloedTracks()).toContain('drums');
+
+    engine.setArrangementLoopRange(2, 4);
+    expect(engine.getArrangementLoopRange()).toEqual({ startMeasure: 2, endMeasure: 4 });
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/`
+* `src/mutator/`
+* `src/components/WebGPUCanvas.tsx`, `src/components/CodeEditor.tsx`, `src/components/Mixer.tsx`, `src/components/Inspector.tsx`, `src/components/Transport.tsx`, `src/components/SessionView.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+* All existing test files in `tests/`
+
+Explicitly:
+
+* Do NOT modify or delete any existing test file in `tests/`.
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero TypeScript errors.
+2. `npx vitest run` passes all existing test suites (`tests/multi_view_shell.test.tsx`, `tests/session_view_launcher.test.tsx`, `tests/transport_binding.test.tsx`, etc.) plus the new `tests/arrangement_view_timeline.test.tsx` suite.
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. Switching to `Arrangement` view renders the multi-track horizontal timeline with clickable locators, `+ Locator` code insertion, Loop Brace range controls, collapsible group folders, and per-track Mute/Solo buttons.
+
+---
+
+## 6. Constraints
+
+Must not:
+
+* Use the word `"Play"` in any button text or `aria-label` inside `ArrangementView.tsx`.
+* Break `screen.getByTestId('arrangement-view-container')` in `tests/multi_view_shell.test.tsx`.
+
+---
+
+## 7. Manual Steps
+
+None required for this contract.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or remove `src/components/ArrangementView.tsx` and `tests/arrangement_view_timeline.test.tsx`, and restore `src/audio/StudioAudioEngine.ts` and `src/components/SplitWorkspace.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `src/components/ArrangementView.tsx`, `tests/arrangement_view_timeline.test.tsx`
+* Modified file(s): `src/audio/StudioAudioEngine.ts`, `src/components/SplitWorkspace.tsx`
+* Commit message: `feat(arrangement): add multi-track Arrangement View timeline, locators, and loop brace`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Arrangement View (`Tab` View)** | Static list of track rows | Full horizontal Multi-Track Arrangement Timeline with measure grid, mini-note clip previews, and scrolling playhead |
+| **Locators & Loop Brace** | Static badges | Clickable `⚑ Locator` jump flags, `+ Locator` AST code generator, and interactive `Loop Brace (M_start to M_end)` controls |
+| **Track Mute, Solo & Group Folding** | No UI controls in Arrangement View | Per-track `M` (Mute), `S` (Solo), Track Fold (`▼`/`▶`), and collapsible `Group` folder rows |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-24
+Implementer: AI Agent
+
+```
+
+```

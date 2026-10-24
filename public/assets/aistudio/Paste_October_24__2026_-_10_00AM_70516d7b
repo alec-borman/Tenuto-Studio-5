@@ -1,0 +1,2309 @@
+**Implementation Contract #1 (`TDB-701`)** kicks off Phase 1 of the 50-contract Ableton Live 12 parity roadmap.
+
+It upgrades the lexer, modifier serializer, document compiler, and Monaco syntax highlighter to support the **Tenuto 6.0 DAW Grammar**—including Session View `scene` and `clip` blocks, Ableton Follow Actions, `group` and `return` buses, `locator` markers, `groove` pool templates, per-note probability (`.chance()`, `.vel_range()`, `.pick_one`), audio clip warping modifiers (`.warp()`, `.transpose()`, `.formant()`), MPE per-note expression (`.mpe()`), and continuous `.cc()` automation spacers—while keeping all 40 existing Vitest suites passing.
+
+Paste the contract below directly into Google AI Studio:
+
+```markdown
+# Implementation Contract: Tenuto 6.0 DAW Grammar Extension (TDB-701)
+
+**Project:** Tenuto Studio 5
+**Scope:** Extend `src/parser/lexer.ts`, `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, and `src/components/CodeEditor.tsx` to compile Ableton-grade DAW constructs (`scene`, `clip`, `group`, `return`, `locator`, `groove`, Follow Actions, per-note `.chance()` / `.vel_range()` / `.pick_one`, `.warp()`, `.transpose()`, `.formant()`, `.mpe()`, and `.cc()` automation spacers) while maintaining 100% backward compatibility with all 40 existing test suites.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+Currently, Tenuto's compiler (`src/parser/DocumentParser.ts` and `src/parser/ASTSerializer.ts`) only parses linear `measure` blocks, basic `def` track headers, and static note modifiers. It cannot represent non-linear Ableton Session View `scene` and `clip` containers, clip Follow Actions, `group` and `return` bus tracks, arrangement `locator` markers, `groove` templates, per-note probability (`.chance()`, `.vel_range()`, `.pick_one`), audio clip warping (`.warp()`, `.transpose()`, `.formant()`), MPE per-note envelopes (`.mpe()`), or `.cc()` automation curves.
+
+This contract upgrades the compiler and syntax highlighter to support the complete Tenuto 6.0 DAW grammar while preserving 100% compatibility with all existing `.ten` scores and unit tests.
+
+---
+
+## 2. Root Cause
+1. `src/parser/lexer.ts` only registers 9 keywords (`tenuto`, `def`, `measure`, `macro`, `meta`, `var`, `style`, `patch`, `map`) and lacks DAW keywords (`scene`, `clip`, `group`, `return`, `def_return`, `locator`, `groove`, `rack`).
+2. `src/parser/ASTSerializer.ts` (`EventPhysics` and `parseModifiersToPhysics`) does not parse `.chance()`, `.prob()`, `.vel_range()`, `.pick_one`, `.warp()`, `.transpose()`, `.pitch()`, `.formant()`, `.mpe()`, or `.cc()`.
+3. `src/parser/DocumentParser.ts` lacks AST extraction and data models for `scenes`, `clips` (with `FollowActionConfig`), `groups`, `return` tracks (`sends`, `crossfadeAssign`, `trackDelayMs`, `fxChain`), `locators`, `grooves`, and `meta` scale/tuning/launch-quantization properties, and currently discards `s` spacer tokens even when they carry `.cc()` automation.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/parser/lexer.ts` - Register Tenuto 6.0 DAW Keywords
+Update `KEYWORDS` in `src/parser/lexer.ts` to include the new DAW block keywords while keeping all token logic untouched.
+
+Replace line 29 in `src/parser/lexer.ts`:
+```typescript
+const KEYWORDS = new Set(['tenuto', 'def', 'measure', 'macro', 'meta', 'var', 'style', 'patch', 'map']);
+
+```
+
+with:
+
+```typescript
+const KEYWORDS = new Set([
+  'tenuto',
+  'def',
+  'def_return',
+  'return',
+  'group',
+  'scene',
+  'clip',
+  'locator',
+  'groove',
+  'rack',
+  'measure',
+  'macro',
+  'meta',
+  'var',
+  'style',
+  'patch',
+  'map',
+]);
+
+```
+
+### 3.2 `src/parser/ASTSerializer.ts` - Add Note Probability, Warp, Pitch/Formant, MPE & CC Modifiers
+
+Replace the entire contents of `src/parser/ASTSerializer.ts` with the following implementation:
+
+```typescript
+import { PitchEngine, PitchResult } from './PitchEngine';
+import { TemporalEngine, TemporalResult } from './TemporalEngine';
+
+export type WarpMode = 'beats' | 'tones' | 'texture' | 'repitch' | 'complex' | 'complex_pro';
+
+export interface EventPhysics {
+  articulation?: string;
+  modifiers?: string[];
+  velocity?: number;
+  chance?: number;
+  velocityRange?: [number, number];
+  pickOne?: boolean;
+  warpMode?: WarpMode;
+  pitchShiftSt?: number;
+  formant?: number;
+  mpe?: { bend?: number[]; slide?: number[]; pressure?: number[] };
+  swell?: 'crescendo' | 'diminuendo';
+  startVelocity?: number;
+  endVelocity?: number;
+  pedal?: boolean;
+  arp?: boolean;
+  vibrato?: boolean;
+  pizz?: boolean;
+  fermata?: boolean;
+  fp?: boolean;
+  legato?: boolean;
+  trill?: boolean;
+  mordent?: boolean;
+  roll?: number;
+  pan?: number;
+  pushMs?: number;
+  pullMs?: number;
+  glideMs?: number;
+  slice?: number;
+  reverse?: boolean;
+  stretch?: boolean;
+  tie?: boolean;
+  fx?: Array<{ type: string; params: Record<string, any> }>;
+  cc?: { controller: number; values: number[]; curve: string };
+}
+
+export interface AtomicEvent {
+  pitch: PitchResult;
+  duration: TemporalResult;
+  startTime?: { numerator: number; denominator: number };
+  rawToken?: string;
+  trackId?: string;
+  voiceId?: string;
+  measureNumber?: number;
+  clipId?: string;
+  sceneIndex?: number;
+  style?: string;
+  patch?: string;
+  env?: Record<string, string>;
+  line?: number;
+  col?: number;
+  physics?: EventPhysics;
+  astNodeId?: string;
+}
+
+export class ASTSerializer {
+  private pitchEngine: PitchEngine;
+  private temporalEngine: TemporalEngine;
+
+  constructor() {
+    this.pitchEngine = new PitchEngine();
+    this.temporalEngine = new TemporalEngine();
+  }
+
+  public reset(): void {
+    this.pitchEngine.reset(4);
+    this.temporalEngine.reset();
+  }
+
+  private splitModifiers(raw: string): { core: string; modifiers: string[] } {
+    const modifiers: string[] = [];
+    let current = '';
+    let parenDepth = 0;
+    let braceDepth = 0;
+    let bracketDepth = 0;
+    let inQuotes = false;
+    let core: string | null = null;
+
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      if (ch === '"' && raw[i - 1] !== '\\') {
+        inQuotes = !inQuotes;
+      }
+      if (!inQuotes) {
+        if (ch === '(') parenDepth++;
+        else if (ch === ')') parenDepth = Math.max(0, parenDepth - 1);
+        else if (ch === '{') braceDepth++;
+        else if (ch === '}') braceDepth = Math.max(0, braceDepth - 1);
+        else if (ch === '[') bracketDepth++;
+        else if (ch === ']') bracketDepth = Math.max(0, bracketDepth - 1);
+      }
+
+      if (
+        ch === '.' &&
+        !inQuotes &&
+        parenDepth === 0 &&
+        braceDepth === 0 &&
+        bracketDepth === 0
+      ) {
+        const nextChar = raw[i + 1] || '';
+        const isDottedDuration =
+          core === null &&
+          current.includes(':') &&
+          (nextChar === '' || nextChar === '.' || nextChar === '*');
+
+        if (isDottedDuration) {
+          current += ch;
+          continue;
+        }
+
+        if (core === null) {
+          core = current;
+          current = '';
+        } else if (current.length > 0) {
+          modifiers.push(current);
+          current = '';
+        }
+        continue;
+      }
+
+      current += ch;
+    }
+
+    if (core === null) {
+      core = current;
+    } else if (current.length > 0) {
+      modifiers.push(current);
+    }
+
+    return { core, modifiers };
+  }
+
+  public parseModifiersToPhysics(modifiers: string[], defaultVelocity: number = 80): EventPhysics | undefined {
+    if (modifiers.length === 0) return undefined;
+
+    const physics: EventPhysics = {
+      modifiers: [...modifiers],
+      velocity: defaultVelocity,
+    };
+
+    const dynamicVelocities: Record<string, number> = {
+      pp: 40,
+      p: 60,
+      mp: 75,
+      mf: 90,
+      f: 105,
+      ff: 120,
+      sfz: 124,
+    };
+
+    for (const mod of modifiers) {
+      if (['stacc', 'staccato', 'marc', 'ten', 'tenuto', 'accent'].includes(mod)) {
+        physics.articulation = mod;
+      } else if (mod === 'slur' || mod === 'legato') {
+        physics.articulation = mod;
+        physics.legato = true;
+      } else if (mod === 'pizz' || mod === 'pizzicato') {
+        physics.articulation = 'pizz';
+        physics.pizz = true;
+      } else if (mod === 'ped' || mod === 'pedal') {
+        physics.pedal = true;
+      } else if (mod === 'arp' || mod === 'strum' || mod === 'rolled') {
+        physics.arp = true;
+      } else if (mod === 'vib' || mod === 'vibrato') {
+        physics.vibrato = true;
+      } else if (mod === 'fermata' || mod === 'hold') {
+        physics.fermata = true;
+      } else if (mod === 'fp' || mod === 'sfp') {
+        physics.fp = true;
+        physics.velocity = 118;
+      } else if (mod === 'tr' || mod === 'trill') {
+        physics.trill = true;
+      } else if (mod === 'mordent' || mod === 'turn') {
+        physics.mordent = true;
+      } else if (mod === 'trem' || mod === 'tremolo') {
+        physics.roll = 4;
+      } else if (mod.startsWith('roll(') && mod.endsWith(')')) {
+        const count = parseInt(mod.slice(5, -1), 10);
+        if (!isNaN(count) && count > 1) {
+          physics.roll = Math.min(16, count);
+        }
+      } else if (dynamicVelocities[mod] !== undefined) {
+        physics.velocity = dynamicVelocities[mod];
+      } else if (mod === 'reverse') {
+        physics.reverse = true;
+      } else if (mod === 'stretch') {
+        physics.stretch = true;
+      } else if (mod === 'pick_one' || mod === 'chance_group') {
+        physics.pickOne = true;
+      } else if ((mod.startsWith('chance(') || mod.startsWith('prob(')) && mod.endsWith(')')) {
+        const inner = mod.slice(mod.indexOf('(') + 1, -1).trim();
+        const isPercent = inner.endsWith('%');
+        const rawVal = parseFloat(inner.replace('%', ''));
+        if (!isNaN(rawVal)) {
+          const normalized = !isPercent && rawVal > 0 && rawVal <= 1 ? rawVal * 100 : rawVal;
+          physics.chance = Math.max(0, Math.min(100, Math.round(normalized)));
+        }
+      } else if (mod.startsWith('vel_range(') && mod.endsWith(')')) {
+        const parts = mod
+          .slice(10, -1)
+          .split(',')
+          .map((s) => parseFloat(s.trim()));
+        if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+          const low = Math.max(1, Math.min(127, Math.round(Math.min(parts[0], parts[1]))));
+          const high = Math.max(1, Math.min(127, Math.round(Math.max(parts[0], parts[1]))));
+          physics.velocityRange = [low, high];
+          physics.velocity = Math.round((low + high) / 2);
+        }
+      } else if (mod.startsWith('warp(') && mod.endsWith(')')) {
+        const modeRaw = mod.slice(5, -1).trim().replace(/^"|"$/g, '').toLowerCase();
+        if (
+          modeRaw === 'beats' ||
+          modeRaw === 'tones' ||
+          modeRaw === 'texture' ||
+          modeRaw === 'repitch' ||
+          modeRaw === 'complex' ||
+          modeRaw === 'complex_pro'
+        ) {
+          physics.warpMode = modeRaw;
+          physics.stretch = true;
+        }
+      } else if ((mod.startsWith('transpose(') || mod.startsWith('pitch(')) && mod.endsWith(')')) {
+        const inner = mod.slice(mod.indexOf('(') + 1, -1).replace(/st|semitones/gi, '').trim();
+        const val = parseFloat(inner);
+        if (!isNaN(val)) {
+          physics.pitchShiftSt = Math.max(-48, Math.min(48, val));
+        }
+      } else if (mod.startsWith('formant(') && mod.endsWith(')')) {
+        const inner = mod.slice(8, -1).replace('%', '').trim();
+        const val = parseFloat(inner);
+        if (!isNaN(val)) {
+          physics.formant = Math.max(-100, Math.min(100, val));
+        }
+      } else if (mod.startsWith('cc(') && mod.endsWith(')')) {
+        const inner = mod.slice(3, -1).trim();
+        const ccMatch = inner.match(/^(\d+)\s*,\s*\[([^\]]*)\](?:\s*,\s*"?([a-zA-Z0-9_-]+)"?)?$/);
+        if (ccMatch) {
+          const controller = parseInt(ccMatch[1], 10);
+          const values = ccMatch[2]
+            .split(',')
+            .map((v) => parseFloat(v.trim()))
+            .filter((v) => !isNaN(v));
+          const curve = (ccMatch[3] || 'linear').toLowerCase();
+          physics.cc = { controller, values, curve };
+        }
+      } else if (mod.startsWith('mpe(') && mod.endsWith(')')) {
+        const inner = mod.slice(4, -1).trim();
+        const mpe: { bend?: number[]; slide?: number[]; pressure?: number[] } = {};
+        const parseNumArray = (key: string): number[] | undefined => {
+          const m = inner.match(new RegExp(`\\b${key}\\s*:\\s*\\[([^\\]]*)\\]`, 'i'));
+          if (!m) return undefined;
+          return m[1]
+            .split(',')
+            .map((s) => parseFloat(s.trim()))
+            .filter((n) => !isNaN(n));
+        };
+        const bend = parseNumArray('bend');
+        const slide = parseNumArray('slide');
+        const pressure = parseNumArray('pressure');
+        if (bend) mpe.bend = bend;
+        if (slide) mpe.slide = slide;
+        if (pressure) mpe.pressure = pressure;
+        physics.mpe = mpe;
+      } else if (mod.startsWith('vol(') && mod.endsWith(')')) {
+        const val = parseFloat(mod.slice(4, -1));
+        if (!isNaN(val)) physics.velocity = Math.max(0, Math.min(127, Math.round(val)));
+      } else if (
+        mod === 'cresc' ||
+        mod === 'crescendo' ||
+        mod.startsWith('cresc(') ||
+        mod.startsWith('crescendo(')
+      ) {
+        physics.swell = 'crescendo';
+        const openIdx = mod.indexOf('(');
+        if (openIdx !== -1 && mod.endsWith(')')) {
+          const parts = mod
+            .slice(openIdx + 1, -1)
+            .split(',')
+            .map((s) => parseFloat(s.trim()));
+          if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            physics.startVelocity = Math.max(1, Math.min(127, Math.round(parts[0])));
+            physics.endVelocity = Math.max(1, Math.min(127, Math.round(parts[1])));
+            physics.velocity = Math.round((physics.startVelocity + physics.endVelocity) / 2);
+          }
+        }
+        if (physics.startVelocity === undefined || physics.endVelocity === undefined) {
+          const base = physics.velocity !== defaultVelocity ? physics.velocity! : 45;
+          physics.startVelocity = Math.max(20, Math.min(100, base));
+          physics.endVelocity = Math.min(124, physics.startVelocity + 55);
+          physics.velocity = Math.round((physics.startVelocity + physics.endVelocity) / 2);
+        }
+      } else if (
+        mod === 'dim' ||
+        mod === 'diminuendo' ||
+        mod === 'decresc' ||
+        mod === 'decrescendo' ||
+        mod.startsWith('dim(') ||
+        mod.startsWith('diminuendo(')
+      ) {
+        physics.swell = 'diminuendo';
+        const openIdx = mod.indexOf('(');
+        if (openIdx !== -1 && mod.endsWith(')')) {
+          const parts = mod
+            .slice(openIdx + 1, -1)
+            .split(',')
+            .map((s) => parseFloat(s.trim()));
+          if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            physics.startVelocity = Math.max(1, Math.min(127, Math.round(parts[0])));
+            physics.endVelocity = Math.max(1, Math.min(127, Math.round(parts[1])));
+            physics.velocity = Math.round((physics.startVelocity + physics.endVelocity) / 2);
+          }
+        }
+        if (physics.startVelocity === undefined || physics.endVelocity === undefined) {
+          const base = physics.velocity !== defaultVelocity ? physics.velocity! : 110;
+          physics.startVelocity = Math.max(50, Math.min(124, base));
+          physics.endVelocity = Math.max(20, physics.startVelocity - 55);
+          physics.velocity = Math.round((physics.startVelocity + physics.endVelocity) / 2);
+        }
+      } else if (mod.startsWith('pan(') && mod.endsWith(')')) {
+        const val = parseFloat(mod.slice(4, -1));
+        if (!isNaN(val)) physics.pan = Math.max(-1, Math.min(1, val));
+      } else if (mod.startsWith('pull(') && mod.endsWith(')')) {
+        const inner = mod.slice(5, -1).replace(/ms|s|ticks/g, '');
+        const val = parseFloat(inner);
+        if (!isNaN(val)) physics.pullMs = val;
+      } else if (mod.startsWith('push(') && mod.endsWith(')')) {
+        const inner = mod.slice(5, -1).replace(/ms|s|ticks/g, '');
+        const val = parseFloat(inner);
+        if (!isNaN(val)) physics.pushMs = val;
+      } else if (mod.startsWith('glide(') && mod.endsWith(')')) {
+        const inner = mod.slice(6, -1);
+        const val = parseFloat(inner);
+        if (!isNaN(val)) {
+          physics.glideMs = inner.endsWith('s') && !inner.endsWith('ms') ? val * 1000 : val;
+        }
+      } else if (mod.startsWith('slice(') && mod.endsWith(')')) {
+        const val = parseInt(mod.slice(6, -1), 10);
+        if (!isNaN(val)) physics.slice = val;
+      } else if (mod.startsWith('fx(') && mod.endsWith(')')) {
+        const inner = mod.slice(3, -1);
+        const commaIdx = inner.indexOf(',');
+        const fxType = (commaIdx !== -1 ? inner.slice(0, commaIdx) : inner).trim().replace(/^"|"$/g, '');
+        const params: Record<string, any> = {};
+        const dictMatch = inner.match(/@\{([^}]*)\}/);
+        if (dictMatch) {
+          dictMatch[1].split(',').forEach((pair) => {
+            const [k, v] = pair.split(':').map((s) => s.trim());
+            if (k && v !== undefined) {
+              const cleanV = v.replace(/^"|"$/g, '');
+              params[k] = !isNaN(Number(cleanV)) ? Number(cleanV) : cleanV;
+            }
+          });
+        }
+        if (!physics.fx) physics.fx = [];
+        physics.fx.push({ type: fxType, params });
+      }
+    }
+
+    return physics;
+  }
+
+  public parseToken(token: string, style: string = 'standard'): AtomicEvent {
+    const trimmed = token.trim();
+    if (!trimmed) {
+      throw new Error('Invalid empty token');
+    }
+
+    // Reject incomplete trailing colon syntax errors like "f:"
+    if (trimmed.endsWith(':')) {
+      throw new Error(`Invalid token format, missing duration: ${token}`);
+    }
+
+    const hasTie = trimmed.includes('~');
+    const withoutTie = trimmed.replace(/~/g, '');
+
+    const { core, modifiers } = this.splitModifiers(withoutTie);
+    const colonIdx = core.indexOf(':');
+
+    let pitchStr = core;
+    let duration: TemporalResult;
+
+    if (colonIdx !== -1) {
+      pitchStr = core.slice(0, colonIdx);
+      const durationRawStr = core.slice(colonIdx + 1);
+      if (!durationRawStr) {
+        throw new Error(`Invalid token format, missing duration: ${token}`);
+      }
+      duration = this.temporalEngine.parseDuration(':' + durationRawStr);
+    } else {
+      // Sticky duration inheritance when colon is omitted (e.g. "c4:4 d e")
+      duration = this.temporalEngine.getLastDuration();
+    }
+
+    const pitch = this.pitchEngine.parsePitch(pitchStr, style);
+    const physics = this.parseModifiersToPhysics(modifiers);
+    if (hasTie) {
+      const mergedPhysics = physics || { modifiers: [] };
+      mergedPhysics.tie = true;
+      return { pitch, duration, physics: mergedPhysics };
+    }
+
+    return physics ? { pitch, duration, physics } : { pitch, duration };
+  }
+}
+
+```
+
+### 3.3 `src/parser/DocumentParser.ts` - Compile Scenes, Clips, Follow Actions, Groups, Returns, Locators & Grooves
+
+Replace the entire contents of `src/parser/DocumentParser.ts` with the following implementation:
+
+```typescript
+import { ASTSerializer, AtomicEvent, WarpMode } from './ASTSerializer';
+import { TemporalResult } from './TemporalEngine';
+
+export interface FXChainItem {
+  type: string;
+  params: Record<string, any>;
+}
+
+export interface TrackDefinition {
+  id: string;
+  name: string;
+  style: 'standard' | 'synth' | 'grid' | 'concrete' | 'tab' | 'simpler' | 'sampler' | 'return' | string;
+  patch: string;
+  volume: number;
+  pan: number;
+  fx: string[];
+  fxChain?: FXChainItem[];
+  isReturn?: boolean;
+  groupId?: string;
+  sends?: Record<string, number>;
+  crossfadeAssign?: 'A' | 'B' | 'OFF';
+  trackDelayMs?: number;
+  groove?: string;
+  macros?: Record<string, number>;
+  env?: Record<string, string>;
+  src?: string;
+  map?: Record<string, any>;
+}
+
+export interface FollowActionConfig {
+  bars: number;
+  actionA: 'next' | 'prev' | 'first' | 'last' | 'any' | 'other' | 'play_again' | 'stop' | 'none' | string;
+  actionB: 'next' | 'prev' | 'first' | 'last' | 'any' | 'other' | 'play_again' | 'stop' | 'none' | string;
+  chanceA: number;
+  chanceB: number;
+  linked: boolean;
+}
+
+export interface ClipDefinition {
+  id: string;
+  name: string;
+  trackId: string;
+  sceneIndex?: number;
+  bars: number;
+  loop: boolean;
+  src?: string;
+  warpMode?: WarpMode;
+  pitchShiftSt?: number;
+  gainDb?: number;
+  followAction?: FollowActionConfig;
+  events: AtomicEvent[];
+}
+
+export interface SceneDefinition {
+  index: number;
+  name: string;
+  tempo?: number;
+  time?: string;
+  clipIds: string[];
+}
+
+export interface GroupDefinition {
+  id: string;
+  name: string;
+  trackIds: string[];
+  volume: number;
+  pan: number;
+  fx: string[];
+  fxChain: FXChainItem[];
+}
+
+export interface LocatorDefinition {
+  id: string;
+  name: string;
+  measureNumber: number;
+  startWhole: number;
+}
+
+export interface GrooveDefinition {
+  id: string;
+  name: string;
+  base: string;
+  quantizePercent: number;
+  timingPercent: number;
+  randomPercent: number;
+  velocityPercent: number;
+}
+
+export interface ScoreMeta {
+  title: string;
+  tempo: number;
+  time: string;
+  key?: string;
+  scale?: string;
+  tuning?: string;
+  quantizeLaunch?: string;
+  crossfader?: number;
+  sidechain: string | null;
+  autoPadVoices: boolean;
+  tempoMap?: Array<{ startWhole: number; tempo: number }>;
+}
+
+export interface CompilerDiagnostic {
+  code: string;
+  message: string;
+  line: number;
+  col: number;
+  severity: 'error' | 'warning';
+}
+
+export interface CompiledScore {
+  version: string;
+  meta: ScoreMeta;
+  defs: TrackDefinition[];
+  groups?: GroupDefinition[];
+  scenes?: SceneDefinition[];
+  clips?: ClipDefinition[];
+  locators?: LocatorDefinition[];
+  grooves?: GrooveDefinition[];
+  events: AtomicEvent[];
+  diagnostics: CompilerDiagnostic[];
+}
+
+export class DocumentParser {
+  private gcd(a: number, b: number): number {
+    let x = Math.abs(Math.round(a));
+    let y = Math.abs(Math.round(b));
+    while (y !== 0) {
+      const t = y;
+      y = x % y;
+      x = t;
+    }
+    return x || 1;
+  }
+
+  private addFractions(
+    a: { numerator: number; denominator: number },
+    b: { numerator: number; denominator: number }
+  ): { numerator: number; denominator: number } {
+    const num = a.numerator * b.denominator + b.numerator * a.denominator;
+    const den = a.denominator * b.denominator;
+    const div = this.gcd(num, den);
+    return { numerator: num / div, denominator: den / div };
+  }
+
+  /**
+   * Strips Markdown code fences (e.g. ```tenuto ... ```) and leading/trailing prose
+   * when a user copies code directly from Gemini, ChatGPT, or Claude.
+   */
+  public sanitizeLLMInput(raw: string): string {
+    const trimmed = raw.trim();
+    const fenceMatch = trimmed.match(/```(?:tenuto|ten|music|plaintext|[a-zA-Z0-9_-]*)?\s*\n([\s\S]*?)```/i);
+    if (fenceMatch && fenceMatch[1]) {
+      return fenceMatch[1].trim();
+    }
+    return trimmed
+      .replace(/^```[a-zA-Z0-9_-]*\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+  }
+
+  public isFullDocument(raw: string): boolean {
+    const cleaned = this.sanitizeLLMInput(raw);
+    return (
+      /\btenuto\b/i.test(cleaned) ||
+      /\bmeasure\s+\d+/i.test(cleaned) ||
+      /\bscene\s+\d+/i.test(cleaned) ||
+      /\bclip\s+[a-zA-Z0-9_]+/i.test(cleaned) ||
+      /\bgroup\s+[a-zA-Z0-9_]+/i.test(cleaned) ||
+      /\b(?:def|def_return|return)\s+[a-zA-Z0-9_]+/i.test(cleaned) ||
+      /\blocator\s+/i.test(cleaned) ||
+      /\bgroove\s+[a-zA-Z0-9_]+/i.test(cleaned) ||
+      /\bmeta\s*@\{/i.test(cleaned)
+    );
+  }
+
+  private stripComments(source: string): string {
+    return source
+      .split('\n')
+      .map((line) => {
+        const pctIdx = line.indexOf('%%');
+        const slashIdx = line.indexOf('//');
+        let cutIdx = -1;
+        if (pctIdx !== -1 && slashIdx !== -1) cutIdx = Math.min(pctIdx, slashIdx);
+        else if (pctIdx !== -1) cutIdx = pctIdx;
+        else if (slashIdx !== -1) cutIdx = slashIdx;
+        return cutIdx !== -1 ? line.slice(0, cutIdx) : line;
+      })
+      .join('\n');
+  }
+
+  private parseDictionary(dictBody: string): Record<string, any> {
+    const result: Record<string, any> = {};
+    const pairs: string[] = [];
+    let current = '';
+    let depth = 0;
+    let inQuotes = false;
+
+    for (let i = 0; i < dictBody.length; i++) {
+      const ch = dictBody[i];
+      if (ch === '"' && dictBody[i - 1] !== '\\') inQuotes = !inQuotes;
+      if (!inQuotes) {
+        if (ch === '[' || ch === '{' || ch === '(') depth++;
+        else if (ch === ']' || ch === '}' || ch === ')') depth = Math.max(0, depth - 1);
+      }
+      if (ch === ',' && !inQuotes && depth === 0) {
+        if (current.trim()) pairs.push(current.trim());
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    if (current.trim()) pairs.push(current.trim());
+
+    for (const pair of pairs) {
+      const colonIdx = pair.indexOf(':');
+      if (colonIdx === -1) continue;
+      const key = pair.slice(0, colonIdx).trim();
+      const valRaw = pair.slice(colonIdx + 1).trim();
+      if (valRaw.startsWith('"') && valRaw.endsWith('"')) {
+        result[key] = valRaw.slice(1, -1);
+      } else if (valRaw === 'true') {
+        result[key] = true;
+      } else if (valRaw === 'false') {
+        result[key] = false;
+      } else if (valRaw.endsWith('%') && !isNaN(Number(valRaw.slice(0, -1)))) {
+        result[key] = Number(valRaw.slice(0, -1));
+      } else if (!isNaN(Number(valRaw))) {
+        result[key] = Number(valRaw);
+      } else {
+        result[key] = valRaw;
+      }
+    }
+    return result;
+  }
+
+  private parseFXChainFromAttributes(attrStr: string): { fxNames: string[]; fxChain: FXChainItem[] } {
+    const fxNames: string[] = [];
+    const fxChain: FXChainItem[] = [];
+    const fxRegex = /\.fx\(\s*([a-zA-Z0-9_"-]+)\s*(?:,\s*@\{([^}]*)\})?\s*\)/g;
+    let m: RegExpExecArray | null;
+    while ((m = fxRegex.exec(attrStr)) !== null) {
+      const type = m[1].replace(/^"|"$/g, '').trim();
+      const params = m[2] ? this.parseDictionary(m[2]) : {};
+      fxNames.push(type);
+      fxChain.push({ type, params });
+    }
+    return { fxNames, fxChain };
+  }
+
+  private parseFollowActionDict(dict: Record<string, any>): FollowActionConfig {
+    const bars = typeof dict.bars === 'number' ? dict.bars : typeof dict.after === 'number' ? dict.after : 4;
+    const actionA = String(dict.actionA || dict.action || 'next').toLowerCase();
+    const actionB = String(dict.actionB || 'none').toLowerCase();
+    const chanceA =
+      typeof dict.chanceA === 'number'
+        ? dict.chanceA
+        : typeof dict.chance === 'number'
+          ? dict.chance
+          : 100;
+    const chanceB =
+      typeof dict.chanceB === 'number' ? dict.chanceB : Math.max(0, 100 - chanceA);
+    const linked = typeof dict.linked === 'boolean' ? dict.linked : true;
+
+    return {
+      bars,
+      actionA,
+      actionB,
+      chanceA,
+      chanceB,
+      linked,
+    };
+  }
+
+  private tokenizeVoiceStream(stream: string): string[] {
+    const tokens: string[] = [];
+    let current = '';
+    let bracketDepth = 0;
+    let parenDepth = 0;
+    let braceDepth = 0;
+    let inQuotes = false;
+
+    for (let i = 0; i < stream.length; i++) {
+      const ch = stream[i];
+      if (ch === '"' && stream[i - 1] !== '\\') inQuotes = !inQuotes;
+
+      if (!inQuotes) {
+        if (ch === '[') bracketDepth++;
+        else if (ch === ']') bracketDepth = Math.max(0, bracketDepth - 1);
+        else if (ch === '(') parenDepth++;
+        else if (ch === ')') parenDepth = Math.max(0, parenDepth - 1);
+        else if (ch === '{') braceDepth++;
+        else if (ch === '}') braceDepth = Math.max(0, braceDepth - 1);
+      }
+
+      const isSpace = /\s/.test(ch);
+      if (isSpace && !inQuotes && bracketDepth === 0 && parenDepth === 0 && braceDepth === 0) {
+        if (current.trim()) {
+          tokens.push(current.trim());
+          current = '';
+        }
+      } else {
+        current += ch;
+      }
+    }
+
+    if (current.trim()) {
+      tokens.push(current.trim());
+    }
+
+    // Merge standalone multiplier suffixes like "* 4" or "*4" onto the preceding token
+    const merged: string[] = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const tok = tokens[i];
+      if (tok === '*' && i + 1 < tokens.length && /^\d+$/.test(tokens[i + 1]) && merged.length > 0) {
+        merged[merged.length - 1] = `${merged[merged.length - 1]}*${tokens[i + 1]}`;
+        i++;
+      } else if (/^\*\d+$/.test(tok) && merged.length > 0) {
+        merged[merged.length - 1] = `${merged[merged.length - 1]}${tok}`;
+      } else {
+        merged.push(tok);
+      }
+    }
+
+    const finalTokens: string[] = [];
+    for (const tok of merged) {
+      const fusedMatch = tok.match(
+        /^([a-gA-G][#b]*[0-9]*:[0-9.]+(?:\.(?:pp|p|mp|mf|f|ff|sfz|stacc|staccato|ten|tenuto|marc|accent|legato|vib|trem|pizz|ped|fp|fermata|trill|mordent|cresc|crescendo|dim|diminuendo))+?)([a-gA-G][#b]*[0-9]+:[0-9.].*)$/
+      );
+      if (fusedMatch) {
+        finalTokens.push(fusedMatch[1], fusedMatch[2]);
+      } else {
+        finalTokens.push(tok);
+      }
+    }
+
+    return finalTokens;
+  }
+
+  private expandEuclideanPattern(hits: number, steps: number): boolean[] {
+    if (steps <= 0) return [];
+    if (hits <= 0) return new Array(steps).fill(false);
+    if (hits >= steps) return new Array(steps).fill(true);
+
+    const pattern: boolean[] = [];
+    for (let i = 0; i < steps; i++) {
+      pattern.push((i * hits) % steps < hits);
+    }
+    return pattern;
+  }
+
+  private parseVoiceTokensToEvents(
+    rawTokens: string[],
+    serializer: ASTSerializer,
+    trackDef: TrackDefinition,
+    measureNumber: number,
+    voiceId: string,
+    measureStartTime: { numerator: number; denominator: number },
+    macros: Map<string, string[]>,
+    skipInvalidTokens: boolean = false
+  ): { events: AtomicEvent[]; totalDuration: { numerator: number; denominator: number } } {
+    const events: AtomicEvent[] = [];
+    let cursorTime = { ...measureStartTime };
+    let voiceDuration = { numerator: 0, denominator: 1 };
+
+    const expandedTokens: string[] = [];
+    for (let idx = 0; idx < rawTokens.length; idx++) {
+      const tok = rawTokens[idx];
+      if (tok === '|') continue;
+
+      if (tok.toLowerCase() === 'repeat' && idx + 2 < rawTokens.length) {
+        const count = parseInt(rawTokens[idx + 1], 10);
+        const block = rawTokens[idx + 2];
+        if (!isNaN(count) && count > 0 && block.startsWith('{') && block.endsWith('}')) {
+          const innerTokens = this.tokenizeVoiceStream(block.slice(1, -1));
+          for (let r = 0; r < Math.min(32, count); r++) {
+            expandedTokens.push(...innerTokens);
+          }
+          idx += 2;
+          continue;
+        }
+      }
+
+      if (tok.startsWith('$')) {
+        const macroName = tok.slice(1).replace(/\(.*\)$/, '');
+        const macroBody = macros.get(macroName) || macros.get('$' + macroName);
+        if (macroBody) {
+          expandedTokens.push(...macroBody);
+          continue;
+        }
+      }
+      expandedTokens.push(tok);
+    }
+
+    for (const token of expandedTokens) {
+      try {
+        // 1. Euclidean syntax: (c2):3/8 or (k):3/8:16 or k(3,8):16
+        const euclidParensMatch = token.match(/^\(([^()\s]+)\):(\d+)\/(\d+)(?::(\d+\.?))?((?:\.[a-zA-Z_].*)?)$/);
+        const euclidCallMatch = token.match(/^([a-zA-Z0-9_#b]+)\((\d+)\s*,\s*(\d+)\)(?::(\d+\.?))?((?:\.[a-zA-Z_].*)?)$/);
+
+        if (euclidParensMatch || euclidCallMatch) {
+          const m = (euclidParensMatch || euclidCallMatch)!;
+          const pitchToken = m[1];
+          const hits = parseInt(m[2], 10);
+          const steps = parseInt(m[3], 10);
+          const stepDenom = m[4] ? m[4] : String(steps);
+          const modSuffix = m[5] || '';
+
+          const pattern = this.expandEuclideanPattern(hits, steps);
+          for (const isHit of pattern) {
+            const stepToken = isHit
+              ? `${pitchToken}:${stepDenom}${modSuffix}`
+              : `r:${stepDenom}`;
+            const ev = serializer.parseToken(stepToken, trackDef.style);
+            ev.rawToken = stepToken;
+            ev.startTime = { ...cursorTime };
+            ev.trackId = trackDef.id;
+            ev.voiceId = voiceId;
+            ev.measureNumber = measureNumber;
+            ev.style = trackDef.style;
+            ev.patch = trackDef.patch;
+            ev.env = trackDef.env;
+
+            if (!ev.pitch.isRest && (!ev.pitch.isSpacer || Boolean(ev.physics?.cc))) {
+              events.push(ev);
+            }
+            if (!ev.duration.isGrace) {
+              cursorTime = this.addFractions(cursorTime, ev.duration);
+              voiceDuration = this.addFractions(voiceDuration, ev.duration);
+            }
+          }
+          continue;
+        }
+
+        // 2. Tuplet syntax: (c4:8 d e):3/2 or (c4:8 d e):2/3
+        const tupletMatch = token.match(/^\((.+)\):(\d+)\/(\d+)((?:\.[a-zA-Z_].*)?)$/);
+        if (tupletMatch) {
+          const innerStream = tupletMatch[1];
+          const rawNum = parseInt(tupletMatch[2], 10);
+          const rawDen = parseInt(tupletMatch[3], 10);
+          const modSuffix = tupletMatch[4] || '';
+          const innerTokens = this.tokenizeVoiceStream(innerStream);
+
+          const isStandardTupletRatio = rawNum > rawDen && innerTokens.length === rawNum;
+          const scaleNum = isStandardTupletRatio ? rawDen : rawNum;
+          const scaleDen = isStandardTupletRatio ? rawNum : rawDen;
+
+          for (let i = 0; i < innerTokens.length; i++) {
+            const innerTok = i === 0 && modSuffix ? `${innerTokens[i]}${modSuffix}` : innerTokens[i];
+            const ev = serializer.parseToken(innerTok, trackDef.style);
+            const scaledNum = ev.duration.numerator * scaleNum;
+            const scaledDen = ev.duration.denominator * scaleDen;
+            const div = this.gcd(scaledNum, scaledDen);
+            ev.duration = {
+              numerator: scaledNum / div,
+              denominator: scaledDen / div,
+              isGrace: ev.duration.isGrace,
+            };
+            ev.rawToken = innerTok;
+            ev.startTime = { ...cursorTime };
+            ev.trackId = trackDef.id;
+            ev.voiceId = voiceId;
+            ev.measureNumber = measureNumber;
+            ev.style = trackDef.style;
+            ev.patch = trackDef.patch;
+            ev.env = trackDef.env;
+
+            if (!ev.pitch.isRest && (!ev.pitch.isSpacer || Boolean(ev.physics?.cc))) {
+              events.push(ev);
+            }
+            if (!ev.duration.isGrace) {
+              cursorTime = this.addFractions(cursorTime, ev.duration);
+              voiceDuration = this.addFractions(voiceDuration, ev.duration);
+            }
+          }
+          continue;
+        }
+
+        // 3. Chord syntax: [c4 e4 g4]:4.stacc or [c4 e4 g4]
+        const chordMatch = token.match(/^\[([^\]]+)\](.*)$/);
+        if (chordMatch) {
+          const chordPitches = chordMatch[1].trim().split(/\s+/).filter(Boolean);
+          const suffix = chordMatch[2] || '';
+
+          let chordDuration: TemporalResult | null = null;
+          let sharedPhysics: any = undefined;
+          const chordEvents: AtomicEvent[] = [];
+
+          for (let i = 0; i < chordPitches.length; i++) {
+            const noteToken = i === 0 ? `${chordPitches[i]}${suffix}` : chordPitches[i];
+            const ev = serializer.parseToken(noteToken, trackDef.style);
+            if (i === 0) {
+              chordDuration = ev.duration;
+              sharedPhysics = ev.physics;
+            } else {
+              if (chordDuration) ev.duration = { ...chordDuration };
+              if (sharedPhysics) {
+                ev.physics = {
+                  ...sharedPhysics,
+                  modifiers: sharedPhysics.modifiers ? [...sharedPhysics.modifiers] : undefined,
+                  fx: sharedPhysics.fx ? [...sharedPhysics.fx] : undefined,
+                };
+              }
+            }
+            ev.rawToken = token;
+            ev.startTime = { ...cursorTime };
+            ev.trackId = trackDef.id;
+            ev.voiceId = voiceId;
+            ev.measureNumber = measureNumber;
+            ev.style = trackDef.style;
+            ev.patch = trackDef.patch;
+            ev.env = trackDef.env;
+
+            if (!ev.pitch.isRest && !ev.pitch.isSpacer) {
+              chordEvents.push(ev);
+            }
+          }
+
+          if (sharedPhysics?.arp && chordEvents.length > 1) {
+            const sortedByPitch = [...chordEvents].sort((a, b) => a.pitch.midi - b.pitch.midi);
+            sortedByPitch.forEach((cev, rollIdx) => {
+              if (!cev.physics) cev.physics = {};
+              cev.physics.pullMs = (cev.physics.pullMs || 0) + rollIdx * 28;
+            });
+          }
+
+          const rollSubdiv = sharedPhysics?.roll && sharedPhysics.roll > 1 ? sharedPhysics.roll : 1;
+          if (rollSubdiv > 1 && chordDuration && !chordDuration.isGrace) {
+            const subNum = chordDuration.numerator;
+            const subDen = chordDuration.denominator * rollSubdiv;
+            const div = this.gcd(subNum, subDen);
+            const sliceDur = { numerator: subNum / div, denominator: subDen / div };
+            let sliceCursor = { ...cursorTime };
+
+            for (let r = 0; r < rollSubdiv; r++) {
+              for (const baseEv of chordEvents) {
+                const cloned: AtomicEvent = {
+                  ...baseEv,
+                  duration: { ...sliceDur },
+                  startTime: { ...sliceCursor },
+                  physics: baseEv.physics
+                    ? {
+                        ...baseEv.physics,
+                        roll: undefined,
+                        legato: r > 0 ? true : baseEv.physics.legato,
+                      }
+                    : r > 0
+                      ? { legato: true }
+                      : undefined,
+                };
+                events.push(cloned);
+              }
+              sliceCursor = this.addFractions(sliceCursor, sliceDur);
+            }
+          } else {
+            events.push(...chordEvents);
+          }
+
+          if (chordDuration && !chordDuration.isGrace) {
+            cursorTime = this.addFractions(cursorTime, chordDuration);
+            voiceDuration = this.addFractions(voiceDuration, chordDuration);
+          }
+          continue;
+        }
+
+        // 4. Standard atomic note / rest / spacer token
+        const ev = serializer.parseToken(token, trackDef.style);
+        ev.rawToken = token;
+        ev.startTime = { ...cursorTime };
+        ev.trackId = trackDef.id;
+        ev.voiceId = voiceId;
+        ev.measureNumber = measureNumber;
+        ev.style = trackDef.style;
+        ev.patch = trackDef.patch;
+        ev.env = trackDef.env;
+
+        const rollCount = ev.physics?.roll && ev.physics.roll > 1 ? ev.physics.roll : 1;
+        if (!ev.pitch.isRest && (!ev.pitch.isSpacer || Boolean(ev.physics?.cc))) {
+          if (rollCount > 1 && !ev.duration.isGrace) {
+            const subNum = ev.duration.numerator;
+            const subDen = ev.duration.denominator * rollCount;
+            const div = this.gcd(subNum, subDen);
+            const sliceDur = { numerator: subNum / div, denominator: subDen / div };
+            let sliceCursor = { ...cursorTime };
+
+            for (let r = 0; r < rollCount; r++) {
+              events.push({
+                ...ev,
+                duration: { ...sliceDur },
+                startTime: { ...sliceCursor },
+                physics: ev.physics
+                  ? {
+                      ...ev.physics,
+                      roll: undefined,
+                      legato: r > 0 ? true : ev.physics.legato,
+                    }
+                  : r > 0
+                    ? { legato: true }
+                    : undefined,
+              });
+              sliceCursor = this.addFractions(sliceCursor, sliceDur);
+            }
+          } else {
+            events.push(ev);
+          }
+        }
+
+        if (!ev.duration.isGrace) {
+          cursorTime = this.addFractions(cursorTime, ev.duration);
+          voiceDuration = this.addFractions(voiceDuration, ev.duration);
+        }
+      } catch (err) {
+        if (!skipInvalidTokens) {
+          throw err;
+        }
+      }
+    }
+
+    this.applyPhraseSwellInterpolation(events);
+    return { events, totalDuration: voiceDuration };
+  }
+
+  /**
+   * When multiple consecutive notes in a voice carry .cresc or .dim (without explicit (start,end) overrides),
+   * smoothly interpolates their startVelocity and endVelocity across the entire phrase run.
+   */
+  private applyPhraseSwellInterpolation(events: AtomicEvent[]): void {
+    let i = 0;
+    while (i < events.length) {
+      const swellType = events[i].physics?.swell;
+      if (!swellType) {
+        i++;
+        continue;
+      }
+
+      let j = i;
+      const timeSteps: Array<{ startNum: number; startDen: number; items: AtomicEvent[] }> = [];
+
+      while (j < events.length && events[j].physics?.swell === swellType) {
+        const st = events[j].startTime || { numerator: 0, denominator: 1 };
+        const lastStep = timeSteps[timeSteps.length - 1];
+        if (lastStep && lastStep.startNum === st.numerator && lastStep.startDen === st.denominator) {
+          lastStep.items.push(events[j]);
+        } else {
+          timeSteps.push({ startNum: st.numerator, startDen: st.denominator, items: [events[j]] });
+        }
+        j++;
+      }
+
+      if (timeSteps.length > 1) {
+        const firstPhysics = timeSteps[0].items[0].physics!;
+        const overallStart =
+          swellType === 'crescendo'
+            ? Math.min(85, firstPhysics.startVelocity ?? 40)
+            : Math.max(65, firstPhysics.startVelocity ?? 112);
+        const overallEnd =
+          swellType === 'crescendo'
+            ? Math.max(overallStart + 25, firstPhysics.endVelocity ?? 116)
+            : Math.min(overallStart - 25, firstPhysics.endVelocity ?? 32);
+
+        const totalSteps = timeSteps.length;
+        for (let s = 0; s < totalSteps; s++) {
+          const segStart = Math.round(overallStart + ((overallEnd - overallStart) * s) / totalSteps);
+          const segEnd = Math.round(overallStart + ((overallEnd - overallStart) * (s + 1)) / totalSteps);
+          const segMid = Math.round((segStart + segEnd) / 2);
+          for (const ev of timeSteps[s].items) {
+            if (ev.physics) {
+              ev.physics.startVelocity = segStart;
+              ev.physics.endVelocity = segEnd;
+              ev.physics.velocity = segMid;
+            }
+          }
+        }
+      }
+
+      i = j;
+    }
+  }
+
+  private ensureTrackDefinition(
+    trackId: string,
+    defsMap: Map<string, TrackDefinition>,
+    trackVolumes: Map<string, number>
+  ): TrackDefinition {
+    if (!defsMap.has(trackId)) {
+      const inferredStyle =
+        /^(drum|drums|kit|perc|808_kit)$/i.test(trackId)
+          ? 'grid'
+          : /^(synth|lead|pad|bass|sub|arp|808)$/i.test(trackId)
+            ? 'synth'
+            : 'standard';
+      defsMap.set(trackId, {
+        id: trackId,
+        name: trackId.toUpperCase(),
+        style: inferredStyle,
+        patch:
+          inferredStyle === 'synth'
+            ? 'saw_lead'
+            : inferredStyle === 'grid'
+              ? 'tenuto_808_kit'
+              : 'salamander_grand',
+        volume: trackVolumes.get(trackId) ?? 100,
+        pan: 0,
+        fx: [],
+        fxChain: [],
+      });
+    }
+    return defsMap.get(trackId)!;
+  }
+
+  public compile(rawSource: string): CompiledScore {
+    const sanitized = this.sanitizeLLMInput(rawSource);
+    const cleanSource = this.stripComments(sanitized);
+
+    const meta: ScoreMeta = {
+      title: 'Untitled Score',
+      tempo: 120,
+      time: '4/4',
+      sidechain: null,
+      autoPadVoices: true,
+    };
+
+    const defsMap = new Map<string, TrackDefinition>();
+    const groups: GroupDefinition[] = [];
+    const scenes: SceneDefinition[] = [];
+    const clips: ClipDefinition[] = [];
+    const locators: LocatorDefinition[] = [];
+    const grooves: GrooveDefinition[] = [];
+    const macros = new Map<string, string[]>();
+    const diagnostics: CompilerDiagnostic[] = [];
+    const allEvents: AtomicEvent[] = [];
+
+    // If sketch mode (not wrapped in tenuto / measure / scene / clip / def), compile directly as a single track
+    if (!this.isFullDocument(cleanSource)) {
+      const trackMatch = cleanSource.match(/^([a-zA-Z0-9_]+):\s+([\s\S]*)$/);
+      const trackId = trackMatch ? trackMatch[1] : 'pno';
+      const body = trackMatch ? trackMatch[2].trim() : cleanSource.trim();
+
+      const defaultDef: TrackDefinition = {
+        id: trackId,
+        name: trackId.toUpperCase(),
+        style: 'standard',
+        patch: 'salamander_grand',
+        volume: 100,
+        pan: 0,
+        fx: [],
+        fxChain: [],
+      };
+      defsMap.set(trackId, defaultDef);
+
+      if (body) {
+        const serializer = new ASTSerializer();
+        const tokens = this.tokenizeVoiceStream(body);
+        const { events } = this.parseVoiceTokensToEvents(
+          tokens,
+          serializer,
+          defaultDef,
+          1,
+          'v1',
+          { numerator: 0, denominator: 1 },
+          macros
+        );
+        allEvents.push(...events);
+      }
+
+      return {
+        version: '5.0',
+        meta,
+        defs: Array.from(defsMap.values()),
+        groups,
+        scenes,
+        clips,
+        locators,
+        grooves,
+        events: this.mergeTiedEvents(allEvents),
+        diagnostics,
+      };
+    }
+
+    // 1. Extract version
+    const versionMatch = cleanSource.match(/\btenuto\s+"([^"]+)"/i);
+    const version = versionMatch ? versionMatch[1] : '5.0';
+
+    // 2. Extract meta @{ ... }
+    const metaMatch = cleanSource.match(/\bmeta\s*@\{([^}]*)\}/i);
+    if (metaMatch) {
+      const parsedMeta = this.parseDictionary(metaMatch[1]);
+      if (typeof parsedMeta.title === 'string') meta.title = parsedMeta.title;
+      if (typeof parsedMeta.tempo === 'number') meta.tempo = parsedMeta.tempo;
+      if (typeof parsedMeta.time === 'string') meta.time = parsedMeta.time;
+      if (typeof parsedMeta.key === 'string') meta.key = parsedMeta.key;
+      if (typeof parsedMeta.scale === 'string') meta.scale = parsedMeta.scale;
+      if (typeof parsedMeta.tuning === 'string') meta.tuning = parsedMeta.tuning;
+      if (typeof parsedMeta.quantize_launch === 'string') meta.quantizeLaunch = parsedMeta.quantize_launch;
+      else if (typeof parsedMeta.quantize === 'string') meta.quantizeLaunch = parsedMeta.quantize;
+      if (typeof parsedMeta.crossfader === 'number') meta.crossfader = parsedMeta.crossfader;
+      if (typeof parsedMeta.sidechain === 'string') meta.sidechain = parsedMeta.sidechain;
+      if (typeof parsedMeta.auto_pad_voices === 'boolean') meta.autoPadVoices = parsedMeta.auto_pad_voices;
+    }
+
+    // 3. Extract var declarations (e.g. var vox_vol = 95)
+    const trackVolumes = new Map<string, number>();
+    const varRegex = /\bvar\s+([a-zA-Z0-9_]+)_vol\s*=\s*(\d+)/g;
+    let varMatch: RegExpExecArray | null;
+    while ((varMatch = varRegex.exec(cleanSource)) !== null) {
+      trackVolumes.set(varMatch[1], parseInt(varMatch[2], 10));
+    }
+
+    // 4. Extract macro definitions: macro motif = { c4:8 d e } or $motif = { c4:8 d e }
+    const macroRegex = /(?:macro\s+([a-zA-Z0-9_]+)(?:\([^)]*\))?|\$([a-zA-Z0-9_]+))\s*=?\s*\{([^}]*)\}/g;
+    let macroMatch: RegExpExecArray | null;
+    while ((macroMatch = macroRegex.exec(cleanSource)) !== null) {
+      const name = macroMatch[1] || macroMatch[2];
+      const tokens = this.tokenizeVoiceStream(macroMatch[3]);
+      macros.set(name, tokens);
+    }
+
+    // 5. Extract def and return / def_return statements line by line
+    const lines = cleanSource.split('\n');
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      const defMatch = line.match(/^(def|def_return|return)\s+([a-zA-Z0-9_]+)\s*(?:"([^"]*)")?\s*(.*)$/i);
+      if (defMatch) {
+        const keyword = defMatch[1].toLowerCase();
+        const id = defMatch[2];
+        const name = defMatch[3] || id;
+        const attrStr = defMatch[4] || '';
+
+        const styleMatch = attrStr.match(/\bstyle\s*=\s*("[^"]+"|[a-zA-Z0-9_]+)/i);
+        const patchMatch = attrStr.match(/\bpatch\s*=\s*("[^"]+"|[a-zA-Z0-9_]+)/i);
+        const srcMatch = attrStr.match(/\bsrc\s*=\s*"([^"]+)"/i);
+        const groupAttrMatch = attrStr.match(/\bgroup\s*=\s*("[^"]+"|[a-zA-Z0-9_]+)/i);
+        const grooveAttrMatch = attrStr.match(/\bgroove\s*=\s*("[^"]+"|[a-zA-Z0-9_]+)/i);
+        const crossfadeMatch = attrStr.match(/\bcrossfade\s*=\s*("?[ABab]"?|"OFF"|OFF)/i);
+        const delayMatch = attrStr.match(/\bdelay\s*=\s*(-?\d+(?:\.\d+)?)(?:ms)?/i);
+        const volAttrMatch = attrStr.match(/\bvol(?:ume)?\s*=\s*(\d+)/i);
+        const panAttrMatch = attrStr.match(/\bpan\s*=\s*(-?\d+(?:\.\d+)?)/i);
+        const envMatch = attrStr.match(/\benv\s*=\s*@\{([^}]*)\}/i);
+        const sendsMatch = attrStr.match(/\bsends\s*=\s*@\{([^}]*)\}/i);
+        const macrosAttrMatch = attrStr.match(/\bmacros\s*=\s*@\{([^}]*)\}/i);
+
+        const { fxNames, fxChain } = this.parseFXChainFromAttributes(attrStr);
+
+        const isReturn =
+          keyword === 'return' ||
+          keyword === 'def_return' ||
+          (styleMatch ? styleMatch[1].replace(/^"|"$/g, '').toLowerCase() === 'return' : false);
+
+        const style = isReturn
+          ? 'return'
+          : styleMatch
+            ? styleMatch[1].replace(/^"|"$/g, '').toLowerCase()
+            : 'standard';
+
+        const defaultPatch =
+          style === 'synth'
+            ? 'saw_lead'
+            : style === 'grid'
+              ? 'tenuto_808_kit'
+              : style === 'return'
+                ? 'return_bus'
+                : 'salamander_grand';
+        const patch = patchMatch ? patchMatch[1].replace(/^"|"$/g, '') : defaultPatch;
+
+        let env: Record<string, string> | undefined;
+        if (envMatch) {
+          const parsedEnv = this.parseDictionary(envMatch[1]);
+          env = {};
+          for (const [k, v] of Object.entries(parsedEnv)) {
+            env[k] = String(v);
+          }
+        }
+
+        let sends: Record<string, number> | undefined;
+        if (sendsMatch) {
+          const parsedSends = this.parseDictionary(sendsMatch[1]);
+          sends = {};
+          for (const [k, v] of Object.entries(parsedSends)) {
+            if (typeof v === 'number') sends[k] = v;
+          }
+        }
+
+        let trackMacros: Record<string, number> | undefined;
+        if (macrosAttrMatch) {
+          const parsedMacros = this.parseDictionary(macrosAttrMatch[1]);
+          trackMacros = {};
+          for (const [k, v] of Object.entries(parsedMacros)) {
+            if (typeof v === 'number') trackMacros[k] = v;
+          }
+        }
+
+        const crossfadeRaw = crossfadeMatch ? crossfadeMatch[1].replace(/^"|"$/g, '').toUpperCase() : undefined;
+        const crossfadeAssign =
+          crossfadeRaw === 'A' || crossfadeRaw === 'B' || crossfadeRaw === 'OFF'
+            ? (crossfadeRaw as 'A' | 'B' | 'OFF')
+            : undefined;
+
+        defsMap.set(id, {
+          id,
+          name,
+          style,
+          patch,
+          volume: volAttrMatch ? parseInt(volAttrMatch[1], 10) : (trackVolumes.get(id) ?? 100),
+          pan: panAttrMatch ? parseFloat(panAttrMatch[1]) : 0,
+          fx: fxNames,
+          fxChain,
+          isReturn,
+          groupId: groupAttrMatch ? groupAttrMatch[1].replace(/^"|"$/g, '') : undefined,
+          groove: grooveAttrMatch ? grooveAttrMatch[1].replace(/^"|"$/g, '') : undefined,
+          crossfadeAssign,
+          trackDelayMs: delayMatch ? parseFloat(delayMatch[1]) : undefined,
+          sends,
+          macros: trackMacros,
+          env,
+          src: srcMatch ? srcMatch[1] : undefined,
+        });
+      }
+    }
+
+    // 5b. Extract group definitions (both single-line tracks=[...] and block group { ... })
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      const singleGroupMatch = line.match(
+        /^group\s+([a-zA-Z0-9_]+)\s*(?:"([^"]*)")?\s*tracks\s*=\s*\[([^\]]*)\]\s*(.*)$/i
+      );
+      if (singleGroupMatch) {
+        const id = singleGroupMatch[1];
+        const name = singleGroupMatch[2] || id;
+        const trackIds = singleGroupMatch[3]
+          .split(/[,\s]+/)
+          .map((s) => s.trim().replace(/^"|"$/g, ''))
+          .filter(Boolean);
+        const attrStr = singleGroupMatch[4] || '';
+        const { fxNames, fxChain } = this.parseFXChainFromAttributes(attrStr);
+        groups.push({
+          id,
+          name,
+          trackIds,
+          volume: trackVolumes.get(id) ?? 100,
+          pan: 0,
+          fx: fxNames,
+          fxChain,
+        });
+        for (const tId of trackIds) {
+          const def = defsMap.get(tId);
+          if (def) def.groupId = id;
+        }
+      }
+    }
+
+    const groupBlockRegex = /\bgroup\s+([a-zA-Z0-9_]+)\s*(?:"([^"]*)")?\s*([^{]*)\{([\s\S]*?)\}/gi;
+    let groupBlockMatch: RegExpExecArray | null;
+    while ((groupBlockMatch = groupBlockRegex.exec(cleanSource)) !== null) {
+      const id = groupBlockMatch[1];
+      const name = groupBlockMatch[2] || id;
+      const attrStr = groupBlockMatch[3] || '';
+      const groupBody = groupBlockMatch[4] || '';
+      if (groups.some((g) => g.id === id)) continue;
+
+      const { fxNames, fxChain } = this.parseFXChainFromAttributes(attrStr);
+      const trackIds: string[] = [];
+      const memberDefRegex = /\bdef\s+([a-zA-Z0-9_]+)/gi;
+      let memberMatch: RegExpExecArray | null;
+      while ((memberMatch = memberDefRegex.exec(groupBody)) !== null) {
+        const tId = memberMatch[1];
+        trackIds.push(tId);
+        const def = defsMap.get(tId);
+        if (def) def.groupId = id;
+      }
+      groups.push({
+        id,
+        name,
+        trackIds,
+        volume: trackVolumes.get(id) ?? 100,
+        pan: 0,
+        fx: fxNames,
+        fxChain,
+      });
+    }
+
+    // 5c. Extract Groove Pool definitions: groove <id> "<Name>" @{ base: "1/16", quantize: 80, timing: 35, random: 10, velocity: 50 }
+    const grooveRegex = /\bgroove\s+([a-zA-Z0-9_]+)\s*(?:"([^"]*)")?\s*@\{([^}]*)\}/gi;
+    let grooveMatch: RegExpExecArray | null;
+    while ((grooveMatch = grooveRegex.exec(cleanSource)) !== null) {
+      const id = grooveMatch[1];
+      const name = grooveMatch[2] || id;
+      const dict = this.parseDictionary(grooveMatch[3]);
+      grooves.push({
+        id,
+        name,
+        base: typeof dict.base === 'string' ? dict.base : '1/16',
+        quantizePercent: typeof dict.quantize === 'number' ? dict.quantize : 100,
+        timingPercent: typeof dict.timing === 'number' ? dict.timing : 0,
+        randomPercent: typeof dict.random === 'number' ? dict.random : 0,
+        velocityPercent: typeof dict.velocity === 'number' ? dict.velocity : 0,
+      });
+    }
+
+    const [beatsStr, beatTypeStr] = (meta.time || '4/4').split('/');
+    const capNum = parseInt(beatsStr, 10) || 4;
+    const capDen = parseInt(beatTypeStr, 10) || 4;
+    const capDiv = this.gcd(capNum, capDen);
+    const measureCapacity = {
+      numerator: capNum / capDiv,
+      denominator: capDen / capDiv,
+    };
+
+    // 5d. Extract Arrangement Locators:
+    // Either `locator "Drop" at measure 17` or `locator drop_id "Drop" measure=17`
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      const locAtMatch = line.match(/^locator\s+(?:([a-zA-Z0-9_]+)\s+)?"([^"]+)"\s+(?:at\s+)?measure\s*=?\s*(\d+)/i);
+      if (locAtMatch) {
+        const name = locAtMatch[2];
+        const id = locAtMatch[1] || name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+        const measureNumber = Math.max(1, parseInt(locAtMatch[3], 10));
+        const startWhole = (measureNumber - 1) * (measureCapacity.numerator / measureCapacity.denominator);
+        locators.push({ id, name, measureNumber, startWhole });
+      }
+    }
+
+    // 6. Parse measure blocks and maintain per-track/voice sticky serializers across measures
+    const trackSerializers = new Map<string, ASTSerializer>();
+    const getSerializer = (key: string): ASTSerializer => {
+      if (!trackSerializers.has(key)) {
+        trackSerializers.set(key, new ASTSerializer());
+      }
+      return trackSerializers.get(key)!;
+    };
+
+    const measureHeaderRegex = /\bmeasure\s+(\d+)(?:\s*-\s*(\d+))?\s*\{/gi;
+    let measureMatch: RegExpExecArray | null;
+    let currentScoreTime = { numerator: 0, denominator: 1 };
+
+    while ((measureMatch = measureHeaderRegex.exec(cleanSource)) !== null) {
+      const startNum = parseInt(measureMatch[1], 10);
+      const endNum = measureMatch[2] ? parseInt(measureMatch[2], 10) : startNum;
+      const bodyStartIdx = measureMatch.index + measureMatch[0].length;
+      let braceDepth = 1;
+      let cursor = bodyStartIdx;
+      let inQuotes = false;
+
+      while (cursor < cleanSource.length && braceDepth > 0) {
+        const ch = cleanSource[cursor];
+        if (ch === '"' && cleanSource[cursor - 1] !== '\\') {
+          inQuotes = !inQuotes;
+        } else if (!inQuotes) {
+          if (ch === '{') braceDepth++;
+          else if (ch === '}') braceDepth--;
+        }
+        cursor++;
+      }
+
+      const measureBody = cleanSource.slice(bodyStartIdx, cursor - 1);
+      measureHeaderRegex.lastIndex = cursor;
+
+      const measureMetaMatch = measureBody.match(/\bmeta\s*@\{([^}]*)\}/i);
+      if (measureMetaMatch) {
+        const parsedMeasureMeta = this.parseDictionary(measureMetaMatch[1]);
+        if (typeof parsedMeasureMeta.tempo === 'number' && parsedMeasureMeta.tempo > 0) {
+          if (!meta.tempoMap) meta.tempoMap = [];
+          meta.tempoMap.push({
+            startWhole: currentScoreTime.numerator / currentScoreTime.denominator,
+            tempo: parsedMeasureMeta.tempo,
+          });
+        }
+      }
+
+      for (let mNum = startNum; mNum <= endNum; mNum++) {
+        const measureStartTime = { ...currentScoreTime };
+        let maxVoiceDurationInMeasure = { ...measureCapacity };
+
+        const assignmentRegex = /^\s*([a-zA-Z0-9_]+)\s*:\s+(<\[[\s\S]*?\]>|[^\n]+)$/gm;
+        let assignMatch: RegExpExecArray | null;
+
+        while ((assignMatch = assignmentRegex.exec(measureBody)) !== null) {
+          const trackId = assignMatch[1].trim();
+          if (trackId.toLowerCase() === 'meta') continue;
+          const rhs = assignMatch[2].trim();
+
+          const trackDef = this.ensureTrackDefinition(trackId, defsMap, trackVolumes);
+
+          if (rhs.startsWith('<[') && rhs.endsWith(']>')) {
+            const innerVoices = rhs
+              .slice(2, -2)
+              .split('|')
+              .map((s) => s.trim())
+              .filter(Boolean);
+            innerVoices.forEach((voiceSegment, vIdx) => {
+              const voiceLabelMatch = voiceSegment.match(/^([a-zA-Z0-9_]+)\s*:\s+([\s\S]*)$/);
+              const voiceId = voiceLabelMatch ? voiceLabelMatch[1] : `v${vIdx + 1}`;
+              const tokenStream = voiceLabelMatch ? voiceLabelMatch[2] : voiceSegment;
+              const serializer = getSerializer(`${trackId}:${voiceId}`);
+              const tokens = this.tokenizeVoiceStream(tokenStream);
+              const { events, totalDuration } = this.parseVoiceTokensToEvents(
+                tokens,
+                serializer,
+                trackDef,
+                mNum,
+                voiceId,
+                measureStartTime,
+                macros,
+                true
+              );
+              allEvents.push(...events);
+              if (
+                totalDuration.numerator * maxVoiceDurationInMeasure.denominator >
+                maxVoiceDurationInMeasure.numerator * totalDuration.denominator
+              ) {
+                maxVoiceDurationInMeasure = totalDuration;
+              }
+            });
+          } else {
+            const cleanRhs = rhs.replace(/\|$/, '').trim();
+            const serializer = getSerializer(`${trackId}:v1`);
+            const tokens = this.tokenizeVoiceStream(cleanRhs);
+            const { events, totalDuration } = this.parseVoiceTokensToEvents(
+              tokens,
+              serializer,
+              trackDef,
+              mNum,
+              'v1',
+              measureStartTime,
+              macros,
+              true
+            );
+            allEvents.push(...events);
+            if (
+              totalDuration.numerator * maxVoiceDurationInMeasure.denominator >
+              maxVoiceDurationInMeasure.numerator * totalDuration.denominator
+            ) {
+              maxVoiceDurationInMeasure = totalDuration;
+            }
+          }
+        }
+
+        currentScoreTime = this.addFractions(measureStartTime, maxVoiceDurationInMeasure);
+      }
+    }
+
+    // 7. Parse standalone Session/Arrangement `clip` blocks:
+    // clip <id> "<Name>" track=<trackId> scene=<N> bars=<B> follow=@{...} { ... }
+    const clipHeaderRegex = /\bclip\s+([a-zA-Z0-9_]+)\s*(?:"([^"]*)")?\s*([^{]*)\{/gi;
+    let clipMatch: RegExpExecArray | null;
+    while ((clipMatch = clipHeaderRegex.exec(cleanSource)) !== null) {
+      const clipId = clipMatch[1];
+      const clipName = clipMatch[2] || clipId;
+      const attrStr = clipMatch[3] || '';
+      const bodyStartIdx = clipMatch.index + clipMatch[0].length;
+      let braceDepth = 1;
+      let cursor = bodyStartIdx;
+      let inQuotes = false;
+
+      while (cursor < cleanSource.length && braceDepth > 0) {
+        const ch = cleanSource[cursor];
+        if (ch === '"' && cleanSource[cursor - 1] !== '\\') inQuotes = !inQuotes;
+        else if (!inQuotes) {
+          if (ch === '{') braceDepth++;
+          else if (ch === '}') braceDepth--;
+        }
+        cursor++;
+      }
+
+      const clipBody = cleanSource.slice(bodyStartIdx, cursor - 1).trim();
+      clipHeaderRegex.lastIndex = cursor;
+
+      const trackAttr = attrStr.match(/\btrack\s*=\s*("[^"]+"|[a-zA-Z0-9_]+)/i);
+      const sceneAttr = attrStr.match(/\bscene\s*=\s*(\d+)/i);
+      const barsAttr = attrStr.match(/\bbars\s*=\s*(\d+)/i);
+      const loopAttr = attrStr.match(/\bloop\s*=\s*(true|false)/i);
+      const srcAttr = attrStr.match(/\bsrc\s*=\s*"([^"]+)"/i);
+      const warpAttr = attrStr.match(/\bwarp\s*=\s*("[^"]+"|[a-zA-Z0-9_]+)/i);
+      const transposeAttr = attrStr.match(/\b(?:transpose|pitch)\s*=\s*(-?\d+(?:\.\d+)?)/i);
+      const gainAttr = attrStr.match(/\bgain\s*=\s*(-?\d+(?:\.\d+)?)/i);
+      const followAttr = attrStr.match(/\bfollow(?:_action)?\s*=\s*@\{([^}]*)\}/i);
+
+      const trackId = trackAttr ? trackAttr[1].replace(/^"|"$/g, '') : 'pno';
+      const sceneIndex = sceneAttr ? parseInt(sceneAttr[1], 10) : undefined;
+      const trackDef = this.ensureTrackDefinition(trackId, defsMap, trackVolumes);
+
+      const clipSerializer = new ASTSerializer();
+      const cleanBody = clipBody.replace(/^[a-zA-Z0-9_]+\s*:\s*/, '').replace(/\|$/, '').trim();
+      const clipTokens = this.tokenizeVoiceStream(cleanBody);
+      const { events: clipEvents, totalDuration } = this.parseVoiceTokensToEvents(
+        clipTokens,
+        clipSerializer,
+        trackDef,
+        sceneIndex ?? 1,
+        'v1',
+        { numerator: 0, denominator: 1 },
+        macros,
+        true
+      );
+
+      for (const ev of clipEvents) {
+        ev.clipId = clipId;
+        ev.sceneIndex = sceneIndex;
+      }
+
+      const computedBars = Math.max(
+        1,
+        Math.round(
+          (totalDuration.numerator / totalDuration.denominator) /
+            (measureCapacity.numerator / measureCapacity.denominator)
+        ) || 1
+      );
+
+      const warpRaw = warpAttr ? warpAttr[1].replace(/^"|"$/g, '').toLowerCase() : undefined;
+      const warpMode =
+        warpRaw === 'beats' ||
+        warpRaw === 'tones' ||
+        warpRaw === 'texture' ||
+        warpRaw === 'repitch' ||
+        warpRaw === 'complex' ||
+        warpRaw === 'complex_pro'
+          ? (warpRaw as WarpMode)
+          : undefined;
+
+      const clipDef: ClipDefinition = {
+        id: clipId,
+        name: clipName,
+        trackId,
+        sceneIndex,
+        bars: barsAttr ? parseInt(barsAttr[1], 10) : computedBars,
+        loop: loopAttr ? loopAttr[1].toLowerCase() === 'true' : true,
+        src: srcAttr ? srcAttr[1] : trackDef.src,
+        warpMode,
+        pitchShiftSt: transposeAttr ? parseFloat(transposeAttr[1]) : undefined,
+        gainDb: gainAttr ? parseFloat(gainAttr[1]) : undefined,
+        followAction: followAttr ? this.parseFollowActionDict(this.parseDictionary(followAttr[1])) : undefined,
+        events: this.mergeTiedEvents(clipEvents),
+      };
+
+      clips.push(clipDef);
+
+      if (sceneIndex !== undefined) {
+        let existingScene = scenes.find((s) => s.index === sceneIndex);
+        if (!existingScene) {
+          existingScene = { index: sceneIndex, name: `Scene ${sceneIndex}`, clipIds: [] };
+          scenes.push(existingScene);
+        }
+        if (!existingScene.clipIds.includes(clipId)) {
+          existingScene.clipIds.push(clipId);
+        }
+      }
+    }
+
+    // 8. Parse Session View `scene` blocks:
+    // scene 1 "Intro" @{ tempo: 120 } { lead: c4:4 e4:4 g4:2 | drums: k:4 s:4 k:4 s:4 }
+    const sceneHeaderRegex = /\bscene\s+(\d+)\s*(?:"([^"]*)")?\s*(?:@\{([^}]*)\})?\s*\{/gi;
+    let sceneMatch: RegExpExecArray | null;
+    const hasExplicitMeasures = allEvents.length > 0;
+    let sceneTimelineCursor = { ...currentScoreTime };
+
+    while ((sceneMatch = sceneHeaderRegex.exec(cleanSource)) !== null) {
+      const sceneIndex = parseInt(sceneMatch[1], 10);
+      const sceneName = sceneMatch[2] || `Scene ${sceneIndex}`;
+      const sceneMetaDict = sceneMatch[3] ? this.parseDictionary(sceneMatch[3]) : {};
+
+      const bodyStartIdx = sceneMatch.index + sceneMatch[0].length;
+      let braceDepth = 1;
+      let cursor = bodyStartIdx;
+      let inQuotes = false;
+
+      while (cursor < cleanSource.length && braceDepth > 0) {
+        const ch = cleanSource[cursor];
+        if (ch === '"' && cleanSource[cursor - 1] !== '\\') inQuotes = !inQuotes;
+        else if (!inQuotes) {
+          if (ch === '{') braceDepth++;
+          else if (ch === '}') braceDepth--;
+        }
+        cursor++;
+      }
+
+      const sceneBody = cleanSource.slice(bodyStartIdx, cursor - 1);
+      sceneHeaderRegex.lastIndex = cursor;
+
+      let sceneObj = scenes.find((s) => s.index === sceneIndex);
+      if (!sceneObj) {
+        sceneObj = {
+          index: sceneIndex,
+          name: sceneName,
+          tempo: typeof sceneMetaDict.tempo === 'number' ? sceneMetaDict.tempo : undefined,
+          time: typeof sceneMetaDict.time === 'string' ? sceneMetaDict.time : undefined,
+          clipIds: [],
+        };
+        scenes.push(sceneObj);
+      } else {
+        sceneObj.name = sceneName;
+        if (typeof sceneMetaDict.tempo === 'number') sceneObj.tempo = sceneMetaDict.tempo;
+        if (typeof sceneMetaDict.time === 'string') sceneObj.time = sceneMetaDict.time;
+      }
+
+      let maxSceneDuration = { ...measureCapacity };
+      const assignmentRegex = /^\s*([a-zA-Z0-9_]+)\s*:\s+(<\[[\s\S]*?\]>|[^\n]+)$/gm;
+      let assignMatch: RegExpExecArray | null;
+
+      while ((assignMatch = assignmentRegex.exec(sceneBody)) !== null) {
+        const trackId = assignMatch[1].trim();
+        if (trackId.toLowerCase() === 'meta') continue;
+        let rhs = assignMatch[2].trim();
+
+        // Extract optional inline follow action dictionary: @follow @{ bars: 4, actionA: "next", chanceA: 80 }
+        let inlineFollow: FollowActionConfig | undefined;
+        const followInlineMatch = rhs.match(/@follow\s*@\{([^}]*)\}/i);
+        if (followInlineMatch) {
+          inlineFollow = this.parseFollowActionDict(this.parseDictionary(followInlineMatch[1]));
+          rhs = rhs.replace(followInlineMatch[0], '').trim();
+        }
+
+        const trackDef = this.ensureTrackDefinition(trackId, defsMap, trackVolumes);
+        const clipId = `scene_${sceneIndex}_${trackId}`;
+        const clipEvents: AtomicEvent[] = [];
+        let trackClipDuration = { numerator: 0, denominator: 1 };
+
+        if (rhs.startsWith('<[') && rhs.endsWith(']>')) {
+          const innerVoices = rhs
+            .slice(2, -2)
+            .split('|')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          innerVoices.forEach((voiceSegment, vIdx) => {
+            const voiceLabelMatch = voiceSegment.match(/^([a-zA-Z0-9_]+)\s*:\s+([\s\S]*)$/);
+            const voiceId = voiceLabelMatch ? voiceLabelMatch[1] : `v${vIdx + 1}`;
+            const tokenStream = voiceLabelMatch ? voiceLabelMatch[2] : voiceSegment;
+            const serializer = new ASTSerializer();
+            const tokens = this.tokenizeVoiceStream(tokenStream);
+            const { events, totalDuration } = this.parseVoiceTokensToEvents(
+              tokens,
+              serializer,
+              trackDef,
+              sceneIndex,
+              voiceId,
+              { numerator: 0, denominator: 1 },
+              macros,
+              true
+            );
+            clipEvents.push(...events);
+            if (
+              totalDuration.numerator * trackClipDuration.denominator >
+              trackClipDuration.numerator * totalDuration.denominator
+            ) {
+              trackClipDuration = totalDuration;
+            }
+          });
+        } else {
+          const cleanRhs = rhs.replace(/\|$/, '').trim();
+          const serializer = new ASTSerializer();
+          const tokens = this.tokenizeVoiceStream(cleanRhs);
+          const { events, totalDuration } = this.parseVoiceTokensToEvents(
+            tokens,
+            serializer,
+            trackDef,
+            sceneIndex,
+            'v1',
+            { numerator: 0, denominator: 1 },
+            macros,
+            true
+          );
+          clipEvents.push(...events);
+          trackClipDuration = totalDuration;
+        }
+
+        for (const ev of clipEvents) {
+          ev.clipId = clipId;
+          ev.sceneIndex = sceneIndex;
+        }
+
+        const mergedClipEvents = this.mergeTiedEvents(clipEvents);
+        const bars = Math.max(
+          1,
+          Math.round(
+            (trackClipDuration.numerator / trackClipDuration.denominator) /
+              (measureCapacity.numerator / measureCapacity.denominator)
+          ) || 1
+        );
+
+        clips.push({
+          id: clipId,
+          name: `${sceneName} - ${trackDef.name}`,
+          trackId,
+          sceneIndex,
+          bars,
+          loop: true,
+          src: trackDef.src,
+          followAction: inlineFollow,
+          events: mergedClipEvents,
+        });
+        sceneObj.clipIds.push(clipId);
+
+        if (
+          trackClipDuration.numerator * maxSceneDuration.denominator >
+          maxSceneDuration.numerator * trackClipDuration.denominator
+        ) {
+          maxSceneDuration = trackClipDuration;
+        }
+
+        // If the document is written purely in Session `scene` blocks without `measure` blocks,
+        // also project scene events onto the linear playback timeline so Play works out of the box.
+        if (!hasExplicitMeasures) {
+          for (const ev of mergedClipEvents) {
+            const timelineOffset = ev.startTime
+              ? this.addFractions(sceneTimelineCursor, ev.startTime)
+              : { ...sceneTimelineCursor };
+            allEvents.push({
+              ...ev,
+              startTime: timelineOffset,
+            });
+          }
+        }
+      }
+
+      if (!hasExplicitMeasures) {
+        sceneTimelineCursor = this.addFractions(sceneTimelineCursor, maxSceneDuration);
+      }
+    }
+
+    // If a score contains only standalone `clip` blocks (and no `measure` or `scene` blocks),
+    // project the clips onto the main timeline so linear Play / Export WAV still works.
+    if (allEvents.length === 0 && clips.length > 0) {
+      for (const clip of clips) {
+        for (const ev of clip.events) {
+          allEvents.push({ ...ev });
+        }
+      }
+    }
+
+    scenes.sort((a, b) => a.index - b.index);
+    locators.sort((a, b) => a.startWhole - b.startWhole);
+
+    return {
+      version,
+      meta,
+      defs: Array.from(defsMap.values()),
+      groups,
+      scenes,
+      clips,
+      locators,
+      grooves,
+      events: this.mergeTiedEvents(allEvents),
+      diagnostics,
+    };
+  }
+
+  /**
+   * Merges forward-looking tied notes (`~`) of identical pitch on the same track & voice
+   * into a single continuous AtomicEvent so tied notes sustain seamlessly across beats and barlines.
+   */
+  private mergeTiedEvents(events: AtomicEvent[]): AtomicEvent[] {
+    const merged: AtomicEvent[] = [];
+    const activeTies = new Map<string, AtomicEvent>();
+
+    for (const ev of events) {
+      if (!ev.pitch || ev.pitch.isRest || ev.pitch.isSpacer || !ev.startTime) {
+        merged.push(ev);
+        continue;
+      }
+
+      const key = `${ev.trackId || 'pno'}:${ev.voiceId || 'v1'}:${ev.pitch.midi}`;
+      const prevTied = activeTies.get(key);
+
+      if (prevTied && prevTied.startTime) {
+        const expectedStart = this.addFractions(prevTied.startTime, prevTied.duration);
+        const isContiguous =
+          expectedStart.numerator * ev.startTime.denominator ===
+          ev.startTime.numerator * expectedStart.denominator;
+
+        if (isContiguous) {
+          prevTied.duration = this.addFractions(prevTied.duration, ev.duration);
+          if (ev.physics?.vibrato && prevTied.physics) prevTied.physics.vibrato = true;
+          if (!ev.physics?.tie) {
+            activeTies.delete(key);
+          }
+          continue;
+        } else {
+          activeTies.delete(key);
+        }
+      }
+
+      merged.push(ev);
+      if (ev.physics?.tie) {
+        activeTies.set(key, ev);
+      }
+    }
+
+    return merged;
+  }
+}
+
+```
+
+### 3.4 `src/components/CodeEditor.tsx` - Highlight New Tenuto 6.0 DAW Keywords & Attributes in Monaco
+
+In `src/components/CodeEditor.tsx`, update the `keywords` and `attributes` arrays inside `configureTenutoMonaco` (lines 18–19) so `scene`, `clip`, `group`, `return`, `def_return`, `locator`, `groove`, `rack`, and DAW attributes are highlighted in the code editor.
+
+Replace lines 18–19 in `src/components/CodeEditor.tsx`:
+
+```typescript
+      keywords: ['tenuto', 'meta', 'def', 'measure', 'macro', 'var', 'group', 'import', 'repeat'],
+      attributes: ['style', 'patch', 'src', 'env', 'map', 'tempo', 'time', 'title', 'key', 'sidechain'],
+
+```
+
+with:
+
+```typescript
+      keywords: [
+        'tenuto',
+        'meta',
+        'def',
+        'def_return',
+        'return',
+        'group',
+        'scene',
+        'clip',
+        'locator',
+        'groove',
+        'rack',
+        'measure',
+        'macro',
+        'var',
+        'import',
+        'repeat',
+      ],
+      attributes: [
+        'style',
+        'patch',
+        'src',
+        'env',
+        'map',
+        'tempo',
+        'time',
+        'title',
+        'key',
+        'scale',
+        'tuning',
+        'quantize_launch',
+        'crossfader',
+        'sidechain',
+        'sends',
+        'crossfade',
+        'delay',
+        'groove',
+        'macros',
+        'tracks',
+        'track',
+        'scene',
+        'bars',
+        'loop',
+        'warp',
+        'transpose',
+        'gain',
+        'follow',
+        'follow_action',
+      ],
+
+```
+
+### 3.5 `tests/daw_grammar_extension.test.ts` - Create Verification Suite for Tenuto 6.0 DAW Grammar
+
+Create `tests/daw_grammar_extension.test.ts` to test every new Tenuto 6.0 DAW grammar feature:
+
+```typescript
+import { describe, it, expect, beforeEach } from 'vitest';
+import { DocumentParser } from '../src/parser/DocumentParser';
+import { ASTSerializer } from '../src/parser/ASTSerializer';
+import { Lexer, TokenType } from '../src/parser/lexer';
+
+describe('TDB-701: Tenuto 6.0 DAW Grammar Extension', () => {
+  let parser: DocumentParser;
+  let serializer: ASTSerializer;
+
+  beforeEach(() => {
+    parser = new DocumentParser();
+    serializer = new ASTSerializer();
+  });
+
+  it('tokenizes new DAW keywords in Lexer without breaking existing identifiers', () => {
+    const lexer = new Lexer('scene clip group return locator groove rack pno: c4:4');
+    const tokens = lexer.tokenize();
+    expect(tokens[0]).toEqual({ type: TokenType.KEYWORD, value: 'scene' });
+    expect(tokens[1]).toEqual({ type: TokenType.KEYWORD, value: 'clip' });
+    expect(tokens[2]).toEqual({ type: TokenType.KEYWORD, value: 'group' });
+    expect(tokens[3]).toEqual({ type: TokenType.KEYWORD, value: 'return' });
+    expect(tokens[4]).toEqual({ type: TokenType.KEYWORD, value: 'locator' });
+    expect(tokens[5]).toEqual({ type: TokenType.KEYWORD, value: 'groove' });
+    expect(tokens[6]).toEqual({ type: TokenType.KEYWORD, value: 'rack' });
+    expect(tokens[7]).toEqual({ type: TokenType.IDENTIFIER, value: 'pno' });
+  });
+
+  it('parses per-note probability (.chance, .vel_range, .pick_one), warp, transpose, formant, MPE, and CC modifiers', () => {
+    const note = serializer.parseToken(
+      'c4:8.chance(65%).vel_range(70, 110).warp(complex_pro).transpose(-3st).formant(25%).mpe(@{bend: [0, 12], slide: [40, 100], pressure: [80, 120]})'
+    );
+
+    expect(note.physics?.chance).toBe(65);
+    expect(note.physics?.velocityRange).toEqual([70, 110]);
+    expect(note.physics?.velocity).toBe(90);
+    expect(note.physics?.warpMode).toBe('complex_pro');
+    expect(note.physics?.stretch).toBe(true);
+    expect(note.physics?.pitchShiftSt).toBe(-3);
+    expect(note.physics?.formant).toBe(25);
+    expect(note.physics?.mpe).toEqual({
+      bend: [0, 12],
+      slide: [40, 100],
+      pressure: [80, 120],
+    });
+
+    const spacer = serializer.parseToken('s:4.cc(7, [0, 64, 127], "exp")');
+    expect(spacer.pitch.isSpacer).toBe(true);
+    expect(spacer.physics?.cc).toEqual({
+      controller: 7,
+      values: [0, 64, 127],
+      curve: 'exp',
+    });
+  });
+
+  it('compiles Session View scenes, clips, Follow Actions, groups, return buses, grooves, and locators', () => {
+    const dawScore = `
+      tenuto "6.0" {
+        meta @{
+          title: "Ableton Session Matrix",
+          tempo: 124,
+          time: "4/4",
+          key: "D",
+          scale: "harmonic_minor",
+          tuning: "12tet",
+          quantize_launch: "1/1",
+          crossfader: -0.25,
+          sidechain: "drums"
+        }
+
+        groove mpc_swing "MPC 16th Swing" @{ base: "1/16", quantize: 80%, timing: 35%, random: 10%, velocity: 50% }
+
+        return rev_bus "Concert Hall Return" .fx(hybrid_reverb, @{mix: 1.0, decay: 3.2})
+        return dly_bus "Ping Pong Delay" .fx(echo, @{time: 0.375, feedback: 0.45})
+
+        def lead "Wavetable Lead" style=synth patch="wavetable" group="synth_bus" groove="mpc_swing" crossfade="A" delay=-8ms sends=@{rev_bus: 0.45, dly_bus: 0.3} macros=@{cutoff: 72, unison: 40} .fx(eq_eight, @{low_cut: 110}).fx(roar, @{drive: 0.35})
+        def drums "909 Kit" style=grid patch="tenuto_808_kit" crossfade="B"
+
+        group synth_bus "Synth Bus" tracks=[lead] .fx(glue_compressor, @{ratio: 4, threshold: -12})
+
+        locator "Intro" at measure 1
+        locator "Main Drop" at measure 5
+
+        clip arp_hook "Arp Hook" track=lead scene=1 bars=1 follow=@{bars: 4, actionA: "next", actionB: "play_again", chanceA: 75} {
+          d4:8.chance(85%) f4:8 a4:8 d5:8 [f5 a5 d6]:2.pick_one
+        }
+
+        scene 2 "Peak Drop" @{ tempo: 128 } {
+          lead: <[ v1: d5:4 f5:4 a5:2 | v2: s:4.cc(74, [20, 120], "exp") * 4 ]> @follow @{bars: 8, actionA: "any", chanceA: 90}
+          drums: k:4 s:4 k:4 s:4 |
+        }
+      }
+    `;
+
+    const compiled = parser.compile(dawScore);
+
+    // 1. Verify extended ScoreMeta
+    expect(compiled.version).toBe('6.0');
+    expect(compiled.meta.scale).toBe('harmonic_minor');
+    expect(compiled.meta.tuning).toBe('12tet');
+    expect(compiled.meta.quantizeLaunch).toBe('1/1');
+    expect(compiled.meta.crossfader).toBe(-0.25);
+
+    // 2. Verify Groove Pool definitions
+    expect(compiled.grooves).toHaveLength(1);
+    expect(compiled.grooves![0]).toMatchObject({
+      id: 'mpc_swing',
+      base: '1/16',
+      quantizePercent: 80,
+      timingPercent: 35,
+      randomPercent: 10,
+      velocityPercent: 50,
+    });
+
+    // 3. Verify Return tracks and Track DAW properties
+    const returnTracks = compiled.defs.filter((d) => d.isReturn);
+    expect(returnTracks).toHaveLength(2);
+    expect(returnTracks[0].id).toBe('rev_bus');
+    expect(returnTracks[0].fxChain?.[0]).toEqual({
+      type: 'hybrid_reverb',
+      params: { mix: 1.0, decay: 3.2 },
+    });
+
+    const leadTrack = compiled.defs.find((d) => d.id === 'lead')!;
+    expect(leadTrack.groupId).toBe('synth_bus');
+    expect(leadTrack.groove).toBe('mpc_swing');
+    expect(leadTrack.crossfadeAssign).toBe('A');
+    expect(leadTrack.trackDelayMs).toBe(-8);
+    expect(leadTrack.sends).toEqual({ rev_bus: 0.45, dly_bus: 0.3 });
+    expect(leadTrack.macros).toEqual({ cutoff: 72, unison: 40 });
+    expect(leadTrack.fx).toEqual(['eq_eight', 'roar']);
+    expect(leadTrack.fxChain).toHaveLength(2);
+
+    // 4. Verify Group tracks
+    expect(compiled.groups).toHaveLength(1);
+    expect(compiled.groups![0].id).toBe('synth_bus');
+    expect(compiled.groups![0].trackIds).toContain('lead');
+    expect(compiled.groups![0].fx).toContain('glue_compressor');
+
+    // 5. Verify Arrangement Locators
+    expect(compiled.locators).toHaveLength(2);
+    expect(compiled.locators![0]).toMatchObject({ name: 'Intro', measureNumber: 1, startWhole: 0 });
+    expect(compiled.locators![1]).toMatchObject({ name: 'Main Drop', measureNumber: 5, startWhole: 4 });
+
+    // 6. Verify Standalone Clips & Scene Clips + Follow Actions
+    expect(compiled.clips).toHaveLength(3);
+    const arpClip = compiled.clips!.find((c) => c.id === 'arp_hook')!;
+    expect(arpClip.trackId).toBe('lead');
+    expect(arpClip.sceneIndex).toBe(1);
+    expect(arpClip.followAction).toEqual({
+      bars: 4,
+      actionA: 'next',
+      actionB: 'play_again',
+      chanceA: 75,
+      chanceB: 25,
+      linked: true,
+    });
+    expect(arpClip.events[0].physics?.chance).toBe(85);
+    expect(arpClip.events.some((e) => e.physics?.pickOne)).toBe(true);
+
+    // 7. Verify Scene 2 & preserved CC automation spacer
+    const scene2 = compiled.scenes!.find((s) => s.index === 2)!;
+    expect(scene2.name).toBe('Peak Drop');
+    expect(scene2.tempo).toBe(128);
+    expect(scene2.clipIds).toContain('scene_2_lead');
+    expect(scene2.clipIds).toContain('scene_2_drums');
+
+    const scene2LeadClip = compiled.clips!.find((c) => c.id === 'scene_2_lead')!;
+    expect(scene2LeadClip.followAction?.bars).toBe(8);
+    expect(scene2LeadClip.followAction?.actionA).toBe('any');
+    const ccEvents = scene2LeadClip.events.filter((e) => e.physics?.cc?.controller === 74);
+    expect(ccEvents).toHaveLength(4);
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/audio/` (Audio synthesis and routing engines remain untouched in Contract 701)
+* `src/components/SplitWorkspace.tsx`, `src/components/WebGPUCanvas.tsx`, `src/components/Transport.tsx`, `src/components/Mixer.tsx`, `src/components/Inspector.tsx`
+* `src/parser/PitchEngine.ts`, `src/parser/TemporalEngine.ts`, `src/parser/IncrementalCompiler.ts`, `src/parser/Parser.ts`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+* All 40 existing test files in `tests/`
+
+Explicitly:
+
+* Do NOT modify or delete any existing test file in `tests/`.
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero TypeScript errors.
+2. `npx vitest run` passes all 40 existing test suites plus the new `tests/daw_grammar_extension.test.ts` suite (41/41 test files passing).
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. `DocumentParser.compile()` accurately parses `scene`, `clip`, `FollowActionConfig`, `group`, `return`, `locator`, `groove`, per-note probability (`.chance()`, `.vel_range()`, `.pick_one`), audio clip warping (`.warp()`, `.transpose()`, `.formant()`), `.mpe()`, and `.cc()` automation spacers.
+
+---
+
+## 6. Constraints
+
+Must not:
+
+* Break any existing method signatures or return types on `Lexer`, `ASTSerializer`, `DocumentParser`, or `IncrementalCompiler`.
+* Introduce any external npm packages.
+
+Out of scope (deferred to `TDB-702` – `TDB-705`):
+
+* Line/column surgical AST code replacement (`TDB-702`).
+* Scala `.scl` microtonal frequency table evaluation (`TDB-703`).
+
+---
+
+## 7. Manual Steps
+
+None required for this contract.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or restore `src/parser/lexer.ts`, `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, and `src/components/CodeEditor.tsx`, and remove `tests/daw_grammar_extension.test.ts`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `tests/daw_grammar_extension.test.ts`
+* Modified file(s): `src/parser/lexer.ts`, `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, `src/components/CodeEditor.tsx`
+* Commit message: `feat(parser): add Tenuto 6.0 DAW grammar for scenes, clips, groups, returns, and probability`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Session View & Arrangement Blocks** | Only parsed linear `measure N { ... }` blocks | Parses `scene`, `clip` (with Ableton Follow Actions), `group`, `return` buses, `locator` markers, and `groove` pool templates |
+| **Track & Bus Routing Metadata** | Only parsed basic `style`, `patch`, and `.fx` names | Parses `sends=@{...}`, `group="..."`, `crossfade="A|B"`, `delay=-8ms`, `groove="..."`, `macros=@{...}`, and full `.fx(type, @{...})` parameter dictionaries |
+| **Note Probability, Warp, MPE & CC** | Unrecognized modifiers were ignored | Parses `.chance(65%)`, `.vel_range(70,110)`, `.pick_one`, `.warp(complex_pro)`, `.transpose(-3st)`, `.formant(25%)`, `.mpe(...)`, and preserves `.cc()` automation spacers |
+| **Monaco Code Editor** | Only highlighted basic Tenuto 5.0 keywords | Highlights all new Tenuto 6.0 DAW keywords and attributes in the `tenuto-dark` theme |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-24
+Implementer: AI Agent
+
+```
+
+Drop this into Google AI Studio and paste back the implementer's output so we can audit the diff and move to **Contract #2 (`TDB-702: Surgical Bi-Directional AST Code Mutator`)**.
+
+```

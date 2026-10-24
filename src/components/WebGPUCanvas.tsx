@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useMemo, useState, useCallback } from 'react';
 import * as PIXI from 'pixi.js';
+import { isMidiInScale, parseKeyRootSemitone } from '../parser/PitchEngine';
 
 export function calculateProjectionCoordinates(
   event: any,
@@ -76,12 +77,16 @@ export default function WebGPUCanvas({
   events = [],
   playheadBeat = 0,
   isPlaying = false,
+  rootKey,
+  scaleName,
   onMutation,
   onSelect,
 }: {
   events?: any[];
   playheadBeat?: number;
   isPlaying?: boolean;
+  rootKey?: string;
+  scaleName?: string;
   onMutation?: (eventData: any, deltaX: number) => void;
   onSelect?: (nodeData: any) => void;
 }) {
@@ -428,6 +433,17 @@ export default function WebGPUCanvas({
           const octave = Math.floor(midi / 12) - 1;
           const noteLabel = `${NOTE_NAMES[noteMod]}${octave}`;
 
+          const { rootSemitone } = parseKeyRootSemitone(rootKey || 'C');
+          const isRootRow = Boolean(rootKey) && noteMod === rootSemitone;
+          const inScale = isMidiInScale(midi, rootKey || 'C', scaleName || 'chromatic');
+          const rowFill = isRootRow
+            ? '#172554'
+            : scaleName && scaleName !== 'chromatic' && !inScale
+              ? '#060911'
+              : isBlackKey
+                ? '#090D16'
+                : '#0F172A';
+
           return (
             <g key={midi}>
               <rect
@@ -435,7 +451,7 @@ export default function WebGPUCanvas({
                 y={y}
                 width={totalWidthPx - keyWidth}
                 height={rowH}
-                fill={isBlackKey ? '#090D16' : '#0F172A'}
+                fill={rowFill}
                 stroke={isC ? '#334155' : '#1E293B'}
                 strokeWidth={isC ? 1 : 0.5}
               />
@@ -515,8 +531,9 @@ export default function WebGPUCanvas({
                       : swell === 'diminuendo'
                         ? ' >'
                         : '';
-          const label =
-            (ev.pitch?.noteName || `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`) + badge;
+          const pitchName = ev.pitch?.noteName || `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
+          const lyricText = ev.physics?.lyric ? `"${ev.physics.lyric}" ` : '';
+          const label = `${lyricText}${pitchName}${badge}`;
 
           return (
             <g
@@ -531,6 +548,8 @@ export default function WebGPUCanvas({
                   col: ev.col ?? 1,
                   rawToken: ev.rawToken,
                   trackId: ev.trackId,
+                  sourceStartOffset: ev.sourceStartOffset,
+                  sourceEndOffset: ev.sourceEndOffset,
                 })
               }
             >
@@ -576,7 +595,19 @@ export default function WebGPUCanvas({
         })}
       </>
     );
-  }, [visibleEvents, minMidi, maxMidi, totalWidthPx, numRows, svgHeight, rowH, wholeNoteScale, trackIndexMap]);
+  }, [
+    visibleEvents,
+    minMidi,
+    maxMidi,
+    totalWidthPx,
+    numRows,
+    svgHeight,
+    rowH,
+    wholeNoteScale,
+    trackIndexMap,
+    rootKey,
+    scaleName,
+  ]);
 
   return (
     <div

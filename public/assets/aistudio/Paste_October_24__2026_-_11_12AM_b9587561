@@ -1,0 +1,823 @@
+### Stage 3 Oracle Audit: Contract #5 (`TDB-705`) — Phase 1 Complete!
+
+* **Boundary & Diff Audit:** Only the 3 new files (`src/audio/PhonemeEngine.ts`, `src/audio/GrooveEngine.ts`, `tests/groove_and_lyrics.test.ts`) and 3 authorized source files (`src/parser/ASTSerializer.ts`, `src/audio/StudioAudioEngine.ts`, `src/components/WebGPUCanvas.tsx`) were touched.
+
+
+* **Test & Build Integrity:** All 5 Phase 1 test suites (`daw_grammar_extension`, `surgical_ast_mutator`, `scale_and_microtuning`, `automation_compiler`, and `groove_and_lyrics` — **16/16 tests**) passed in 118ms, and `vite build` succeeded cleanly.
+* **Verdict:** **Approved.** That officially completes **100% of Phase 1 (`TDB-701` – `TDB-705`)**!
+
+---
+
+### Next Step: Run `TDB-706` (Multi-View Studio Shell), Then Queue Up `TDB-707` Below
+
+You can now paste **Contract #6 (`TDB-706: Multi-View Studio Shell, Tab View Switcher & Bottom Dock`)** from the previous message into Google AI Studio.
+
+Here is **Implementation Contract #7 (`TDB-707: Session View Clip Matrix & Quantized Scene Launcher`)** ready to run right after `TDB-706` finishes:
+
+```markdown
+# Implementation Contract: Session View Clip Matrix & Quantized Scene Launcher (TDB-707)
+
+**Project:** Tenuto Studio 5
+**Scope:** Create `src/components/SessionView.tsx` and upgrade `src/audio/StudioAudioEngine.ts` and `src/components/SplitWorkspace.tsx` to provide an interactive Ableton-style 2D Session View Clip & Scene Matrix with quantized clip/scene launching (`None`, `1/8`, `1/4`, `1/2`, `1/1`, `2 Bars`, `4 Bars`), auto-synthesized measure scenes when no explicit `scene` blocks are present, per-track Stop buttons, and `+ Clip` AST code generation.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+In `TDB-706`, `SplitWorkspace.tsx` added the `Session` view mode (`data-testid="session-view-container"`), which currently renders a static placeholder list of track cards. To match Ableton Live's signature Session View workflow, users need a true 2D track-by-scene launch matrix where:
+1. Columns represent tracks (`def`) plus a rightmost **Master Scene Launch** column, and rows represent launchable **Scenes**.
+2. Clicking a Clip Launch button triggers (or queues, according to `meta.quantizeLaunch`) that clip on its track; clicking a Scene Launch button triggers all clips across that horizontal scene row simultaneously.
+3. Even if a `.ten` score is written purely with linear `measure 1`, `measure 2`, ... blocks (like the built-in demo scores), Session View automatically synthesizes virtual launchable scene rows from each measure so every `.ten` score is immediately playable in Session View.
+4. Clicking an empty slot's `+ Clip` button injects a new `scene` or `clip` assignment directly into the `.ten` source code.
+
+---
+
+## 2. Root Cause
+1. `src/components/SessionView.tsx` does not exist yet; `SplitWorkspace.tsx` renders a placeholder inside `data-testid="session-view-container"`.
+2. `src/audio/StudioAudioEngine.ts` only exposes `playScore(score: CompiledScore)` for the full timeline and lacks `launchClip()`, `launchScene()`, and `stopTrackClip()` methods for isolated clip/scene loop playback.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/audio/StudioAudioEngine.ts` - Add Quantized Clip & Scene Launchers (`launchClip`, `launchScene`, `stopTrackClip`)
+In `src/audio/StudioAudioEngine.ts`, add active clip state tracking and methods to launch an individual clip, launch an entire horizontal scene row, or stop clips on a specific track:
+
+1. Add private state fields on `StudioAudioEngine` (right below `private nextScheduleIndex: number = 0;`):
+```typescript
+  private activeClipIdsByTrack: Map<string, string> = new Map();
+  private queuedClipIdsByTrack: Map<string, string> = new Map();
+
+```
+
+2. Add public helper methods on `StudioAudioEngine` (right above `playScore(score: CompiledScore)`):
+
+```typescript
+  public getActiveClipsByTrack(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [k, v] of this.activeClipIdsByTrack.entries()) {
+      out[k] = v;
+    }
+    return out;
+  }
+
+  public getQueuedClipsByTrack(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [k, v] of this.queuedClipIdsByTrack.entries()) {
+      out[k] = v;
+    }
+    return out;
+  }
+
+  /**
+   * Computes the quantization delay in seconds until the next launch boundary
+   * (`"none"`, `"1/8"`, `"1/4"`, `"1/2"`, `"1/1"`, `"2/1"`, `"4/1"`).
+   */
+  public computeQuantizeDelaySec(quantizeSpec?: string, tempoBpm: number = 120): number {
+    const clean = (quantizeSpec || 'none').trim().toLowerCase();
+    if (!this.isPlaying || !this.ctx || clean === 'none' || clean === 'off' || clean === '0') {
+      return 0;
+    }
+
+    const secPerBeat = 60 / (tempoBpm || 120);
+    let boundaryBeats = 4; // Default 1/1 bar (4 quarter beats)
+    if (clean === '1/16') boundaryBeats = 0.25;
+    else if (clean === '1/8') boundaryBeats = 0.5;
+    else if (clean === '1/4') boundaryBeats = 1;
+    else if (clean === '1/2') boundaryBeats = 2;
+    else if (clean === '1/1' || clean === '1 bar') boundaryBeats = 4;
+    else if (clean === '2/1' || clean === '2 bars') boundaryBeats = 8;
+    else if (clean === '4/1' || clean === '4 bars') boundaryBeats = 16;
+
+    const boundarySec = boundaryBeats * secPerBeat;
+    const elapsed = Math.max(0, this.ctx.currentTime - this.startContextTime);
+    const remainder = elapsed % boundarySec;
+    if (remainder < 0.015 || boundarySec - remainder < 0.015) return 0;
+    return boundarySec - remainder;
+  }
+
+  /**
+   * Launches a single Session View clip (or virtual measure clip) on its track,
+   * looping the active set of running Session clips.
+   */
+  public async launchClip(
+    score: CompiledScore,
+    clipId: string,
+    trackId: string,
+    clipEvents: AtomicEvent[]
+  ): Promise<void> {
+    this.activeClipIdsByTrack.set(trackId, clipId);
+    this.queuedClipIdsByTrack.delete(trackId);
+    this.isLooping = true;
+
+    const subScore: CompiledScore = {
+      ...score,
+      events: clipEvents.map((ev) => ({
+        ...ev,
+        startTime: ev.startTime || { numerator: 0, denominator: 1 },
+      })),
+    };
+    await this.playScore(subScore);
+  }
+
+  /**
+   * Launches an entire horizontal Scene row across all tracks in the scene.
+   */
+  public async launchScene(
+    score: CompiledScore,
+    sceneIndex: number,
+    sceneEvents: AtomicEvent[],
+    trackClipMap: Record<string, string>,
+    sceneTempo?: number
+  ): Promise<void> {
+    this.activeClipIdsByTrack.clear();
+    this.queuedClipIdsByTrack.clear();
+    for (const [tId, cId] of Object.entries(trackClipMap)) {
+      this.activeClipIdsByTrack.set(tId, cId);
+    }
+    this.isLooping = true;
+
+    const subScore: CompiledScore = {
+      ...score,
+      meta: {
+        ...score.meta,
+        tempo: sceneTempo && sceneTempo > 0 ? sceneTempo : score.meta.tempo,
+      },
+      events: sceneEvents.map((ev) => ({
+        ...ev,
+        startTime: ev.startTime || { numerator: 0, denominator: 1 },
+      })),
+    };
+    await this.playScore(subScore);
+  }
+
+  public stopTrackClip(trackId: string): void {
+    this.activeClipIdsByTrack.delete(trackId);
+    this.queuedClipIdsByTrack.delete(trackId);
+    if (this.activeClipIdsByTrack.size === 0) {
+      this.stop(true);
+    }
+  }
+
+```
+
+### 3.2 `src/components/SessionView.tsx` - Create the Interactive 2D Ableton Session View Matrix
+
+Create `src/components/SessionView.tsx`.
+
+> **CRITICAL TEST CONSTRAINT:** Do NOT use the substring `"Play"` inside any button text or `aria-label` in `SessionView.tsx` (use `"Launch Clip ..."`, `"Launch Scene ..."`, `"Active"`, `"Stop"`), so `screen.getByRole('button', { name: /Play/i })` in `tests/transport_binding.test.tsx` continues to match only the main Transport Play button.
+
+```typescript
+import React, { useMemo } from 'react';
+import { CompiledScore, ClipDefinition, TrackDefinition } from '../parser/DocumentParser';
+import { AtomicEvent } from '../parser/ASTSerializer';
+
+export interface SessionViewProps {
+  score: CompiledScore | null;
+  activeClipsByTrack: Record<string, string>;
+  selectedClipId?: string | null;
+  quantizeLaunch?: string;
+  onQuantizeLaunchChange?: (quantize: string) => void;
+  onLaunchClip: (clip: ClipDefinition) => void;
+  onStopTrackClip: (trackId: string) => void;
+  onStopAllClips: () => void;
+  onLaunchScene: (sceneIndex: number, clips: ClipDefinition[], sceneTempo?: number) => void;
+  onSelectClip?: (clip: ClipDefinition) => void;
+  onCreateClipInSlot?: (trackId: string, sceneIndex: number) => void;
+}
+
+interface NormalizedSceneRow {
+  index: number;
+  name: string;
+  tempo?: number;
+  time?: string;
+  clipsByTrack: Record<string, ClipDefinition>;
+}
+
+const TRACK_ACCENTS = [
+  '#3B82F6',
+  '#A855F7',
+  '#10B981',
+  '#F59E0B',
+  '#EC4899',
+  '#06B6D4',
+  '#8B5CF6',
+  '#EAB308',
+];
+
+export default function SessionView({
+  score,
+  activeClipsByTrack,
+  selectedClipId,
+  quantizeLaunch = '1/1',
+  onQuantizeLaunchChange,
+  onLaunchClip,
+  onStopTrackClip,
+  onStopAllClips,
+  onLaunchScene,
+  onSelectClip,
+  onCreateClipInSlot,
+}: SessionViewProps) {
+  const tracks: TrackDefinition[] = useMemo(() => {
+    const defs = score?.defs?.filter((d) => !d.isReturn) || [];
+    if (defs.length > 0) return defs;
+    return [
+      {
+        id: 'pno',
+        name: 'PNO',
+        style: 'standard',
+        patch: 'salamander_grand',
+        volume: 100,
+        pan: 0,
+        fx: [],
+      },
+    ];
+  }, [score]);
+
+  // Build normalized scene rows: use explicit `scenes`/`clips` if present, or synthesize
+  // virtual scene rows from `measure` numbers so every score is launchable in Session View.
+  const sceneRows: NormalizedSceneRow[] = useMemo(() => {
+    if (!score) return [];
+
+    if (score.scenes && score.scenes.length > 0) {
+      const clipsList = score.clips || [];
+      return score.scenes.map((sc) => {
+        const clipsByTrack: Record<string, ClipDefinition> = {};
+        for (const clip of clipsList) {
+          if (clip.sceneIndex === sc.index || sc.clipIds.includes(clip.id)) {
+            clipsByTrack[clip.trackId] = clip;
+          }
+        }
+        return {
+          index: sc.index,
+          name: sc.name || `Scene ${sc.index}`,
+          tempo: sc.tempo,
+          time: sc.time,
+          clipsByTrack,
+        };
+      });
+    }
+
+    // Fallback: synthesize virtual Session scenes from measure numbers (up to 16 scenes)
+    const measureNums = Array.from(
+      new Set((score.events || []).map((e) => e.measureNumber || 1))
+    ).sort((a, b) => a - b);
+
+    const effectiveMeasures = measureNums.length > 0 ? measureNums.slice(0, 16) : [1];
+
+    return effectiveMeasures.map((mNum, idx) => {
+      const clipsByTrack: Record<string, ClipDefinition> = {};
+      for (const track of tracks) {
+        const trackEvents = (score.events || []).filter(
+          (e) => (e.trackId || 'pno') === track.id && (e.measureNumber || 1) === mNum
+        );
+        if (trackEvents.length > 0) {
+          const minWhole = Math.min(
+            ...trackEvents.map((e) =>
+              e.startTime ? e.startTime.numerator / e.startTime.denominator : 0
+            )
+          );
+          const normalizedEvents: AtomicEvent[] = trackEvents.map((ev) => {
+            const st = ev.startTime
+              ? ev.startTime.numerator / ev.startTime.denominator
+              : 0;
+            const relWhole = Math.max(0, st - minWhole);
+            return {
+              ...ev,
+              startTime: { numerator: Math.round(relWhole * 64), denominator: 64 },
+            };
+          });
+
+          clipsByTrack[track.id] = {
+            id: `virtual_m${mNum}_${track.id}`,
+            name: `M${mNum} ${track.id}`,
+            trackId: track.id,
+            sceneIndex: idx + 1,
+            bars: 1,
+            loop: true,
+            events: normalizedEvents,
+          };
+        }
+      }
+      return {
+        index: idx + 1,
+        name: `Measure ${mNum}`,
+        clipsByTrack,
+      };
+    });
+  }, [score, tracks]);
+
+  return (
+    <div
+      data-testid="session-view-container"
+      className="w-full h-full flex flex-col bg-slate-950 text-slate-200 font-mono text-xs overflow-hidden select-none"
+    >
+      {/* Session View Header & Quantize Launch Bar */}
+      <div className="px-4 py-2 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-3">
+          <span className="font-semibold text-slate-200 uppercase tracking-wider text-[11px]">
+            Session Clip Matrix ({sceneRows.length} Scenes × {tracks.length} Tracks)
+          </span>
+          <span className="text-slate-600">|</span>
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="session-quantize-select" className="text-[11px] text-slate-400">
+              Launch Quantize:
+            </label>
+            <select
+              id="session-quantize-select"
+              aria-label="Launch Quantization"
+              value={quantizeLaunch}
+              onChange={(e) => onQuantizeLaunchChange?.(e.target.value)}
+              className="bg-slate-950 border border-slate-700 text-emerald-400 text-[11px] rounded px-2 py-0.5 outline-none cursor-pointer"
+            >
+              <option value="none">None</option>
+              <option value="1/8">1/8</option>
+              <option value="1/4">1/4</option>
+              <option value="1/2">1/2</option>
+              <option value="1/1">1 Bar (1/1)</option>
+              <option value="2/1">2 Bars</option>
+              <option value="4/1">4 Bars</option>
+            </select>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          aria-label="Stop All Session Clips"
+          onClick={onStopAllClips}
+          className="px-3 py-1 rounded bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/50 text-rose-300 text-[11px] font-semibold transition-colors cursor-pointer"
+        >
+          ■ Stop All Clips
+        </button>
+      </div>
+
+      {/* 2D Track-by-Scene Clip Matrix */}
+      <div className="flex-1 overflow-auto p-3">
+        <table className="w-full border-collapse table-fixed min-w-[640px]">
+          <thead>
+            <tr>
+              {tracks.map((track, tIdx) => {
+                const color = TRACK_ACCENTS[tIdx % TRACK_ACCENTS.length];
+                return (
+                  <th
+                    key={track.id}
+                    className="p-1.5 text-left bg-slate-900 border border-slate-800 align-top"
+                  >
+                    <div
+                      className="h-1 w-full rounded-full mb-1.5"
+                      style={{ backgroundColor: color }}
+                    />
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="font-bold text-slate-100 truncate">{track.name}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-950 text-slate-400">
+                        {track.id}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-slate-500 truncate mt-0.5">
+                      {track.style} • {track.patch}
+                    </div>
+                  </th>
+                );
+              })}
+
+              {/* Master Scene Column Header */}
+              <th className="w-44 p-1.5 text-left bg-slate-900/95 border border-slate-800 align-top">
+                <div className="h-1 w-full rounded-full mb-1.5 bg-emerald-500" />
+                <div className="font-bold text-emerald-400 uppercase tracking-wider text-[11px]">
+                  Master Scenes
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">Row Launchers</div>
+              </th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {sceneRows.map((scene) => {
+              const rowClips = Object.values(scene.clipsByTrack);
+              return (
+                <tr key={scene.index} data-testid={`session-scene-row-${scene.index}`}>
+                  {tracks.map((track, tIdx) => {
+                    const clip = scene.clipsByTrack[track.id];
+                    const isActive = activeClipsByTrack[track.id] === clip?.id && Boolean(clip);
+                    const isSelected = selectedClipId === clip?.id && Boolean(clip);
+                    const accent = TRACK_ACCENTS[tIdx % TRACK_ACCENTS.length];
+
+                    if (!clip) {
+                      return (
+                        <td
+                          key={track.id}
+                          className="p-1 bg-slate-950/60 border border-slate-800/80 h-14 align-middle"
+                        >
+                          <div className="w-full h-full flex items-center justify-between px-2 rounded bg-slate-900/30 hover:bg-slate-900/70 transition-colors">
+                            <button
+                              type="button"
+                              aria-label={`Stop track ${track.id} in scene ${scene.index}`}
+                              onClick={() => onStopTrackClip(track.id)}
+                              className="text-slate-600 hover:text-slate-300 text-[11px] cursor-pointer"
+                              title="Stop Clip on Track"
+                            >
+                              ■
+                            </button>
+                            {onCreateClipInSlot && (
+                              <button
+                                type="button"
+                                aria-label={`Create clip on ${track.id} scene ${scene.index}`}
+                                onClick={() => onCreateClipInSlot(track.id, scene.index)}
+                                className="text-[10px] text-slate-500 hover:text-blue-400 font-semibold cursor-pointer"
+                              >
+                                + Clip
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      );
+                    }
+
+                    return (
+                      <td
+                        key={track.id}
+                        className="p-1 bg-slate-950 border border-slate-800 h-14 align-middle"
+                      >
+                        <div
+                          onClick={() => onSelectClip?.(clip)}
+                          className={`w-full h-full rounded px-2 py-1.5 flex items-center justify-between gap-2 cursor-pointer transition-all border ${
+                            isActive
+                              ? 'bg-emerald-950/60 border-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.25)]'
+                              : isSelected
+                                ? 'bg-slate-800 border-blue-400'
+                                : 'bg-slate-900 hover:bg-slate-800/80 border-slate-700/80'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <button
+                              type="button"
+                              aria-label={`Launch clip ${clip.id}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onLaunchClip(clip);
+                              }}
+                              className={`w-6 h-6 rounded flex items-center justify-center text-xs font-bold shrink-0 cursor-pointer transition-colors ${
+                                isActive
+                                  ? 'bg-emerald-500 text-slate-950'
+                                  : 'bg-slate-800 hover:bg-blue-600 text-white'
+                              }`}
+                              style={!isActive ? { borderLeft: `3px solid ${accent}` } : undefined}
+                              title={`Launch Clip: ${clip.name}`}
+                            >
+                              ▶
+                            </button>
+                            <div className="min-w-0">
+                              <div className="font-semibold text-slate-100 truncate text-[11px]">
+                                {clip.name}
+                              </div>
+                              <div className="text-[10px] text-slate-400 flex items-center gap-1.5">
+                                <span>{clip.bars}b</span>
+                                <span>•</span>
+                                <span>{clip.events.length} ev</span>
+                                {clip.followAction && (
+                                  <span className="text-amber-400" title="Follow Action">
+                                    → {clip.followAction.actionA}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {isActive && (
+                            <span className="text-[9px] uppercase font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 shrink-0">
+                              Active
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    );
+                  })}
+
+                  {/* Master Scene Launch Cell */}
+                  <td className="p-1 bg-slate-900/60 border border-slate-800 h-14 align-middle">
+                    <div className="w-full h-full flex items-center justify-between px-2.5 py-1.5 rounded bg-slate-900 border border-slate-800">
+                      <div className="min-w-0">
+                        <div className="font-bold text-emerald-300 truncate text-[11px]">
+                          {scene.index}. {scene.name}
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          {scene.tempo ? `${scene.tempo} BPM` : `${rowClips.length} Clips`}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        aria-label={`Launch scene ${scene.index}`}
+                        onClick={() => onLaunchScene(scene.index, rowClips, scene.tempo)}
+                        className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] cursor-pointer shrink-0 shadow-sm"
+                        title={`Launch Scene ${scene.index}: ${scene.name}`}
+                      >
+                        ▶ Scene
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+
+            {/* Bottom Track Stop Row */}
+            <tr>
+              {tracks.map((track) => (
+                <td key={track.id} className="p-1.5 bg-slate-900 border border-slate-800">
+                  <button
+                    type="button"
+                    aria-label={`Stop track ${track.id}`}
+                    onClick={() => onStopTrackClip(track.id)}
+                    className="w-full py-1 rounded bg-slate-950 hover:bg-rose-950/50 border border-slate-800 hover:border-rose-500/40 text-slate-400 hover:text-rose-300 text-[10px] font-semibold uppercase tracking-wider transition-colors cursor-pointer"
+                  >
+                    ■ Stop {track.id}
+                  </button>
+                </td>
+              ))}
+              <td className="p-1.5 bg-slate-900 border border-slate-800 text-center">
+                <span className="text-[10px] text-slate-500 uppercase">Track Stop Bar</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+```
+
+### 3.3 `src/components/SplitWorkspace.tsx` - Wire `SessionView` into the Multi-View Workspace
+
+In `src/components/SplitWorkspace.tsx`:
+
+1. Import `SessionView` from `./SessionView`:
+
+```typescript
+import SessionView from './SessionView';
+
+```
+
+2. Add state for `activeClipsByTrack` and `selectedClipId`:
+
+```typescript
+  const [activeClipsByTrack, setActiveClipsByTrack] = useState<Record<string, string>>({});
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+
+```
+
+3. Add handlers for launching clips, launching scenes, stopping track clips, changing launch quantization, and inserting a new clip in an empty slot:
+
+```typescript
+  const handleLaunchClip = async (clip: any) => {
+    setSelectedClipId(clip.id);
+    setActiveClipsByTrack((prev) => ({ ...prev, [clip.trackId]: clip.id }));
+    setIsPlaying(true);
+    try {
+      const compiledScore =
+        compiledScoreState ||
+        incrementalCompiler.getLastCompiledScore() ||
+        incrementalCompiler.compileDocument(sourceCode);
+      await studioAudio.launchClip(compiledScore, clip.id, clip.trackId, clip.events || []);
+    } catch {
+      // Ignore WebAudio absence in headless JSDOM tests
+    }
+  };
+
+  const handleLaunchScene = async (sceneIndex: number, clipsInScene: any[], sceneTempo?: number) => {
+    const nextMap: Record<string, string> = {};
+    const combinedEvents: any[] = [];
+    for (const c of clipsInScene) {
+      nextMap[c.trackId] = c.id;
+      if (c.events) combinedEvents.push(...c.events);
+    }
+    setActiveClipsByTrack(nextMap);
+    setIsPlaying(true);
+    try {
+      const compiledScore =
+        compiledScoreState ||
+        incrementalCompiler.getLastCompiledScore() ||
+        incrementalCompiler.compileDocument(sourceCode);
+      await studioAudio.launchScene(compiledScore, sceneIndex, combinedEvents, nextMap, sceneTempo);
+    } catch {
+      // Ignore WebAudio absence in headless JSDOM tests
+    }
+  };
+
+  const handleStopTrackClip = (trackId: string) => {
+    studioAudio.stopTrackClip(trackId);
+    setActiveClipsByTrack((prev) => {
+      const next = { ...prev };
+      delete next[trackId];
+      if (Object.keys(next).length === 0) {
+        setIsPlaying(false);
+      }
+      return next;
+    });
+  };
+
+  const handleStopAllClips = () => {
+    studioAudio.stop();
+    setActiveClipsByTrack({});
+    setIsPlaying(false);
+    setPlayheadBeat(0);
+  };
+
+  const handleQuantizeLaunchChange = (quantize: string) => {
+    handleUpdateAST({
+      mutationType: 'META_UPDATE',
+      metaKey: 'quantize_launch',
+      metaValue: quantize,
+    });
+  };
+
+  const handleCreateClipInSlot = (trackId: string, sceneIndex: number) => {
+    const newClipId = `${trackId}_s${sceneIndex}`;
+    const snippet = `\n  clip ${newClipId} "${trackId.toUpperCase()} Scene ${sceneIndex}" track=${trackId} scene=${sceneIndex} bars=1 {\n    c4:4 e4:4 g4:2\n  }\n`;
+    const lastBraceIdx = sourceCode.lastIndexOf('}');
+    const nextCode =
+      lastBraceIdx !== -1
+        ? sourceCode.slice(0, lastBraceIdx) + snippet + sourceCode.slice(lastBraceIdx)
+        : `${sourceCode}\n${snippet}`;
+    handleCodeEdit(nextCode);
+  };
+
+```
+
+4. Replace the placeholder `{activeMainView === 'session' && ( ... )}` block in `src/components/SplitWorkspace.tsx` with `<SessionView />`:
+
+```tsx
+            {activeMainView === 'session' && (
+              <SessionView '1/1'} activeClipsByTrack="{activeClipsByTrack}" onLaunchClip="{handleLaunchClip}" onLaunchScene="{handleLaunchScene}" onQuantizeLaunchChange="{handleQuantizeLaunchChange}" onSelectClip="{(clip)" onStopAllClips="{handleStopAllClips}" onStopTrackClip="{handleStopTrackClip}" quantizeLaunch="{compiledScoreState?.meta?.quantizeLaunch" score="{compiledScoreState}" selectedClipId="{selectedClipId}" ||> setSelectedClipId(clip.id)}
+                onCreateClipInSlot={handleCreateClipInSlot}
+              />
+            )}
+
+```
+
+### 3.4 `tests/session_view_launcher.test.tsx` - Create Verification Suite for Session View Matrix & Quantized Launching
+
+Create `tests/session_view_launcher.test.tsx`:
+
+```typescript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import SessionView from '../src/components/SessionView';
+import { DocumentParser } from '../src/parser/DocumentParser';
+import { StudioAudioEngine } from '../src/audio/StudioAudioEngine';
+import '@testing-library/jest-dom';
+
+describe('TDB-707: Session View Clip Matrix & Quantized Scene Launcher', () => {
+  it('renders a 2D track-by-scene matrix from explicit scenes and clips and dispatches clip and scene launches', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Session Launch Test", tempo: 124, time: "4/4", quantize_launch: "1/1" }
+        def lead "Lead Synth" style=synth patch="wavetable"
+        def drums "909 Kit" style=grid patch="tenuto_808_kit"
+
+        scene 1 "Intro" @{ tempo: 124 } {
+          lead: c4:4 e4:4 g4:2 @follow @{bars: 4, actionA: "next"}
+          drums: k:4 s:4 k:4 s:4 |
+        }
+
+        scene 2 "Drop" @{ tempo: 128 } {
+          drums: k:8 k:8 s:4 k:8 k:8 s:4 |
+        }
+      }
+    `);
+
+    const onLaunchClip = vi.fn();
+    const onLaunchScene = vi.fn();
+    const onStopTrackClip = vi.fn();
+    const onCreateClipInSlot = vi.fn();
+
+    render(
+      <SessionView 'scene_1_lead' activeClipsByTrack="{{" lead: onCreateClipInSlot="{onCreateClipInSlot}" onLaunchClip="{onLaunchClip}" onLaunchScene="{onLaunchScene}" onStopAllClips="{vi.fn()}" onStopTrackClip="{onStopTrackClip}" quantizeLaunch="1/1" score="{score}" }}/>
+    );
+
+    // Verify both scene rows render
+    expect(screen.getByTestId('session-scene-row-1')).toBeInTheDocument();
+    expect(screen.getByTestId('session-scene-row-2')).toBeInTheDocument();
+
+    // Launch individual clip scene_1_drums
+    fireEvent.click(screen.getByRole('button', { name: /Launch clip scene_1_drums/i }));
+    expect(onLaunchClip).toHaveBeenCalledWith(expect.objectContaining({ id: 'scene_1_drums', trackId: 'drums' }));
+
+    // Launch Scene 2 row
+    fireEvent.click(screen.getByRole('button', { name: /Launch scene 2/i }));
+    expect(onLaunchScene).toHaveBeenCalledWith(2, expect.any(Array), 128);
+
+    // Scene 2 has an empty slot on 'lead' -> click '+ Clip' to inject code into that slot
+    fireEvent.click(screen.getByRole('button', { name: /Create clip on lead scene 2/i }));
+    expect(onCreateClipInSlot).toHaveBeenCalledWith('lead', 2);
+
+    // Stop track lead
+    fireEvent.click(screen.getByRole('button', { name: /^Stop track lead$/i }));
+    expect(onStopTrackClip).toHaveBeenCalledWith('lead');
+  });
+
+  it('auto-synthesizes virtual launchable scene rows when a score only contains linear measure blocks', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "5.0" {
+        meta @{ title: "Linear Measure Score", tempo: 120, time: "4/4" }
+        def pno "Piano" style=standard patch="salamander_grand"
+        measure 1 { pno: c4:4 d4:4 e4:4 f4:4 | }
+        measure 2 { pno: g4:2 c5:2 | }
+      }
+    `);
+
+    render(
+      <SessionView activeClipsByTrack="{{}}" onLaunchClip="{vi.fn()}" onLaunchScene="{vi.fn()}" onStopAllClips="{vi.fn()}" onStopTrackClip="{vi.fn()}" score="{score}"/>
+    );
+
+    expect(screen.getByTestId('session-scene-row-1')).toBeInTheDocument();
+    expect(screen.getByTestId('session-scene-row-2')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Launch clip virtual_m1_pno/i })).toBeInTheDocument();
+  });
+
+  it('computes accurate quantization boundaries in StudioAudioEngine', () => {
+    const engine = new StudioAudioEngine();
+    expect(engine.computeQuantizeDelaySec('none', 120)).toBe(0);
+    expect(engine.computeQuantizeDelaySec('1/1', 120)).toBe(0); // When stopped, launches immediately (0s delay)
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/`
+* `src/mutator/`
+* `src/components/WebGPUCanvas.tsx`, `src/components/CodeEditor.tsx`, `src/components/Mixer.tsx`, `src/components/Inspector.tsx`, `src/components/Transport.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+* All existing test files in `tests/`
+
+Explicitly:
+
+* Do NOT modify or delete any existing test file in `tests/`.
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero TypeScript errors.
+2. `npx vitest run` passes all existing test suites (`tests/multi_view_shell.test.tsx`, `tests/transport_binding.test.tsx`, `tests/daw_grammar_extension.test.ts`, etc.) plus the new `tests/session_view_launcher.test.tsx` suite.
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. Switching to `Session` view displays the 2D Track-by-Scene Clip Matrix with working clip launch buttons, scene launch buttons, track stop buttons, launch quantization selector, and `+ Clip` slot insertion.
+
+---
+
+## 6. Constraints
+
+Must not:
+
+* Use the word `"Play"` in any button text or `aria-label` inside `SessionView.tsx`.
+* Break `screen.getByTestId('session-view-container')` in `tests/multi_view_shell.test.tsx`.
+
+---
+
+## 7. Manual Steps
+
+None required for this contract.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or remove `src/components/SessionView.tsx` and `tests/session_view_launcher.test.tsx`, and restore `src/audio/StudioAudioEngine.ts` and `src/components/SplitWorkspace.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `src/components/SessionView.tsx`, `tests/session_view_launcher.test.tsx`
+* Modified file(s): `src/audio/StudioAudioEngine.ts`, `src/components/SplitWorkspace.tsx`
+* Commit message: `feat(session): add 2D Session View clip matrix and quantized scene launcher`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Session View (`Tab` View)** | Static list of track name cards | Full 2D Ableton Session View Clip & Scene Matrix with Clip Launch (`▶`), Master Scene Launch (`▶ Scene`), and Track Stop (`■`) buttons |
+| **Linear `.ten` Scores in Session View** | Had 0 scenes unless `scene` blocks were explicitly written | Automatically synthesizes virtual launchable scene rows from `measure` blocks so every song works in Session View immediately |
+| **Empty Clip Slots (`+ Clip`)** | No way to add clips from the grid | Clicking `+ Clip` in any empty slot surgically writes a new `clip` block into `.ten` source code |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-24
+Implementer: AI Agent
+
+```
+
+```

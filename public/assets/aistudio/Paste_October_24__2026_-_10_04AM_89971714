@@ -1,0 +1,1083 @@
+Here is **Implementation Contract #2 (`TDB-702: Surgical Bi-Directional AST Code Mutator`)**, ready to run right after `TDB-701` finishes.
+
+Currently, `TopologicalMutator.ts` only resizes bare `pitch:duration` tokens (stripping any chained modifiers like `.stacc` or `.vol(90)`), `SplitWorkspace.tsx` uses `sourceCode.replace(eventData.rawToken, mutatedToken)` (which always mutates the *first* matching token in the file rather than the specific note you dragged in Measure 8), and `<Inspector/>` is wired to a no-op `onUpdate={() => {}}` callback.
+
+This contract upgrades `TopologicalMutator.ts`, `DocumentParser.ts`, `ASTSerializer.ts`, `ASTCommand.ts`, and `SplitWorkspace.tsx` with exact character-span tracking (`sourceStartOffset`, `sourceEndOffset`, `line`, `col`) and surgical AST patchers for notes, chords, modifiers, mixer faders, sends, FX chains, and `meta` blocks—without ever stripping user `%%` comments or formatting.
+
+Paste the contract below into Google AI Studio once `TDB-701` is complete:
+
+```markdown
+# Implementation Contract: Surgical Bi-Directional AST Code Mutator (TDB-702)
+
+**Project:** Tenuto Studio 5
+**Scope:** Upgrade `src/mutator/TopologicalMutator.ts`, `src/parser/DocumentParser.ts`, `src/parser/ASTSerializer.ts`, `src/commands/ASTCommand.ts`, and `src/components/SplitWorkspace.tsx` with exact character-span tracking (`sourceStartOffset`, `sourceEndOffset`, `line`, `col`), modifier-preserving duration resizing, pitch/chord transposition, token modifier patching, and surgical in-place AST mutations for `meta`, `def`, `group`, `clip`, volume, pan, sends, and `.fx()` chains while preserving user comments and formatting.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+Currently, `src/mutator/TopologicalMutator.ts` only implements `resizeDuration(rawToken, deltaWidth, zScale)` by splitting on `:`, which drops chained modifiers (e.g. `.stacc.vol(90)`) and lacks methods for pitch transposition, velocity/modifier editing, or document-level DAW mutations. Furthermore, `src/components/SplitWorkspace.tsx` applies canvas edits using `sourceCode.replace(eventData.rawToken, mutatedToken)`—which erroneously mutates the *first* occurrence of a token in the file instead of the dragged note's exact span—and passes a no-op `onUpdate={() => {}}` to `<Inspector />`.
+
+This contract:
+1. Tracks exact source character offsets (`sourceStartOffset`, `sourceEndOffset`, `line`, `col`) on compiled `AtomicEvent` objects in `src/parser/ASTSerializer.ts` and `src/parser/DocumentParser.ts`.
+2. Upgrades `src/mutator/TopologicalMutator.ts` with modifier-safe duration resizing, single-note and chord pitch transposition (`transposePitch`), surgical modifier/velocity patching (`mutateTokenModifiers`), span-exact source replacement (`replaceEventInSource`), and comment-preserving DAW block mutators (`applyMixerMutationToSource`).
+3. Upgrades `src/commands/ASTCommand.ts` with optional command-merge keys (`mergeKey`) and wires `Inspector` and `WebGPUCanvas` mutations in `src/components/SplitWorkspace.tsx` to update exact source spans.
+
+---
+
+## 2. Root Cause
+1. `src/mutator/TopologicalMutator.ts` splits `rawToken` on `:` without separating chained dot modifiers (`.stacc`, `.pan()`, `.fx()`), causing resize operations on modified tokens to throw or lose their modifiers.
+2. `src/components/SplitWorkspace.tsx` (line 183) uses `sourceCode.replace(eventData.rawToken, mutatedToken)`, which always replaces the first matching substring in the document rather than the specific token at the dragged event's character offset.
+3. `src/components/SplitWorkspace.tsx` (line 239) passes `onUpdate={() => {}}` to `<Inspector />`, preventing Inspector duration and velocity edits from updating the `.ten` source code.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/parser/ASTSerializer.ts` - Add `sourceStartOffset` and `sourceEndOffset` to `AtomicEvent`
+In `src/parser/ASTSerializer.ts`, add `sourceStartOffset?: number;` and `sourceEndOffset?: number;` to the `AtomicEvent` interface:
+
+```typescript
+export interface AtomicEvent {
+  pitch: PitchResult;
+  duration: TemporalResult;
+  startTime?: { numerator: number; denominator: number };
+  rawToken?: string;
+  trackId?: string;
+  voiceId?: string;
+  measureNumber?: number;
+  clipId?: string;
+  sceneIndex?: number;
+  style?: string;
+  patch?: string;
+  env?: Record<string, string>;
+  line?: number;
+  col?: number;
+  sourceStartOffset?: number;
+  sourceEndOffset?: number;
+  physics?: EventPhysics;
+  astNodeId?: string;
+}
+
+```
+
+### 3.2 `src/parser/DocumentParser.ts` - Populate Line, Column, and Character Offsets on Compiled Events
+
+In `src/parser/DocumentParser.ts`, add a post-processing pass `attachSourceLocations(rawSource: string, events: AtomicEvent[]): void` and invoke it before returning from `compile(rawSource: string)` so every event in both Sketch Mode and Full Document Mode carries its exact `sourceStartOffset`, `sourceEndOffset`, `line`, and `col` within the source string.
+
+Add the following method to `DocumentParser` in `src/parser/DocumentParser.ts` (right above `mergeTiedEvents`):
+
+```typescript
+  /**
+   * Maps each compiled AtomicEvent in order to its exact character span (`sourceStartOffset`, `sourceEndOffset`)
+   * and 1-based `(line, col)` coordinates in the raw source string, skipping comments (`%%` and `//`).
+   */
+  private attachSourceLocations(rawSource: string, events: AtomicEvent[]): void {
+    if (!rawSource || events.length === 0) return;
+
+    const lineStarts: number[] = [0];
+    for (let i = 0; i < rawSource.length; i++) {
+      if (rawSource[i] === '\n') {
+        lineStarts.push(i + 1);
+      }
+    }
+
+    const offsetToLineCol = (offset: number): { line: number; col: number } => {
+      let low = 0;
+      let high = lineStarts.length - 1;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (lineStarts[mid] <= offset) {
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+      const lineIdx = Math.max(0, high);
+      return {
+        line: lineIdx + 1,
+        col: offset - lineStarts[lineIdx] + 1,
+      };
+    };
+
+    let searchCursor = 0;
+    let lastRawToken = '';
+    let lastFoundStart = -1;
+    let lastFoundEnd = -1;
+
+    for (const ev of events) {
+      const tokenStr = ev.rawToken;
+      if (!tokenStr) continue;
+
+      // Chords share the same rawToken across simultaneous chord notes at the same startTime
+      if (
+        tokenStr === lastRawToken &&
+        lastFoundStart !== -1 &&
+        tokenStr.startsWith('[')
+      ) {
+        ev.sourceStartOffset = lastFoundStart;
+        ev.sourceEndOffset = lastFoundEnd;
+        const loc = offsetToLineCol(lastFoundStart);
+        ev.line = loc.line;
+        ev.col = loc.col;
+        continue;
+      }
+
+      let foundIdx = -1;
+      let probe = searchCursor;
+      while (probe < rawSource.length) {
+        const idx = rawSource.indexOf(tokenStr, probe);
+        if (idx === -1) break;
+
+        // Ensure match is not inside a %% or // comment on the same line
+        const { line } = offsetToLineCol(idx);
+        const lineStart = lineStarts[line - 1];
+        const linePrefix = rawSource.slice(lineStart, idx);
+        if (linePrefix.includes('%%') || linePrefix.includes('//')) {
+          const nextNl = rawSource.indexOf('\n', idx);
+          if (nextNl === -1) break;
+          probe = nextNl + 1;
+          continue;
+        }
+
+        const charBefore = idx > 0 ? rawSource[idx - 1] : ' ';
+        const endIdx = idx + tokenStr.length;
+        const charAfter = endIdx < rawSource.length ? rawSource[endIdx] : ' ';
+        const validBefore = /[\s:{\[(\vert{}<>]/.test(charBefore); const validAfter = /[\s\vert{}}\])>~]/.test(charAfter);
+
+        if (validBefore && validAfter) {
+          foundIdx = idx;
+          break;
+        }
+        probe = idx + 1;
+      }
+
+      if (foundIdx !== -1) {
+        ev.sourceStartOffset = foundIdx;
+        ev.sourceEndOffset = foundIdx + tokenStr.length;
+        const loc = offsetToLineCol(foundIdx);
+        ev.line = loc.line;
+        ev.col = loc.col;
+        lastRawToken = tokenStr;
+        lastFoundStart = foundIdx;
+        lastFoundEnd = foundIdx + tokenStr.length;
+        searchCursor = foundIdx + tokenStr.length;
+      }
+    }
+  }
+
+```
+
+And in `DocumentParser.compile(rawSource: string)`:
+
+1. In the Sketch Mode return block, call `const mergedSketchEvents = this.mergeTiedEvents(allEvents); this.attachSourceLocations(rawSource, mergedSketchEvents);` and return `events: mergedSketchEvents`.
+2. At the bottom of `compile(rawSource: string)`, call `const mergedEvents = this.mergeTiedEvents(allEvents); this.attachSourceLocations(rawSource, mergedEvents);` and return `events: mergedEvents`.
+
+### 3.3 `src/mutator/TopologicalMutator.ts` - Full Surgical Bi-Directional AST Code Mutator
+
+Replace the entire contents of `src/mutator/TopologicalMutator.ts` with the following implementation:
+
+```typescript
+import { TemporalEngine } from '../parser/TemporalEngine';
+import { PitchEngine } from '../parser/PitchEngine';
+
+export interface TokenModifierPatch {
+  duration?: string;
+  velocity?: number;
+  pan?: number;
+  chance?: number;
+  articulation?: string | null;
+}
+
+export interface MixerASTMutation {
+  mutationType:
+    | 'VOLUME_UPDATE'
+    | 'PAN_UPDATE'
+    | 'ADD_FX'
+    | 'REMOVE_FX'
+    | 'SEND_UPDATE'
+    | 'META_SIDECHAIN_UPDATE'
+    | 'META_UPDATE'
+    | string;
+  trackId?: string;
+  value?: number | string;
+  fxType?: string;
+  fxParams?: Record<string, any>;
+  sendId?: string;
+  sendLevel?: number;
+  source?: string;
+  target?: string;
+  metaKey?: string;
+  metaValue?: string | number | boolean;
+  expectedSyntax?: string;
+}
+
+const SHARP_NOTES = ['c', 'c#', 'd', 'd#', 'e', 'f', 'f#', 'g', 'g#', 'a', 'a#', 'b'];
+const FLAT_NOTES = ['c', 'db', 'd', 'eb', 'e', 'f', 'gb', 'g', 'ab', 'a', 'bb', 'b'];
+
+export class TopologicalMutator {
+  private temporalEngine: TemporalEngine;
+  private pitchEngine: PitchEngine;
+
+  constructor() {
+    this.temporalEngine = new TemporalEngine();
+    this.pitchEngine = new PitchEngine();
+  }
+
+  private gcd(a: number, b: number): number {
+    return b === 0 ? a : this.gcd(b, a % b);
+  }
+
+  private approximateFraction(val: number, maxDenominator: number = 128) {
+    let bestNum = 1;
+    let bestDen = 1;
+    let minError = Infinity;
+
+    for (let den = 1; den <= maxDenominator; den++) {
+      const num = Math.round(val * den);
+      const error = Math.abs(val - num / den);
+      if (error < minError) {
+        minError = error;
+        bestNum = num;
+        bestDen = den;
+      }
+    }
+    return { numerator: bestNum, denominator: bestDen };
+  }
+
+  /**
+   * Splits a raw token (e.g. `c4:4.stacc.vol(90)` or `[c4 e4 g4]:2.fx(reverb, @{mix: 0.4})~`)
+   * into its pitch/chord core, duration string, chained modifiers, and trailing tie flag.
+   */
+  public decomposeToken(rawToken: string): {
+    pitchPart: string;
+    durationPart: string | null;
+    modifiers: string[];
+    hasTie: boolean;
+  } {
+    const trimmed = rawToken.trim();
+    const hasTie = trimmed.includes('~');
+    const withoutTie = trimmed.replace(/~/g, '');
+
+    const modifiers: string[] = [];
+    let current = '';
+    let parenDepth = 0;
+    let braceDepth = 0;
+    let bracketDepth = 0;
+    let inQuotes = false;
+    let core: string | null = null;
+
+    for (let i = 0; i < withoutTie.length; i++) {
+      const ch = withoutTie[i];
+      if (ch === '"' && withoutTie[i - 1] !== '\\') inQuotes = !inQuotes;
+      if (!inQuotes) {
+        if (ch === '(') parenDepth++;
+        else if (ch === ')') parenDepth = Math.max(0, parenDepth - 1);
+        else if (ch === '{') braceDepth++;
+        else if (ch === '}') braceDepth = Math.max(0, braceDepth - 1);
+        else if (ch === '[') bracketDepth++;
+        else if (ch === ']') bracketDepth = Math.max(0, bracketDepth - 1);
+      }
+
+      if (
+        ch === '.' &&
+        !inQuotes &&
+        parenDepth === 0 &&
+        braceDepth === 0 &&
+        bracketDepth === 0
+      ) {
+        const nextChar = withoutTie[i + 1] || '';
+        const isDottedDuration =
+          core === null &&
+          current.includes(':') &&
+          (nextChar === '' || nextChar === '.' || nextChar === '*');
+
+        if (isDottedDuration) {
+          current += ch;
+          continue;
+        }
+
+        if (core === null) {
+          core = current;
+          current = '';
+        } else if (current.length > 0) {
+          modifiers.push(current);
+          current = '';
+        }
+        continue;
+      }
+
+      current += ch;
+    }
+
+    if (core === null) {
+      core = current;
+    } else if (current.length > 0) {
+      modifiers.push(current);
+    }
+
+    const colonIdx = core.indexOf(':');
+    if (colonIdx === -1) {
+      return { pitchPart: core, durationPart: null, modifiers, hasTie };
+    }
+
+    return {
+      pitchPart: core.slice(0, colonIdx),
+      durationPart: core.slice(colonIdx + 1),
+      modifiers,
+      hasTie,
+    };
+  }
+
+  public recomposeToken(parts: {
+    pitchPart: string;
+    durationPart: string | null;
+    modifiers: string[];
+    hasTie: boolean;
+  }): string {
+    const durSuffix = parts.durationPart ? `:${parts.durationPart}` : '';
+    const isDottedDur = parts.durationPart?.endsWith('.') ?? false;
+    const modSuffix =
+      parts.modifiers.length > 0
+        ? (isDottedDur ? '..' : '.') + parts.modifiers.join('.')
+        : '';
+    const tieSuffix = parts.hasTie ? '~' : '';
+    return `${parts.pitchPart}${durSuffix}${modSuffix}${tieSuffix}`;
+  }
+
+  public resizeDuration(rawToken: string, deltaWidth: number, zScale: number): string {
+    const { pitchPart, durationPart, modifiers, hasTie } = this.decomposeToken(rawToken);
+
+    if (!durationPart) {
+      throw new Error(`Invalid token format, missing duration: ${rawToken}`);
+    }
+
+    const { numerator: N1, denominator: D1 } = this.temporalEngine.parseDuration(':' + durationPart);
+
+    const dragRatio = deltaWidth / zScale;
+    const { numerator: N2, denominator: D2 } = this.approximateFraction(dragRatio, 128);
+
+    let newNum = N1 * D2 + N2 * D1;
+    let newDen = D1 * D2;
+
+    if (newNum <= 0) {
+      newNum = 1;
+      newDen = 64;
+    }
+
+    const divisor = this.gcd(Math.abs(newNum), Math.abs(newDen));
+    newNum /= divisor;
+    newDen /= divisor;
+
+    const newDurationPart = newNum === 1 ? `${newDen}` : `${newNum}/${newDen}`;
+
+    return this.recomposeToken({
+      pitchPart,
+      durationPart: newDurationPart,
+      modifiers,
+      hasTie,
+    });
+  }
+
+  public midiToPitchLiteral(midi: number, preferFlats: boolean = false): string {
+    const clamped = Math.max(0, Math.min(127, Math.round(midi)));
+    const octave = Math.floor(clamped / 12) - 1;
+    const noteIdx = clamped % 12;
+    const step = preferFlats ? FLAT_NOTES[noteIdx] : SHARP_NOTES[noteIdx];
+    return `${step}${octave}`;
+  }
+
+  /**
+   * Transposes a single note token (`c4:4.stacc`) or chord token (`[c4 e4 g4]:2.mf`)
+   * by `semitoneDelta` semitones while preserving duration, modifiers, and ties.
+   */
+  public transposePitch(rawToken: string, semitoneDelta: number, preferFlats?: boolean): string {
+    if (semitoneDelta === 0) return rawToken;
+    const { pitchPart, durationPart, modifiers, hasTie } = this.decomposeToken(rawToken);
+
+    const useFlats =
+      preferFlats !== undefined
+        ? preferFlats
+        : /[a-g]b\d*/i.test(pitchPart) && !pitchPart.includes('#');
+
+    if (pitchPart.startsWith('[') && pitchPart.endsWith(']')) {
+      const innerNotes = pitchPart
+        .slice(1, -1)
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      this.pitchEngine.reset(4);
+      const transposedNotes = innerNotes.map((n) => {
+        const parsed = this.pitchEngine.parsePitch(n);
+        if (parsed.isRest || parsed.isSpacer || parsed.gridKey) return n;
+        return this.midiToPitchLiteral(parsed.midi + semitoneDelta, useFlats);
+      });
+      return this.recomposeToken({
+        pitchPart: `[${transposedNotes.join(' ')}]`,
+        durationPart,
+        modifiers,
+        hasTie,
+      });
+    }
+
+    this.pitchEngine.reset(4);
+    const parsed = this.pitchEngine.parsePitch(pitchPart);
+    if (parsed.isRest || parsed.isSpacer || parsed.gridKey) {
+      return rawToken;
+    }
+
+    const nextPitch = this.midiToPitchLiteral(parsed.midi + semitoneDelta, useFlats);
+    return this.recomposeToken({
+      pitchPart: nextPitch,
+      durationPart,
+      modifiers,
+      hasTie,
+    });
+  }
+
+  /**
+   * Surgically updates duration, velocity, pan, probability, or articulation on a token
+   * without clobbering unrelated chained modifiers.
+   */
+  public mutateTokenModifiers(rawToken: string, patch: TokenModifierPatch): string {
+    const parts = this.decomposeToken(rawToken);
+
+    if (patch.duration !== undefined) {
+      const cleanDur = patch.duration.replace(/^:/, '').trim();
+      if (cleanDur.startsWith('1/')) {
+        parts.durationPart = cleanDur.slice(2);
+      } else {
+        parts.durationPart = cleanDur;
+      }
+    }
+
+    let mods = [...parts.modifiers];
+
+    if (patch.velocity !== undefined) {
+      const clampedVel = Math.max(0, Math.min(127, Math.round(patch.velocity)));
+      mods = mods.filter(
+        (m) =>
+          !['pp', 'p', 'mp', 'mf', 'f', 'ff', 'sfz'].includes(m) &&
+          !m.startsWith('vol(')
+      );
+      mods.push(`vol(${clampedVel})`);
+    }
+
+    if (patch.pan !== undefined) {
+      const clampedPan = Math.max(-1, Math.min(1, Number(patch.pan.toFixed(2))));
+      mods = mods.filter((m) => !m.startsWith('pan('));
+      mods.push(`pan(${clampedPan})`);
+    }
+
+    if (patch.chance !== undefined) {
+      const clampedChance = Math.max(0, Math.min(100, Math.round(patch.chance)));
+      mods = mods.filter((m) => !m.startsWith('chance(') && !m.startsWith('prob('));
+      mods.push(`chance(${clampedChance}%)`);
+    }
+
+    if (patch.articulation !== undefined) {
+      mods = mods.filter(
+        (m) =>
+          !['stacc', 'staccato', 'marc', 'ten', 'tenuto', 'accent', 'legato', 'slur', 'pizz'].includes(m)
+      );
+      if (patch.articulation) {
+        mods.unshift(patch.articulation);
+      }
+    }
+
+    parts.modifiers = mods;
+    return this.recomposeToken(parts);
+  }
+
+  /**
+   * Replaces a specific event's token in `sourceCode` using its exact character span
+   * (`sourceStartOffset`..`sourceEndOffset`) or `(line, col)` coordinates, falling back
+   * to substring replacement only when span metadata is absent.
+   */
+  public replaceEventInSource(
+    sourceCode: string,
+    event: {
+      rawToken?: string;
+      sourceStartOffset?: number;
+      sourceEndOffset?: number;
+      line?: number;
+      col?: number;
+    },
+    mutatedToken: string
+  ): string {
+    if (!event || !event.rawToken) return sourceCode;
+
+    // 1. Exact character offset replacement
+    if (
+      typeof event.sourceStartOffset === 'number' &&
+      typeof event.sourceEndOffset === 'number' &&
+      event.sourceStartOffset >= 0 &&
+      event.sourceEndOffset <= sourceCode.length
+    ) {
+      const sliceAtSpan = sourceCode.slice(event.sourceStartOffset, event.sourceEndOffset);
+      if (sliceAtSpan === event.rawToken) {
+        return (
+          sourceCode.slice(0, event.sourceStartOffset) +
+          mutatedToken +
+          sourceCode.slice(event.sourceEndOffset)
+        );
+      }
+    }
+
+    // 2. 1-based Line & Column coordinate replacement
+    if (typeof event.line === 'number' && event.line >= 1) {
+      const lines = sourceCode.split('\n');
+      const lineIdx = event.line - 1;
+      if (lineIdx < lines.length) {
+        const lineText = lines[lineIdx];
+        const colIdx = typeof event.col === 'number' && event.col >= 1 ? event.col - 1 : 0;
+        if (lineText.slice(colIdx, colIdx + event.rawToken.length) === event.rawToken) {
+          lines[lineIdx] =
+            lineText.slice(0, colIdx) +
+            mutatedToken +
+            lineText.slice(colIdx + event.rawToken.length);
+          return lines.join('\n');
+        }
+        const tokenIdxInLine = lineText.indexOf(event.rawToken);
+        if (tokenIdxInLine !== -1) {
+          lines[lineIdx] =
+            lineText.slice(0, tokenIdxInLine) +
+            mutatedToken +
+            lineText.slice(tokenIdxInLine + event.rawToken.length);
+          return lines.join('\n');
+        }
+      }
+    }
+
+    // 3. Fallback first-match replacement
+    return sourceCode.replace(event.rawToken, mutatedToken);
+  }
+
+  /**
+   * Surgically mutates `meta`, `var <track>_vol`, or `def <track>` lines in `sourceCode`
+   * when the Mixer, Device Rack, or Transport dispatches an AST update, preserving all
+   * user comments (`%%`) and document formatting.
+   */
+  public applyMixerMutationToSource(sourceCode: string, mutation: MixerASTMutation): string {
+    if (!sourceCode.trim()) return sourceCode;
+
+    // 1. Meta block updates (sidechain, tempo, key, scale, crossfader, quantize_launch)
+    if (
+      mutation.mutationType === 'META_SIDECHAIN_UPDATE' ||
+      mutation.mutationType === 'META_UPDATE'
+    ) {
+      const key =
+        mutation.mutationType === 'META_SIDECHAIN_UPDATE'
+          ? 'sidechain'
+          : mutation.metaKey || 'tempo';
+      const rawVal =
+        mutation.mutationType === 'META_SIDECHAIN_UPDATE'
+          ? mutation.source ?? ''
+          : mutation.metaValue ?? '';
+      const formattedVal =
+        typeof rawVal === 'string' ? `"${rawVal}"` : String(rawVal);
+
+      const metaRegex = /(\bmeta\s*@\{)([^}]*)(\})/i;
+      const match = sourceCode.match(metaRegex);
+      if (match) {
+        const body = match[2];
+        const keyRegex = new RegExp(`(\\b${key}\\s*:\\s*)("[^"]*"|[^,\\s}]+)`, 'i');
+        let nextBody: string;
+        if (keyRegex.test(body)) {
+          nextBody = body.replace(keyRegex, `$1${formattedVal}`);
+        } else {
+          const trimmedBody = body.trim();
+          nextBody = trimmedBody
+            ? ` ${trimmedBody}, ${key}: ${formattedVal} `
+            : ` ${key}: ${formattedVal} `;
+        }
+        return sourceCode.replace(metaRegex, `$1${nextBody}$3`);
+      }
+      return sourceCode;
+    }
+
+    const trackId = mutation.trackId;
+    if (!trackId) return sourceCode;
+
+    // 2. Track Volume update (`var <trackId>_vol = <val>` or `vol=<val>` on `def <trackId>`)
+    if (mutation.mutationType === 'VOLUME_UPDATE' && mutation.value !== undefined) {
+      const vol = Math.max(0, Math.min(127, Math.round(Number(mutation.value))));
+      const varRegex = new RegExp(`(\\bvar\\s+${trackId}_vol\\s*=\\s*)(\\d+)`);
+      if (varRegex.test(sourceCode)) {
+        return sourceCode.replace(varRegex, `$1${vol}`);
+      }
+
+      const defVolRegex = new RegExp(
+        `(^\\s*def\\s+${trackId}\\b[^\\n]*?\\bvol(?:ume)?\\s*=\\s*)(\\d+)`,
+        'm'
+      );
+      if (defVolRegex.test(sourceCode)) {
+        return sourceCode.replace(defVolRegex, `$1${vol}`);
+      }
+
+      const defLineRegex = new RegExp(`(^\\s*def\\s+${trackId}\\b[^\\n]*$)`, 'm');
+      if (defLineRegex.test(sourceCode)) {
+        return sourceCode.replace(defLineRegex, `var ${trackId}_vol = ${vol}\n$1`);
+      }
+      return sourceCode;
+    }
+
+    // 3. Track Pan update (`pan=<val>` on `def <trackId>`)
+    if (mutation.mutationType === 'PAN_UPDATE' && mutation.value !== undefined) {
+      const pan = Math.max(-1, Math.min(1, Number(Number(mutation.value).toFixed(2))));
+      const defPanRegex = new RegExp(
+        `(^\\s*def\\s+${trackId}\\b[^\\n]*?\\bpan\\s*=\\s*)(-?\\d+(?:\\.\\d+)?)`,
+        'm'
+      );
+      if (defPanRegex.test(sourceCode)) {
+        return sourceCode.replace(defPanRegex, `$1${pan}`);
+      }
+
+      const defLineRegex = new RegExp(`(^\\s*def\\s+${trackId}\\b[^\\n]*?)(?=\\s*(?:%%|\\/\\/|$))`, 'm');
+      if (defLineRegex.test(sourceCode)) {
+        return sourceCode.replace(defLineRegex, `$1 pan=${pan}`);
+      }
+      return sourceCode;
+    }
+
+    // 4. Add FX to Track (`def <trackId> ... .fx(type, @{mix: 0.5})`)
+    if (mutation.mutationType === 'ADD_FX' && mutation.fxType) {
+      const params = mutation.fxParams || { mix: 0.5 };
+      const paramPairs = Object.entries(params)
+        .map(([k, v]) => `${k}: ${typeof v === 'string' ? `"${v}"` : v}`)
+        .join(', ');
+      const fxString =
+        mutation.expectedSyntax || `.fx(${mutation.fxType}, @{${paramPairs}})`;
+
+      const defLineRegex = new RegExp(
+        `(^\\s*(?:def|def_return|return|group)\\s+${trackId}\\b[^\\n]*?)(?=\\s*(?:%%|\\/\\/|$))`,
+        'm'
+      );
+      if (defLineRegex.test(sourceCode)) {
+        return sourceCode.replace(defLineRegex, `$1 ${fxString}`);
+      }
+      return sourceCode;
+    }
+
+    // 5. Update Send level on `def <trackId>` (`sends=@{rev_bus: 0.5}`)
+    if (
+      mutation.mutationType === 'SEND_UPDATE' &&
+      mutation.sendId &&
+      mutation.sendLevel !== undefined
+    ) {
+      const level = Math.max(0, Math.min(1, Number(mutation.sendLevel.toFixed(2))));
+      const defSendsRegex = new RegExp(
+        `(^\\s*def\\s+${trackId}\\b[^\\n]*?\\bsends\\s*=\\s*@\\{)([^}]*)(\\})`,
+        'm'
+      );
+      const sendMatch = sourceCode.match(defSendsRegex);
+      if (sendMatch) {
+        const body = sendMatch[2];
+        const keyRegex = new RegExp(`(\\b${mutation.sendId}\\s*:\\s*)(-?\\d+(?:\\.\\d+)?)`);
+        const nextBody = keyRegex.test(body)
+          ? body.replace(keyRegex, `$1${level}`)
+          : `${body.trim() ? body.trim() + ', ' : ''}${mutation.sendId}: ${level}`;
+        return sourceCode.replace(defSendsRegex, `$1${nextBody}$3`);
+      }
+
+      const defLineRegex = new RegExp(`(^\\s*def\\s+${trackId}\\b[^\\n]*?)(?=\\s*(?:%%|\\/\\/|$))`, 'm');
+      if (defLineRegex.test(sourceCode)) {
+        return sourceCode.replace(defLineRegex, `$1 sends=@{${mutation.sendId}: ${level}}`);
+      }
+    }
+
+    return sourceCode;
+  }
+}
+
+```
+
+### 3.4 `src/commands/ASTCommand.ts` & `src/commands/CommandManager.ts` - Support Surgical Execute/Undo Callbacks & Optional Command Merging
+
+1. Update `src/commands/ASTCommand.ts` so `ASTCommand` can optionally accept `onExecute` and `onUndo` callbacks and a `mergeKey` while preserving `new ASTCommand(payload)` for all existing tests:
+
+```typescript
+import { MutationCommand } from './CommandManager';
+
+export class ASTCommand implements MutationCommand {
+  public payload: string;
+  public previousPayload?: string;
+  public mergeKey?: string;
+  private onExecuteCallback?: (nextCode: string) => void;
+  private onUndoCallback?: (prevCode: string) => void;
+
+  constructor(
+    payload: string,
+    previousPayload?: string,
+    onExecuteCallback?: (nextCode: string) => void,
+    onUndoCallback?: (prevCode: string) => void,
+    mergeKey?: string
+  ) {
+    this.payload = payload;
+    this.previousPayload = previousPayload;
+    this.onExecuteCallback = onExecuteCallback;
+    this.onUndoCallback = onUndoCallback;
+    this.mergeKey = mergeKey;
+  }
+
+  public execute(): void {
+    if (this.onExecuteCallback) {
+      this.onExecuteCallback(this.payload);
+    }
+  }
+
+  public undo(): void {
+    if (this.onUndoCallback && this.previousPayload !== undefined) {
+      this.onUndoCallback(this.previousPayload);
+    }
+  }
+}
+
+```
+
+2. Update `src/commands/CommandManager.ts` to support optional `mergeKey` coalescing when `mergeKey` is explicitly set on consecutive commands, while keeping unkeyed commands 100% separate for `tests/command_manager.test.ts`:
+
+```typescript
+export interface MutationCommand {
+  mergeKey?: string;
+  execute(): void;
+  undo(): void;
+}
+
+export class CommandManager {
+  private undoStack: MutationCommand[] = [];
+  private redoStack: MutationCommand[] = [];
+
+  public executeCommand(command: MutationCommand): void {
+    command.execute();
+
+    const top = this.undoStack[this.undoStack.length - 1];
+    if (command.mergeKey && top && top.mergeKey === command.mergeKey) {
+      const originalUndo = top.undo.bind(top);
+      const latestExecute = command.execute.bind(command);
+      this.undoStack[this.undoStack.length - 1] = {
+        mergeKey: command.mergeKey,
+        execute: latestExecute,
+        undo: originalUndo,
+      };
+    } else {
+      this.undoStack.push(command);
+    }
+
+    this.redoStack = [];
+  }
+
+  public undo(): void {
+    const command = this.undoStack.pop();
+    if (command) {
+      command.undo();
+      this.redoStack.push(command);
+    }
+  }
+
+  public redo(): void {
+    const command = this.redoStack.pop();
+    if (command) {
+      command.execute();
+      this.undoStack.push(command);
+    }
+  }
+
+  public getUndoDepth(): number {
+    return this.undoStack.length;
+  }
+
+  public getRedoDepth(): number {
+    return this.redoStack.length;
+  }
+}
+
+```
+
+### 3.5 `src/components/WebGPUCanvas.tsx` - Include `sourceStartOffset` and `sourceEndOffset` in `onSelect` Payload
+
+In `src/components/WebGPUCanvas.tsx`, inside `visibleEvents.map((ev, idx) => { ... })`, include `sourceStartOffset` and `sourceEndOffset` in the object passed to `onSelectRef.current`:
+
+```typescript
+              onClick={() =>
+                onSelectRef.current?.({
+                  type: 'PitchLit',
+                  duration: `${ev.duration?.numerator || 1}/${ev.duration?.denominator || 4}`,
+                  velocity: ev.physics?.velocity ?? 80,
+                  line: ev.line ?? 1,
+                  col: ev.col ?? 1,
+                  rawToken: ev.rawToken,
+                  trackId: ev.trackId,
+                  sourceStartOffset: ev.sourceStartOffset,
+                  sourceEndOffset: ev.sourceEndOffset,
+                })
+              }
+
+```
+
+### 3.6 `src/components/SplitWorkspace.tsx` - Wire Span-Exact Canvas & Inspector Mutations to `.ten` Source Code
+
+In `src/components/SplitWorkspace.tsx`, update `handleCanvasMutation` to use `topologicalMutator.replaceEventInSource(sourceCode, eventData, mutatedToken)` and add `handleInspectorUpdate` wired to `<Inspector selection={activeSelection} onUpdate={handleInspectorUpdate} />`:
+
+Replace `handleCanvasMutation` (lines 179–193) in `src/components/SplitWorkspace.tsx` with:
+
+```typescript
+  const handleCanvasMutation = (eventData: any, deltaX: number) => {
+    if (!eventData || !eventData.rawToken) return;
+    try {
+      const mutatedToken = topologicalMutator.resizeDuration(eventData.rawToken, deltaX, 100);
+      const nextCode = topologicalMutator.replaceEventInSource(sourceCode, eventData, mutatedToken);
+      const prevCode = sourceCode;
+      const cmd = new ASTCommand(nextCode);
+      cmd.execute = () => setSourceCode(nextCode);
+      cmd.undo = () => setSourceCode(prevCode);
+      commandManager.executeCommand(cmd);
+    } catch {
+      // Ignore invalid resize bounds
+    }
+  };
+
+  const handleInspectorUpdate = (updates: any) => {
+    if (!activeSelection || !activeSelection.rawToken) return;
+    try {
+      const mutatedToken = topologicalMutator.mutateTokenModifiers(activeSelection.rawToken, {
+        duration: updates.duration,
+        velocity: updates.velocity,
+      });
+      const nextCode = topologicalMutator.replaceEventInSource(sourceCode, activeSelection, mutatedToken);
+      const prevCode = sourceCode;
+      const nextSelection = {
+        ...activeSelection,
+        ...updates,
+        rawToken: mutatedToken,
+        sourceEndOffset:
+          typeof activeSelection.sourceStartOffset === 'number'
+            ? activeSelection.sourceStartOffset + mutatedToken.length
+            : undefined,
+      };
+      const prevSelection = { ...activeSelection };
+
+      commandManager.executeCommand({
+        execute: () => {
+          setSourceCode(nextCode);
+          setActiveSelection(nextSelection);
+        },
+        undo: () => {
+          setSourceCode(prevCode);
+          setActiveSelection(prevSelection);
+        },
+      });
+    } catch {
+      // Ignore invalid inspector token updates
+    }
+  };
+
+```
+
+And in the JSX at the bottom of `src/components/SplitWorkspace.tsx`, replace:
+
+```tsx
+        <Inspector onUpdate="{()" selection="{activeSelection}"> {}} />
+
+```
+
+with:
+
+```tsx
+        <Inspector onUpdate="{handleInspectorUpdate}" selection="{activeSelection}"/>
+
+```
+
+### 3.7 `tests/surgical_ast_mutator.test.ts` - Add Verification Suite for Bi-Directional Surgical AST Mutations
+
+Create `tests/surgical_ast_mutator.test.ts`:
+
+```typescript
+import { describe, it, expect, beforeEach } from 'vitest';
+import { TopologicalMutator } from '../src/mutator/TopologicalMutator';
+import { DocumentParser } from '../src/parser/DocumentParser';
+
+describe('TDB-702: Surgical Bi-Directional AST Code Mutator', () => {
+  let mutator: TopologicalMutator;
+  let parser: DocumentParser;
+
+  beforeEach(() => {
+    mutator = new TopologicalMutator();
+    parser = new DocumentParser();
+  });
+
+  it('preserves chained dot modifiers and ties when resizing a token duration', () => {
+    const resized = mutator.resizeDuration('c4:4.stacc.vol(95).pan(-0.3)~', 12.5, 100);
+    expect(resized).toBe('c4:3/8.stacc.vol(95).pan(-0.3)~');
+  });
+
+  it('transposes single notes and multi-note chords while preserving durations and modifiers', () => {
+    expect(mutator.transposePitch('c4:8.stacc.mf', 2)).toBe('d4:8.stacc.mf');
+    expect(mutator.transposePitch('eb4:4.vib', -2, true)).toBe('db4:4.vib');
+    expect(mutator.transposePitch('[c4 e4 g4]:2.fx(reverb, @{mix: 0.4})', 2)).toBe(
+      '[d4 f#4 a4]:2.fx(reverb, @{mix: 0.4})'
+    );
+  });
+
+  it('surgically patches duration, velocity, pan, chance, and articulation on a token', () => {
+    const token = 'a4:4.stacc.mf.pan(-0.2)';
+    const updated = mutator.mutateTokenModifiers(token, {
+      duration: '1/8',
+      velocity: 112,
+      pan: 0.45,
+      chance: 80,
+      articulation: 'legato',
+    });
+    expect(updated).toBe('a4:8.legato.pan(0.45).vol(112).chance(80%)');
+  });
+
+  it('replaces the exact token instance at its character span in a multi-measure score without touching earlier identical tokens or comments', () => {
+    const source = `tenuto "6.0" {
+  %% User comment that must be preserved!
+  meta @{ title: "Span Test", tempo: 120, time: "4/4" }
+  def pno "Grand Piano" style=standard patch="salamander_grand"
+
+  measure 1 {
+    pno: c4:4 d4:4 e4:4 f4:4 |
+  }
+
+  measure 2 {
+    pno: c4:4 g4:4 a4:4 b4:4 |
+  }
+}`;
+
+    const compiled = parser.compile(source);
+    const measure1C4 = compiled.events.find((e) => e.measureNumber === 1 && e.rawToken === 'c4:4')!;
+    const measure2C4 = compiled.events.find((e) => e.measureNumber === 2 && e.rawToken === 'c4:4')!;
+
+    expect(measure1C4.sourceStartOffset).toBeDefined();
+    expect(measure2C4.sourceStartOffset).toBeGreaterThan(measure1C4.sourceStartOffset!);
+
+    // Mutate ONLY the c4:4 in Measure 2 to c5:8
+    const nextSource = mutator.replaceEventInSource(source, measure2C4, 'c5:8');
+
+    expect(nextSource).toContain('%% User comment that must be preserved!');
+    expect(nextSource).toContain('measure 1 {\n    pno: c4:4 d4:4 e4:4 f4:4 |');
+    expect(nextSource).toContain('measure 2 {\n    pno: c5:8 g4:4 a4:4 b4:4 |');
+  });
+
+  it('surgically mutates meta, track volume, pan, sends, and FX chains in source code while preserving comments', () => {
+    const initial = `tenuto "6.0" {
+  %% Keep header comment
+  meta @{ title: "Mix Test", tempo: 120, time: "4/4" }
+  def vox "Lead Vocal" style=standard patch="voice_oohs"
+  measure 1 {
+    vox: c5:1 |
+  }
+}`;
+
+    const withSidechain = mutator.applyMixerMutationToSource(initial, {
+      mutationType: 'META_SIDECHAIN_UPDATE',
+      source: 'Drum_Bus',
+    });
+    expect(withSidechain).toContain('sidechain: "Drum_Bus"');
+    expect(withSidechain).toContain('%% Keep header comment');
+
+    const withVol = mutator.applyMixerMutationToSource(withSidechain, {
+      mutationType: 'VOLUME_UPDATE',
+      trackId: 'vox',
+      value: 110,
+    });
+    expect(withVol).toContain('var vox_vol = 110');
+
+    const withFx = mutator.applyMixerMutationToSource(withVol, {
+      mutationType: 'ADD_FX',
+      trackId: 'vox',
+      fxType: 'reverb',
+      fxParams: { mix: 0.5 },
+    });
+    expect(withFx).toContain('def vox "Lead Vocal" style=standard patch="voice_oohs" .fx(reverb, @{mix: 0.5})');
+
+    const withSend = mutator.applyMixerMutationToSource(withFx, {
+      mutationType: 'SEND_UPDATE',
+      trackId: 'vox',
+      sendId: 'rev_bus',
+      sendLevel: 0.65,
+    });
+    expect(withSend).toContain('sends=@{rev_bus: 0.65}');
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/audio/`
+* `src/parser/lexer.ts`, `src/parser/PitchEngine.ts`, `src/parser/TemporalEngine.ts`, `src/parser/IncrementalCompiler.ts`
+* `src/components/CodeEditor.tsx`, `src/components/Transport.tsx`, `src/components/Mixer.tsx`, `src/components/Inspector.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+* All existing test files in `tests/`
+
+Explicitly:
+
+* Do NOT modify or delete any existing test file in `tests/`.
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero TypeScript errors.
+2. `npx vitest run` passes all existing test suites (`tests/topological_mutator.test.ts`, `tests/topological_workspace_binding.test.tsx`, `tests/command_manager.test.ts`, `tests/command_integration.test.tsx`, `tests/inspector_binding.test.tsx`, `tests/daw_grammar_extension.test.ts`, etc.) plus the new `tests/surgical_ast_mutator.test.ts` suite (42/42 test files passing).
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. Dragging or inspecting a note in Measure N mutates only that exact token at its character span (`sourceStartOffset`..`sourceEndOffset`) without altering earlier identical tokens or stripping `%%` comments.
+
+---
+
+## 6. Constraints
+
+Must not:
+
+* Break `mutator.resizeDuration('c4:4', 12.5, 100) === 'c4:3/8'` in `tests/topological_mutator.test.ts`.
+* Break `TDB-510`, `TDB-519`, `TDB-520`, `TDB-522`, or `TDB-703` (`tests/topological_workspace_binding.test.tsx`).
+
+---
+
+## 7. Manual Steps
+
+None required for this contract.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or restore `src/mutator/TopologicalMutator.ts`, `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, `src/commands/ASTCommand.ts`, `src/commands/CommandManager.ts`, `src/components/WebGPUCanvas.tsx`, and `src/components/SplitWorkspace.tsx`, and remove `tests/surgical_ast_mutator.test.ts`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `tests/surgical_ast_mutator.test.ts`
+* Modified file(s): `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, `src/mutator/TopologicalMutator.ts`, `src/commands/ASTCommand.ts`, `src/commands/CommandManager.ts`, `src/components/WebGPUCanvas.tsx`, `src/components/SplitWorkspace.tsx`
+* Commit message: `feat(mutator): add surgical span-exact bi-directional AST code mutator`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Dragging Notes in Multi-Measure Scores** | `sourceCode.replace()` always mutated the *first* matching token in Measure 1 even if you dragged a note in Measure 8 | `replaceEventInSource()` uses exact `sourceStartOffset`..`sourceEndOffset` character spans to mutate only the specific token you dragged |
+| **Resizing Notes with Modifiers** | Resizing `c4:4.stacc.vol(90)` failed or stripped `.stacc.vol(90)` | `decomposeToken()` and `recomposeToken()` preserve all chained modifiers and ties (`c4:3/8.stacc.vol(90)`) |
+| **Pitch Transposition & Inspector Edits** | Inspector `onUpdate` was a no-op `() => {}`, and no pitch transposition mutator existed | `transposePitch()` shifts single notes and chords by semitones, and Inspector duration/velocity changes rewrite the selected token in `.ten` code |
+| **Mixer / Device / Meta Code Sync** | No surgical code patcher existed for `meta`, `def`, `sends`, or `.fx()` lines | `applyMixerMutationToSource()` updates `meta @{ ... }`, `var track_vol`, `pan=`, `sends=@{...}`, and `.fx(...)` in-place while keeping `%%` comments intact |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-24
+Implementer: AI Agent
+
+```
+
+```

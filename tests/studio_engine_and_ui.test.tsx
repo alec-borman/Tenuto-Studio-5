@@ -462,5 +462,52 @@ describe('TDB-603 & TDB-604: Syntax-Highlighted Code Editor, Scrolling Player & 
     const hammerEvents = score.events.filter((e) => e.trackId === 'ham');
     expect(hammerEvents.length).toBe(4); // Three Hammer Blows (M19, M37, M49) + Final Strike (M60)
   });
+
+  it('strips trailing MP3 silence and maintains unbroken sustain energy across 5+ seconds', () => {
+    const loader = new SoundfontBankLoader() as any;
+    const sr = 44100;
+    const rawLen = sr * 2; // 2.0s buffer where 0.85s..2.0s is completely silent (like MusyngKite MP3s)
+    const rawData = new Float32Array(rawLen);
+    for (let i = 0; i < Math.floor(0.85 * sr); i++) {
+      rawData[i] = Math.sin((2 * Math.PI * 440 * i) / sr) * 0.5;
+    }
+
+    const fakeCtx = {
+      createBuffer: (ch: number, len: number, rate: number) => {
+        const chData = new Float32Array(len);
+        return {
+          numberOfChannels: ch,
+          length: len,
+          sampleRate: rate,
+          duration: len / rate,
+          getChannelData: () => chData,
+        };
+      },
+    };
+
+    const srcBuf = {
+      numberOfChannels: 1,
+      length: rawLen,
+      sampleRate: sr,
+      duration: 2.0,
+      getChannelData: () => rawData,
+    };
+
+    const outBuf = loader.createSustainedOrchestralBuffer(fakeCtx, srcBuf, 'violin');
+    expect(outBuf.duration).toBeGreaterThanOrEqual(6.0);
+
+    const outData = outBuf.getChannelData(0);
+    // Measure RMS at t = 1.5s, t = 3.0s, and t = 5.0s — none of them may drop to zero!
+    for (const checkSec of [1.5, 3.0, 5.0]) {
+      const startIdx = Math.floor(checkSec * sr);
+      let sumSq = 0;
+      for (let i = 0; i < 2048; i++) {
+        const s = outData[startIdx + i];
+        sumSq += s * s;
+      }
+      const rms = Math.sqrt(sumSq / 2048);
+      expect(rms).toBeGreaterThan(0.18);
+    }
+  });
 });
 

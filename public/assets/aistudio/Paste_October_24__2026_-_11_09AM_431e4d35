@@ -1,0 +1,569 @@
+### Stage 3 Oracle Audit: Contracts #3 & #4 (`TDB-703` & `TDB-704`)
+
+* **Boundary & Diff Audit:**
+* **`TDB-703`:** `PitchEngine.ts`, `ASTSerializer.ts`, `DocumentParser.ts`, `WebGPUCanvas.tsx`, `Transport.tsx`, `SplitWorkspace.tsx`, and `tests/scale_and_microtuning.test.ts` compiled cleanly and passed **3/3 tests**.
+
+
+* **`TDB-704`:** `src/audio/AutomationEngine.ts`, `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, `src/audio/StudioAudioEngine.ts`, and `tests/automation_compiler.test.ts` were implemented cleanly. The implementer also extended `DocumentParser.ts` so both `<[ v1: ... | v2: ... ]>` and `{ v1: ... | v2: ... }` multi-voice blocks compile seamlessly.
+
+
+
+
+* **Test & Build Integrity:** All 4 Phase 1 test suites (`tests/daw_grammar_extension.test.ts`, `tests/surgical_ast_mutator.test.ts`, `tests/scale_and_microtuning.test.ts`, `tests/automation_compiler.test.ts` — **14/14 tests**) and `vite build` passed with zero errors.
+* **Verdict:** **Approved.**
+
+---
+
+### Next Step: Run `TDB-705` (from the previous message) to Finish Phase 1, Then Start Phase 2 with `TDB-706` Below
+
+Once `TDB-705` finishes, Phase 1 is 100% complete. Below is **Implementation Contract #6 (`TDB-706: Multi-View Studio Shell, Tab View Switcher & Bottom Dock`)** to kick off **Phase 2 (Multi-View Workspace, Session View & Arrangement View)**.
+
+It upgrades `SplitWorkspace.tsx` and `Transport.tsx` so you can:
+
+1. Press **`Tab`** (outside the text editor) or click the top **View Switcher (`Piano Roll` | `Session` | `Arrangement`)** to switch the right-hand DAW viewport between the Note Piano Roll, the Ableton Session Clip Matrix, and the Arrangement Timeline.
+2. Toggle the **Bottom Studio Dock (`Mixer` | `Device Chain` | `Inspector`)** open and closed, or collapse the left `.ten` Code Editor when you want a full-width DAW view—while keeping `<WebGPUCanvas/>`, `<Mixer/>`, and `<Inspector/>` mounted in the DOM so all 44 existing Vitest suites continue to pass 100%.
+
+
+
+Paste **Contract #6 (`TDB-706`)** into Google AI Studio right after `TDB-705`:
+
+```markdown
+# Implementation Contract: Multi-View Studio Shell, Tab View Switcher & Bottom Dock (TDB-706)
+
+**Project:** Tenuto Studio 5
+**Scope:** Upgrade `src/components/SplitWorkspace.tsx` and `src/components/Transport.tsx` into an Ableton-style multi-view studio shell featuring a `Tab`-key and toolbar View Switcher (`piano_roll` | `session` | `arrangement`), a collapsible Left `.ten` Code Editor toggle, and a toggleable Bottom Studio Dock (`mixer` | `devices` | `inspector`), while keeping `WebGPUCanvas`, `Mixer`, and `Inspector` mounted in the DOM at all times so all existing unit tests pass.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+Currently, `src/components/SplitWorkspace.tsx` renders a static 50/50 split between `CodeEditor` and `WebGPUCanvas` and permanently hides `Mixer` and `Inspector` inside `className="sr-only"`. To support Ableton Live's workflow while keeping `.ten` code as the primary driver, the studio shell needs:
+1. A **Main View Switcher** (`Piano Roll`, `Session`, `Arrangement`) toggled via the top bar or the `Tab` key (when focus is outside text inputs).
+2. A **Bottom Studio Dock** that can be toggled open to display the live `Mixer`, the `Device Chain & Macros` rack, or the `Context Inspector`, or collapsed (`sr-only`) to maximize vertical space.
+3. A **Code Editor Collapse/Expand Toggle** so users can work in 50/50 Split Mode or expand the DAW views to 100% width.
+
+---
+
+## 2. Root Cause
+1. `SplitWorkspace.tsx` hardcodes `grid-cols-2` with no active view state (`activeMainView`) or bottom dock state (`activeBottomTab`, `isBottomDockOpen`).
+2. `Mixer` and `Inspector` are permanently trapped inside `<div className="sr-only">` with no UI button to reveal them.
+3. `Transport.tsx` lacks view-switching and dock-toggling controls.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/components/Transport.tsx` - Add Main View Switcher & Bottom Dock Toggles
+In `src/components/Transport.tsx`, add optional props for switching the main DAW view (`activeMainView`, `onMainViewChange`), toggling the bottom studio dock (`activeBottomDock`, `onToggleBottomDock`), and toggling the left code editor (`isCodeVisible`, `onToggleCodeVisible`).
+
+> **CRITICAL TEST CONSTRAINT:** Never use the word `"Play"` in any new button label or `aria-label` (use `"Piano Roll"`, `"Session"`, `"Arrangement"`, `"Mixer"`, `"Devices"`, `"Inspector"`, `"Code"`), because `tests/transport_binding.test.tsx` queries `screen.getByRole('button', { name: /Play/i })` and expects only the main Play/Pause button to match!
+
+Update `TransportProps` and the component in `src/components/Transport.tsx`:
+
+```typescript
+export type MainStudioView = 'piano_roll' | 'session' | 'arrangement';
+export type BottomDockTab = 'mixer' | 'devices' | 'inspector' | null;
+
+interface TransportProps {
+  isPlaying: boolean;
+  onTogglePlay: () => void;
+  onStop?: () => void;
+  isLooping?: boolean;
+  onToggleLoop?: () => void;
+  tempo?: number;
+  timeSignature?: string;
+  title?: string;
+  currentBeat?: number;
+  rootKey?: string;
+  scaleName?: string;
+  onKeyScaleChange?: (newKey: string, newScale: string) => void;
+  masterVolume?: number;
+  onMasterVolumeChange?: (newVolume: number) => void;
+  onSelectPreset?: (code: string) => void;
+  onExportWav?: () => void;
+  activeMainView?: MainStudioView;
+  onMainViewChange?: (view: MainStudioView) => void;
+  activeBottomDock?: BottomDockTab;
+  onToggleBottomDock?: (tab: 'mixer' | 'devices' | 'inspector') => void;
+  isCodeVisible?: boolean;
+  onToggleCodeVisible?: () => void;
+}
+
+```
+
+Inside `Transport.tsx`:
+
+1. In the **Left** section (right after the `Load Preset Song` `<select>`), if `onToggleCodeVisible` is provided, render a compact `.ten Code` toggle button:
+
+```tsx
+        {onToggleCodeVisible && (
+          <button
+            type="button"
+            aria-label="Toggle Code Editor"
+            onClick={onToggleCodeVisible}
+            className={`px-2.5 py-1 rounded text-xs font-mono font-semibold border transition-colors cursor-pointer ${
+              isCodeVisible !== false
+                ? 'bg-blue-600/20 border-blue-500/60 text-blue-300'
+                : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+            }`}
+            title="Show/Hide Tenuto Code Editor"
+          >
+            .ten Code
+          </button>
+        )}
+
+```
+
+2. In the **Right** section (immediately before the Master Volume slider), render the **Main View Switcher** (`Piano Roll` | `Session` | `Arrangement`) when `onMainViewChange` is provided, and the **Bottom Dock Switcher** (`Mixer` | `Devices` | `Inspector`) when `onToggleBottomDock` is provided:
+
+```tsx
+        {onMainViewChange && (
+          <div
+            role="group"
+            aria-label="Main Studio View Switcher"
+            className="flex items-center bg-slate-950 border border-slate-800 rounded-md p-0.5 text-[11px] font-mono"
+          >
+            {(
+              [
+                { id: 'piano_roll', label: 'Piano Roll' },
+                { id: 'session', label: 'Session' },
+                { id: 'arrangement', label: 'Arrangement' },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                aria-label={`Switch to ${tab.label} View`}
+                onClick={() => onMainViewChange(tab.id)}
+                className={`px-2.5 py-1 rounded transition-colors cursor-pointer ${
+                  (activeMainView || 'piano_roll') === tab.id
+                    ? 'bg-blue-600 text-white font-semibold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {onToggleBottomDock && (
+          <div
+            role="group"
+            aria-label="Bottom Studio Dock Switcher"
+            className="flex items-center bg-slate-950 border border-slate-800 rounded-md p-0.5 text-[11px] font-mono"
+          >
+            {(
+              [
+                { id: 'mixer', label: 'Mixer' },
+                { id: 'devices', label: 'Devices' },
+                { id: 'inspector', label: 'Inspector' },
+              ] as const
+            ).map((dock) => (
+              <button
+                key={dock.id}
+                type="button"
+                aria-label={`Toggle ${dock.label} Dock`}
+                onClick={() => onToggleBottomDock(dock.id)}
+                className={`px-2 py-1 rounded transition-colors cursor-pointer ${
+                  activeBottomDock === dock.id
+                    ? 'bg-indigo-600 text-white font-semibold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {dock.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+```
+
+### 3.2 `src/components/SplitWorkspace.tsx` - Multi-View Viewport, `Tab` Shortcut & Live Bottom Dock
+
+In `src/components/SplitWorkspace.tsx`, upgrade the workspace shell so:
+
+1. `activeMainView` defaults to `'piano_roll'` (so `<WebGPUCanvas />` is visible by default for all existing tests), and pressing `Tab` when focus is outside `<textarea>` / `<input>` / `<select>` cycles between `'session'` and `'arrangement'` (or back to `'piano_roll'`).
+2. `<WebGPUCanvas />` ALWAYS remains mounted in the DOM (when `activeMainView !== 'piano_roll'`, its wrapper uses `className="hidden"` so existing mocked canvas tests never unmount it).
+3. When `activeMainView === 'session'`, a live Session Matrix overview container (`data-testid="session-view-container"`) is displayed showing the compiled `scenes` and `clips` from `incrementalCompiler.getLastCompiledScore()`, and when `activeMainView === 'arrangement'`, a live Arrangement overview container (`data-testid="arrangement-view-container"`) is displayed showing stacked track lanes and `locators`.
+4. `<Mixer />` and `<Inspector />` ALWAYS remain mounted in the DOM: when `activeBottomDock` is `null` (default), the bottom dock wrapper uses `className="sr-only"` (preserving 100% compatibility with existing tests); when the user clicks `Mixer`, `Devices`, or `Inspector` in the top bar, the bottom dock expands into a visible `h-72 border-t border-slate-800 bg-slate-900` studio panel!
+5. In `handleUpdateAST`, also apply the mutation to `sourceCode` via `topologicalMutator.applyMixerMutationToSource(sourceCode, newStatePayload as any)` when `newStatePayload` contains a `mutationType` (`VOLUME_UPDATE`, `PAN_UPDATE`, `ADD_FX`, `SEND_UPDATE`, `META_SIDECHAIN_UPDATE`), while still updating `astState` for `tests/command_integration.test.tsx`.
+
+Specifically, in `src/components/SplitWorkspace.tsx`:
+
+1. Import `MainStudioView, BottomDockTab` from `./Transport`.
+2. Add state hooks:
+
+```typescript
+  const [activeMainView, setActiveMainView] = useState<MainStudioView>('piano_roll');
+  const [activeBottomDock, setActiveBottomDock] = useState<BottomDockTab>(null);
+  const [isCodeVisible, setIsCodeVisible] = useState<boolean>(true);
+  const [compiledScoreState, setCompiledScoreState] = useState<any>(null);
+
+```
+
+3. Inside the `useEffect` that compiles `sourceCode`, also call `setCompiledScoreState(compiledScore);`.
+4. Inside `handleKeyDown`:
+
+```typescript
+      if (e.key === 'Tab' && !isEditingText) {
+        e.preventDefault();
+        setActiveMainView((prev) =>
+          prev === 'session' ? 'arrangement' : prev === 'arrangement' ? 'piano_roll' : 'session'
+        );
+      }
+
+```
+
+5. Update `handleUpdateAST` so mixer mutations update both `astState` and `.ten` `sourceCode`:
+
+```typescript
+  const handleUpdateAST = (newStatePayload: any) => {
+    const prevState = { ...astState };
+    const nextState = { ...astState, ...newStatePayload };
+    const prevCode = sourceCode;
+    const nextCode =
+      newStatePayload && newStatePayload.mutationType
+        ? topologicalMutator.applyMixerMutationToSource(sourceCode, newStatePayload)
+        : sourceCode;
+
+    commandManager.executeCommand({
+      execute: () => {
+        setAstState(nextState);
+        if (nextCode !== prevCode) setSourceCode(nextCode);
+      },
+      undo: () => {
+        setAstState(prevState);
+        if (nextCode !== prevCode) setSourceCode(prevCode);
+      },
+    });
+  };
+
+```
+
+6. Add `handleToggleBottomDock`:
+
+```typescript
+  const handleToggleBottomDock = (tab: 'mixer' | 'devices' | 'inspector') => {
+    setActiveBottomDock((prev) => (prev === tab ? null : tab));
+  };
+
+```
+
+7. Render the multi-view right hemisphere and toggleable bottom dock in `SplitWorkspace.tsx`:
+
+```tsx
+      {/* Main Split Workspace */}
+      <main
+        className={`flex-1 grid ${
+          isCodeVisible ? 'grid-cols-2' : 'grid-cols-1'
+        } min-h-0 overflow-hidden`}
+      >
+        {/* Left Side: Tenuto Code Editor */}
+        <section
+          data-testid="code-editor-pane"
+          className={`${
+            isCodeVisible ? 'flex' : 'hidden'
+          } h-full w-full border-r border-slate-800 bg-[#0B0F19] flex-col min-h-0 overflow-hidden`}
+        >
+          <div className="h-8 bg-slate-900 border-b border-slate-800 px-4 flex items-center justify-between shrink-0">
+            <span className="text-[11px] uppercase font-semibold tracking-wider text-slate-400">
+              Tenuto Source Code (.ten)
+            </span>
+            <span className="text-[11px] font-mono text-slate-500">
+              Single Source of Truth • Tab switches View
+            </span>
+          </div>
+          <div className="flex-1 overflow-hidden">
+            <CodeEditor code="{sourceCode}" onChange="{handleCodeEdit}"/>
+          </div>
+        </section>
+
+        {/* Right Side: Multi-View DAW Viewport (Piano Roll | Session | Arrangement) */}
+        <section className="h-full w-full bg-slate-950 flex flex-col min-h-0 overflow-hidden">
+          <div className="h-8 bg-slate-900 border-b border-slate-800 px-4 flex items-center justify-between shrink-0">
+            <span className="text-[11px] uppercase font-semibold tracking-wider text-slate-400">
+              {activeMainView === 'session'
+                ? 'Session View (Clip & Scene Matrix)'
+                : activeMainView === 'arrangement'
+                  ? 'Arrangement View (Timeline & Locators)'
+                  : 'Scrolling Piano Roll View'}
+            </span>
+            <span className="text-[11px] font-mono text-emerald-400">
+              {compiledEvents.length} Notes Compiled
+            </span>
+          </div>
+
+          <div className="flex-1 relative overflow-hidden">
+            {/* Piano Roll View (Always mounted for test compatibility; visible when activeMainView === 'piano_roll') */}
+            <div
+              className={
+                activeMainView === 'piano_roll' ? 'w-full h-full' : 'hidden'
+              }
+            >
+              <WebGPUCanvas events="{compiledEvents}" isPlaying="{isPlaying}" onMutation="{handleCanvasMutation}" onSelect="{setActiveSelection}" playheadBeat="{playheadBeat}" rootKey="{scoreMeta.key}" scaleName="{scoreMeta.scale}"/>
+            </div>
+
+            {/* Session View Container */}
+            {activeMainView === 'session' && (
+              <div
+                data-testid="session-view-container"
+                className="w-full h-full overflow-auto p-4 bg-slate-950 text-slate-200 font-mono text-xs"
+              >
+                <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-800">
+                  <span className="font-semibold text-slate-300 uppercase tracking-wider">
+                    Session Clip Matrix ({compiledScoreState?.scenes?.length || 0} Scenes •{' '}
+                    {compiledScoreState?.clips?.length || 0} Clips)
+                  </span>
+                  <span className="text-slate-500">
+                    Quantize: {compiledScoreState?.meta?.quantizeLaunch || '1/1'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-4 gap-2">
+                  {(compiledScoreState?.defs || []).map((track: any) => (
+                    <div
+                      key={track.id}
+                      className="bg-slate-900 border border-slate-800 rounded p-2.5 flex flex-col gap-1.5"
+                    >
+                      <div className="font-bold text-amber-400 truncate">
+                        {track.name} ({track.id})
+                      </div>
+                      <div className="text-[10px] text-slate-400">
+                        {track.style} • {track.patch}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Arrangement View Container */}
+            {activeMainView === 'arrangement' && (
+              <div
+                data-testid="arrangement-view-container"
+                className="w-full h-full overflow-auto p-4 bg-slate-950 text-slate-200 font-mono text-xs"
+              >
+                <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-800">
+                  <span className="font-semibold text-slate-300 uppercase tracking-wider">
+                    Arrangement Timeline ({compiledScoreState?.defs?.length || 1} Tracks)
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {(compiledScoreState?.locators || []).map((loc: any) => (
+                      <span
+                        key={loc.id}
+                        className="px-2 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[10px]"
+                      >
+                        ⚑ {loc.name} (M{loc.measureNumber})
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {(compiledScoreState?.defs || []).map((track: any) => (
+                    <div
+                      key={track.id}
+                      className="bg-slate-900 border border-slate-800 rounded px-3 py-2 flex items-center justify-between"
+                    >
+                      <div>
+                        <span className="font-bold text-blue-400 mr-2">{track.id}</span>
+                        <span className="text-slate-400">{track.name}</span>
+                      </div>
+                      <span className="text-slate-500 text-[11px]">
+                        Vol: {track.volume} | Pan: {track.pan}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      </main>
+
+      {/* Bottom Studio Dock (sr-only when closed so all existing unit tests pass; visible panel when opened) */}
+      <div
+        data-testid="bottom-studio-dock"
+        className={
+          activeBottomDock
+            ? 'h-80 w-full bg-slate-900 border-t border-slate-800 flex flex-row overflow-x-auto shrink-0 z-20'
+            : 'sr-only'
+        }
+        aria-hidden={!activeBottomDock}
+      >
+        <div className="sr-only" data-testid="command-history-panel">
+          Command Manager / History
+        </div>
+        <div className="sr-only" data-testid="engine-status-panel">
+          Playback Orchestrator
+        </div>
+        <div
+          className={
+            activeBottomDock === 'inspector' ? 'flex w-full h-full' : activeBottomDock ? 'hidden' : ''
+          }
+        >
+          <Inspector onUpdate="{handleInspectorUpdate}" selection="{activeSelection}"/>
+        </div>
+        <div
+          className={
+            activeBottomDock === 'mixer' || activeBottomDock === 'devices'
+              ? 'flex w-full h-full'
+              : activeBottomDock
+                ? 'hidden'
+                : ''
+          }
+        >
+          <Mixer astState="{astState}" onUpdateAST="{handleUpdateAST}"/>
+        </div>
+      </div>
+
+```
+
+### 3.3 `tests/multi_view_shell.test.tsx` - Create Verification Suite for Multi-View Studio Shell & `Tab` Switching
+
+Create `tests/multi_view_shell.test.tsx`:
+
+```typescript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import SplitWorkspace from '../src/components/SplitWorkspace';
+import '@testing-library/jest-dom';
+
+vi.mock('@monaco-editor/react', () => ({
+  default: ({ value, onChange, defaultLanguage }: any) => (
+    <textarea
+      data-testid="monaco-mock"
+      aria-label="Tenuto Source Editor"
+      data-language={defaultLanguage}
+      value={value || ''}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  ),
+}));
+
+HTMLCanvasElement.prototype.getContext = vi.fn();
+
+describe('TDB-706: Multi-View Studio Shell & Tab View Switcher', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('switches between Piano Roll, Session View, and Arrangement View via toolbar buttons and the Tab key', () => {
+    render(<SplitWorkspace/>);
+
+    // Default view is Piano Roll
+    expect(screen.getByText(/Scrolling Piano Roll View/i)).toBeInTheDocument();
+
+    // Press Tab key (outside text input) -> switches to Session View
+    fireEvent.keyDown(window, { key: 'Tab', code: 'Tab' });
+    expect(screen.getByTestId('session-view-container')).toBeInTheDocument();
+
+    // Press Tab key again -> switches to Arrangement View
+    fireEvent.keyDown(window, { key: 'Tab', code: 'Tab' });
+    expect(screen.getByTestId('arrangement-view-container')).toBeInTheDocument();
+
+    // Click Piano Roll view button -> switches back to Piano Roll
+    fireEvent.click(screen.getByRole('button', { name: /Switch to Piano Roll View/i }));
+    expect(screen.getByText(/Scrolling Piano Roll View/i)).toBeInTheDocument();
+  });
+
+  it('toggles the Bottom Studio Dock (Mixer, Devices, Inspector) and the Left Code Editor pane', () => {
+    render(<SplitWorkspace/>);
+
+    const bottomDock = screen.getByTestId('bottom-studio-dock');
+    expect(bottomDock).toHaveClass('sr-only');
+
+    // Open Mixer dock
+    fireEvent.click(screen.getByRole('button', { name: /Toggle Mixer Dock/i }));
+    expect(bottomDock).not.toHaveClass('sr-only');
+
+    // Click Mixer dock button again to collapse
+    fireEvent.click(screen.getByRole('button', { name: /Toggle Mixer Dock/i }));
+    expect(bottomDock).toHaveClass('sr-only');
+
+    // Toggle Code Editor visibility
+    const codePane = screen.getByTestId('code-editor-pane');
+    expect(codePane).not.toHaveClass('hidden');
+    fireEvent.click(screen.getByRole('button', { name: /Toggle Code Editor/i }));
+    expect(codePane).toHaveClass('hidden');
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/`
+* `src/audio/`
+* `src/mutator/`
+* `src/components/WebGPUCanvas.tsx`, `src/components/CodeEditor.tsx`, `src/components/Mixer.tsx`, `src/components/Inspector.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+* All existing test files in `tests/`
+
+Explicitly:
+
+* Do NOT modify or delete any existing test file in `tests/`.
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero TypeScript errors.
+2. `npx vitest run` passes all existing test suites (`tests/workspace.test.tsx`, `tests/transport_binding.test.tsx`, `tests/mixer_workspace_binding.test.tsx`, `tests/inspector_binding.test.tsx`, `tests/command_integration.test.tsx`, etc.) plus the new `tests/multi_view_shell.test.tsx` suite.
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. Users can switch between `Piano Roll`, `Session`, and `Arrangement` views via the top toolbar or `Tab` key, toggle the bottom `Mixer` / `Devices` / `Inspector` dock, and collapse/expand the `.ten` Code Editor.
+
+---
+
+## 6. Constraints
+
+Must not:
+
+* Add the word `"Play"` to any new button label or `aria-label` (so `screen.getByRole('button', { name: /Play/i })` in `tests/transport_binding.test.tsx` uniquely matches the main Play button).
+* Unmount `<WebGPUCanvas />`, `<Mixer />`, or `<Inspector />` when switching views.
+
+---
+
+## 7. Manual Steps
+
+None required for this contract.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or restore `src/components/Transport.tsx` and `src/components/SplitWorkspace.tsx`, and remove `tests/multi_view_shell.test.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `tests/multi_view_shell.test.tsx`
+* Modified file(s): `src/components/Transport.tsx`, `src/components/SplitWorkspace.tsx`
+* Commit message: `feat(ui): add multi-view studio shell, Tab view switcher, and toggleable bottom dock`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Main Studio Viewport** | Fixed to Piano Roll only | Top View Switcher (`Piano Roll` | `Session` | `Arrangement`) and `Tab` key toggle between note, clip matrix, and timeline views |
+| **Mixer, Devices & Inspector** | Permanently hidden inside `className="sr-only"` | Top Dock Switcher (`Mixer` | `Devices` | `Inspector`) opens and closes a visible bottom studio dock |
+| **Code Editor Width** | Fixed 50% width at all times | `.ten Code` button collapses or expands the left code editor so DAW views can go full-screen |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-24
+Implementer: AI Agent
+
+```
+
+```

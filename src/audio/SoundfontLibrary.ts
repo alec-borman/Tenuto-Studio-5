@@ -468,95 +468,141 @@ export class SoundfontBankLoader {
   }
 
   /**
-   * For bowed strings, winds, brass, and choir, extends short ~1.6s SoundFont recordings
-   * into a seamless 4.8-second sustained buffer by cosine-crossfading the warm steady-state
-   * body (0.38s..1.08s) so held notes never die out mid-phrase.
-   */
-  /**
-   * For bowed strings, winds, brass, and choir, applies gentle decay-compensation gain
-   * across the natural recorded body and extends short buffers at exact zero-crossings
-   * without summing two simultaneous copies of the same waveform (preventing comb/phaser pulsing).
+   * Energy-Gated Plateau Looper:
+   * Scans the decoded sample in 15ms RMS windows to find the true high-energy tonal plateau
+   * BEFORE the sample decays into MP3 tail silence, then synthesizes a 6.5-second continuous
+   * sustain buffer using 50%-overlap Hann-windowed crossfade grains.
    */
   private createSustainedOrchestralBuffer(
     ctx: BaseAudioContext,
     srcBuf: AudioBuffer,
     instrumentName: string
   ): AudioBuffer {
-    if (!isSustainingOrchestralInstrument(instrumentName) || srcBuf.duration < 0.7) {
+    if (!isSustainingOrchestralInstrument(instrumentName) || srcBuf.duration < 0.45) {
       return srcBuf;
     }
 
     const sr = srcBuf.sampleRate;
-    const targetDuration = Math.max(srcBuf.duration, 4.5);
-    const targetLen = Math.floor(sr * targetDuration);
-    const numCh = srcBuf.numberOfChannels;
-    const outBuf = ctx.createBuffer(numCh, targetLen, sr);
-
     const refData = srcBuf.getChannelData(0);
-    let loopStartIdx = Math.floor(Math.min(0.32, srcBuf.duration * 0.25) * sr);
-    let loopEndIdx = Math.floor(Math.min(srcBuf.duration - 0.12, srcBuf.duration * 0.78) * sr);
+    const totalSamples = refData.length;
 
-    // Snap loopStartIdx and loopEndIdx to rising zero-crossings on channel 0 for phase continuity
-    for (let i = loopStartIdx; i < Math.min(refData.length - 2, loopStartIdx + 1200); i++) {
+    // 1. Scan 15ms windows to locate the peak RMS and active sustain plateau (ignoring silent MP3 padding)
+    const winSize = Math.max(256, Math.floor(sr * 0.015));
+    const numWins = Math.floor(totalSamples / winSize);
+    if (numWins < 8) return srcBuf;
+
+    const winRms = new Float32Array(numWins);
+    let peakRms = 0;
+    let peakWinIdx = 2;
+    const minAttackWins = Math.min(numWins - 4, Math.max(2, Math.floor(0.045 / 0.015)));
+
+    for (let w = 0; w < numWins; w++) {
+      let sum = 0;
+      const offset = w * winSize;
+      for (let i = 0; i < winSize; i++) {
+        const s = refData[offset + i];
+        sum += s * s;
+      }
+      const r = Math.sqrt(sum / winSize);
+      winRms[w] = r;
+      if (w >= minAttackWins && r > peakRms) {
+        peakRms = r;
+        peakWinIdx = w;
+      }
+    }
+
+    if (peakRms < 0.0005) return srcBuf;
+
+    // 2. Expand outward from peakWinIdx while window RMS stays >= 52% of peakRms
+    let startWin = peakWinIdx;
+    while (startWin > minAttackWins && winRms[startWin - 1] >= peakRms * 0.55) {
+      startWin--;
+    }
+    let endWin = peakWinIdx;
+    while (endWin + 1 < numWins - 1 && winRms[endWin + 1] >= peakRms * 0.52) {
+      endWin++;
+    }
+
+    // Ensure at least ~180ms of sustain grain material
+    if (endWin - startWin < 12) {
+      startWin = Math.max(minAttackWins, peakWinIdx - 3);
+      endWin = Math.min(numWins - 2, startWin + 16);
+    }
+
+    let loopStartIdx = startWin * winSize;
+    let loopEndIdx = Math.min(totalSamples - 256, (endWin + 1) * winSize);
+
+    // Snap loopStartIdx & loopEndIdx to rising zero-crossings
+    for (let i = loopStartIdx; i < Math.min(totalSamples - 2, loopStartIdx + 1024); i++) {
       if (refData[i] <= 0 && refData[i + 1] > 0) {
         loopStartIdx = i;
         break;
       }
     }
-    for (let i = loopEndIdx; i > Math.max(loopStartIdx + 2048, loopEndIdx - 1200); i--) {
+    for (let i = loopEndIdx; i > Math.max(loopStartIdx + 2048, loopEndIdx - 1024); i--) {
       if (refData[i] <= 0 && refData[i + 1] > 0) {
         loopEndIdx = i;
         break;
       }
     }
 
-    const loopSpan = Math.max(2048, loopEndIdx - loopStartIdx);
-    const xfadeSamples = 256; // Short 5.8ms boundary splice so two copies never overlap across the body
+    const grainLen = loopEndIdx - loopStartIdx;
+    if (grainLen < 1536) return srcBuf;
+
+    const targetDuration = 6.5;
+    const targetLen = Math.floor(sr * targetDuration);
+    const numCh = srcBuf.numberOfChannels;
+    const outBuf = ctx.createBuffer(numCh, targetLen, sr);
+    let halfGrain = Math.floor(grainLen / 2);
+    for (let i = halfGrain; i < Math.min(grainLen - 2, halfGrain + 1024); i++) {
+      if (refData[loopStartIdx + i] <= 0 && refData[loopStartIdx + i + 1] > 0) {
+        halfGrain = i;
+        break;
+      }
+    }
 
     for (let ch = 0; ch < numCh; ch++) {
       const inData = srcBuf.getChannelData(ch);
       const outData = outBuf.getChannelData(ch);
 
-      // Measure RMS at loopStartIdx vs loopEndIdx to flatten natural decay inside the steady body
-      let rmsStart = 0;
-      let rmsEnd = 0;
-      const win = Math.min(2048, Math.floor(loopSpan / 3));
-      for (let k = 0; k < win; k++) {
-        const sA = inData[loopStartIdx + k] || 0;
-        const sB = inData[loopEndIdx - win + k] || 0;
-        rmsStart += sA * sA;
-        rmsEnd += sB * sB;
+      // Build a normalized, RMS-leveled sustain grain from [loopStartIdx .. loopEndIdx]
+      const grain = new Float32Array(grainLen);
+      for (let i = 0; i < grainLen; i++) {
+        const srcPos = loopStartIdx + i;
+        const wIdx = Math.min(numWins - 1, Math.floor(srcPos / winSize));
+        const localRms = Math.max(peakRms * 0.35, winRms[wIdx] || peakRms);
+        const levelComp = Math.min(1.85, peakRms / localRms);
+        grain[i] = inData[srcPos] * levelComp;
       }
-      rmsStart = Math.sqrt(rmsStart / Math.max(1, win));
-      rmsEnd = Math.sqrt(rmsEnd / Math.max(1, win));
-      const decayComp = rmsEnd > 0.0005 && rmsStart > rmsEnd ? Math.min(1.85, rmsStart / rmsEnd) : 1.0;
 
-      // 1. Copy original attack and decay-compensated body up to loopEndIdx
-      const initialCopy = Math.min(loopEndIdx, inData.length, targetLen);
-      for (let i = 0; i < initialCopy; i++) {
-        if (i <= loopStartIdx) {
+      // 1. Copy natural attack up to loopStartIdx + halfGrain
+      const attackCopyEnd = Math.min(targetLen, loopStartIdx + halfGrain);
+      for (let i = 0; i < attackCopyEnd; i++) {
+        if (i < loopStartIdx) {
           outData[i] = inData[i];
         } else {
-          const progress = (i - loopStartIdx) / loopSpan;
-          const compGain = 1.0 + (decayComp - 1.0) * progress;
-          outData[i] = inData[i] * compGain;
+          outData[i] = grain[i - loopStartIdx];
         }
       }
 
-      // 2. Extend past loopEndIdx using single-stream zero-crossing cycles with a tiny boundary splice
-      for (let i = initialCopy; i < targetLen; i++) {
-        const rel = (i - initialCopy) % loopSpan;
-        const srcIdx = loopStartIdx + rel;
-        const progress = rel / loopSpan;
-        const compGain = 1.0 + (decayComp - 1.0) * progress;
-        let sample = (inData[srcIdx] || 0) * compGain;
+      // 2. Fill remaining buffer up to 6.5s using 50%-overlap Hann-windowed grains (constant power, zero silence)
+      for (let i = loopStartIdx; i < targetLen; i++) {
+        const rel = i - loopStartIdx;
+        const posA = rel % grainLen;
+        const posB = (rel + halfGrain) % grainLen;
 
-        if (rel < xfadeSamples && loopEndIdx + rel < inData.length) {
-          const alpha = rel / xfadeSamples;
-          const tailSample = (inData[loopEndIdx + rel] || 0) * decayComp;
-          sample = tailSample * (1 - alpha) + sample * alpha;
+        // Raised cosine (Hann) weights that sum strictly to 1.0 everywhere: sin^2(x) + cos^2(x) = 1
+        const phaseA = (Math.PI * posA) / grainLen;
+        const wA = Math.sin(phaseA) * Math.sin(phaseA);
+        const wB = 1.0 - wA;
+
+        const mixed = grain[posA] * wA + grain[posB] * wB;
+        if (i < attackCopyEnd) {
+          const blend = (i - loopStartIdx) / Math.max(1, halfGrain);
+          outData[i] = outData[i] * (1 - blend) + mixed * blend;
+        } else {
+          outData[i] = mixed;
         }
-        outData[i] = sample;
       }
     }
 

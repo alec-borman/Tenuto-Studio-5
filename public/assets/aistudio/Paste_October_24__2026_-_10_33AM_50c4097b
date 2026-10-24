@@ -1,0 +1,866 @@
+### Stage 3 Oracle Audit: Contract #1 (`TDB-701`)
+
+* **Boundary & Diff Audit:** Only the 4 authorized source files (`src/parser/lexer.ts`, `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, `src/components/CodeEditor.tsx`) and the new test suite (`tests/daw_grammar_extension.test.ts`) were modified.
+* **Self-Correction Verification:** During the run, the implementer caught and resolved two subtle parser interactions inside `src/parser/DocumentParser.ts`:
+1. Updated `clipHeaderRegex` and `groupBlockRegex` to `((?:@\{[^}]*\}|[^{])*)` so inline dictionary attributes like `follow=@{bars: 4, ...}` on a `clip` header do not prematurely terminate header scanning on `{`.
+2. Added `modRepeatMatch` in `parseVoiceTokensToEvents()` so tokens with chained modifiers and multiplier suffixes (`s:4.cc(74, [20, 120], "exp")*4`) expand into 4 discrete quarter-note CC automation events.
+
+
+* **Test & Build Integrity:** `tests/daw_grammar_extension.test.ts` (**3/3 passing**), `tests/studio_engine_and_ui.test.tsx` (**19/19 passing**), and `vite build` all passed with zero errors.
+* **Verdict:** **Approved.**
+
+---
+
+### Next Step: Run `TDB-702`, Then Queue Up `TDB-703` Below
+
+You can now paste **Contract #2 (`TDB-702: Surgical Bi-Directional AST Code Mutator`)** from the previous message into Google AI Studio. (Note: when applying Section 3.2 of `TDB-702`, the implementer only adds `attachSourceLocations` to `DocumentParser.ts`, preserving the `TDB-701` regex fixes.)
+
+Here is **Implementation Contract #3 (`TDB-703: Global Scale Lock & Microtonal Tuning Engine`)** ready to run right after `TDB-702` completes:
+
+```markdown
+# Implementation Contract: Global Scale Lock & Microtonal Tuning Engine (TDB-703)
+
+**Project:** Tenuto Studio 5
+**Scope:** Upgrade `src/parser/PitchEngine.ts`, `src/parser/DocumentParser.ts`, `src/components/WebGPUCanvas.tsx`, `src/components/Transport.tsx`, and `src/components/SplitWorkspace.tsx` to support Ableton Live 12's Global Scale Lock & Scale Highlighting (22 scales), quarter-tone/microtonal accidentals (`qs`, `qf`, `tqs`, `tqf`, `x`, `±cents`), built-in microtonal tuning systems (`just_intonation`, `pythagorean`, `meantone`, `19tet`, `24tet`, `31tet`, `carlos_alpha`, `bohlen_pierce`, `slendro`, `pelog`), and custom Scala `.scl` tuning file parsing.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+Currently, `src/parser/PitchEngine.ts` only parses standard `#` and `b` accidentals and hardcodes 12-tone equal temperament (`440.0 * Math.pow(2, (midi - 69) / 12)`). It does not support the microtonal accidentals defined in `SPEC.md` (`qs`, `qf`, `tqs`, `tqf`, `x`, `±cents`), Scala `.scl` tuning tables, or Ableton Live 12's Global Scale Lock (`meta @{ key: "D", scale: "harmonic_minor", scale_lock: true, tuning: "just_intonation" }`). Furthermore, `WebGPUCanvas.tsx` and `Transport.tsx` do not highlight in-scale vs. out-of-scale piano roll rows or let the user switch the project's Root Key, Scale Mode, and Tuning System from the top bar.
+
+This contract:
+1. Upgrades `src/parser/PitchEngine.ts` with quarter-tone and cent-offset pitch parsing, 22 musical scale definitions with pitch-to-scale quantization (`quantizeMidiToScale`, `isMidiInScale`), 11 built-in microtonal tuning systems, and a full Scala `.scl` file parser (`parseScalaScl`).
+2. Wires `meta @{ key, scale, scale_lock, tuning, a4_hz }` in `src/parser/DocumentParser.ts` into `PitchEngine` so compiled events automatically compute microtonal frequencies and optional scale-locked pitches.
+3. Updates `src/components/WebGPUCanvas.tsx` to highlight in-scale and root-note rows on the Piano Roll when a key/scale is active, and adds interactive Key & Scale selectors to `src/components/Transport.tsx` and `src/components/SplitWorkspace.tsx`.
+
+---
+
+## 2. Root Cause
+1. `src/parser/PitchEngine.ts` uses `clean.match(/^([a-g])([#b]*)([0-9]*)$/)` and `440.0 * Math.pow(2, (midi - 69) / 12)`, rejecting quarter-tone tokens (`ebqs5`, `c4+25c`) and ignoring `meta.tuning` and `meta.scale`.
+2. `src/parser/DocumentParser.ts` does not pass `meta.key`, `meta.scale`, `meta.scale_lock`, or `meta.tuning` to `ASTSerializer` / `PitchEngine`.
+3. `src/components/WebGPUCanvas.tsx` colors piano roll rows solely by black/white key (`[1, 3, 6, 8, 10]`) without indicating the active scale root or diatonic scale degrees.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/parser/PitchEngine.ts` - Add Microtonal Accidentals, 22 Scales, 11 Tuning Presets & Scala `.scl` Parser
+Replace the entire contents of `src/parser/PitchEngine.ts` with the following implementation:
+
+```typescript
+export interface PitchResult {
+  midi: number;
+  frequency: number;
+  noteName?: string;
+  isRest?: boolean;
+  isSpacer?: boolean;
+  gridKey?: string;
+  microtoneCents?: number;
+}
+
+export interface TuningConfiguration {
+  system?: string;
+  rootKey?: string;
+  scaleName?: string;
+  scaleLock?: boolean;
+  a4Hz?: number;
+  scalaCents?: number[];
+}
+
+const DRUM_GRID_MIDI: Record<string, number> = {
+  k: 36,
+  bd: 36,
+  kick: 36,
+  s: 38,
+  sd: 38,
+  snare: 38,
+  rim: 37,
+  cp: 39,
+  clap: 39,
+  h: 42,
+  hh: 42,
+  ch: 42,
+  oh: 46,
+  lt: 45,
+  mt: 47,
+  ht: 50,
+  cr: 49,
+  rd: 51,
+};
+
+export const ROOT_KEY_SEMITONES: Record<string, number> = {
+  c: 0,
+  'c#': 1,
+  db: 1,
+  d: 2,
+  'd#': 3,
+  eb: 3,
+  e: 4,
+  f: 5,
+  'f#': 6,
+  gb: 6,
+  g: 7,
+  'g#': 8,
+  ab: 8,
+  a: 9,
+  'a#': 10,
+  bb: 10,
+  b: 11,
+};
+
+export const SCALE_INTERVALS: Record<string, number[]> = {
+  chromatic: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+  major: [0, 2, 4, 5, 7, 9, 11],
+  ionian: [0, 2, 4, 5, 7, 9, 11],
+  minor: [0, 2, 3, 5, 7, 8, 10],
+  natural_minor: [0, 2, 3, 5, 7, 8, 10],
+  aeolian: [0, 2, 3, 5, 7, 8, 10],
+  harmonic_minor: [0, 2, 3, 5, 7, 8, 11],
+  melodic_minor: [0, 2, 3, 5, 7, 9, 11],
+  dorian: [0, 2, 3, 5, 7, 9, 10],
+  phrygian: [0, 1, 3, 5, 7, 8, 10],
+  lydian: [0, 2, 4, 6, 7, 9, 11],
+  mixolydian: [0, 2, 4, 5, 7, 9, 10],
+  locrian: [0, 1, 3, 5, 6, 8, 10],
+  major_pentatonic: [0, 2, 4, 7, 9],
+  minor_pentatonic: [0, 3, 5, 7, 10],
+  blues: [0, 3, 5, 6, 7, 10],
+  whole_tone: [0, 2, 4, 6, 8, 10],
+  diminished_wh: [0, 2, 3, 5, 6, 8, 9, 11],
+  diminished_hw: [0, 1, 3, 4, 6, 7, 9, 10],
+  hungarian_minor: [0, 2, 3, 6, 7, 8, 11],
+  phrygian_dominant: [0, 1, 4, 5, 7, 8, 10],
+  hirajoshi: [0, 2, 3, 7, 8],
+  insen: [0, 1, 5, 7, 10],
+  arabic: [0, 1, 4, 5, 7, 8, 11],
+};
+
+/**
+ * Built-in microtonal tuning cent tables (relative to root 0c).
+ * The final element represents the period (typically 1200c octave, or 1901.955c tritave for Bohlen-Pierce).
+ */
+export const BUILTIN_TUNING_CENTS: Record<string, number[]> = {
+  '12tet': [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200],
+  just_intonation: [
+    111.731, // 16/15
+    203.91,  // 9/8
+    315.641, // 6/5
+    386.314, // 5/4
+    498.045, // 4/3
+    590.224, // 45/32
+    701.955, // 3/2
+    813.686, // 8/5
+    884.359, // 5/3
+    1017.596,// 9/5
+    1088.269,// 15/8
+    1200.0,  // 2/1
+  ],
+  pythagorean: [
+    90.225,
+    203.91,
+    294.135,
+    407.82,
+    498.045,
+    611.73,
+    701.955,
+    792.18,
+    905.865,
+    996.09,
+    1109.775,
+    1200.0,
+  ],
+  meantone: [
+    76.049,
+    193.157,
+    310.265,
+    386.314,
+    503.422,
+    579.471,
+    696.578,
+    772.627,
+    889.735,
+    1006.843,
+    1082.892,
+    1200.0,
+  ],
+  '19tet': Array.from({ length: 19 }, (_, i) => ((i + 1) * 1200) / 19),
+  '24tet': Array.from({ length: 24 }, (_, i) => ((i + 1) * 1200) / 24),
+  '31tet': Array.from({ length: 31 }, (_, i) => ((i + 1) * 1200) / 31),
+  carlos_alpha: Array.from({ length: 9 }, (_, i) => (i + 1) * 78.0),
+  bohlen_pierce: Array.from({ length: 13 }, (_, i) => ((i + 1) * 1901.955) / 13),
+  slendro: [240, 480, 720, 960, 1200],
+  pelog: [120, 270, 540, 670, 785, 950, 1200],
+};
+
+export function parseKeyRootSemitone(keyStr?: string): { rootSemitone: number; inferredScale?: string } {
+  if (!keyStr) return { rootSemitone: 0 };
+  const clean = keyStr.trim().toLowerCase();
+  const m = clean.match(/^([a-g][#b]?)(m|min|minor|maj|major)?$/);
+  if (!m) return { rootSemitone: 0 };
+  const rootSemitone = ROOT_KEY_SEMITONES[m[1]] ?? 0;
+  const suffix = m[2];
+  const inferredScale = suffix === 'm' || suffix === 'min' || suffix === 'minor' ? 'minor' : undefined;
+  return { rootSemitone, inferredScale };
+}
+
+export function isMidiInScale(midi: number, rootKey: string = 'C', scaleName: string = 'chromatic'): boolean {
+  const { rootSemitone, inferredScale } = parseKeyRootSemitone(rootKey);
+  const normScale = (scaleName || inferredScale || 'chromatic').toLowerCase().replace(/[\s-]+/g, '_');
+  const intervals = SCALE_INTERVALS[normScale] || SCALE_INTERVALS.chromatic;
+  const rel = (((Math.round(midi) - rootSemitone) % 12) + 12) % 12;
+  return intervals.includes(rel);
+}
+
+export function quantizeMidiToScale(midi: number, rootKey: string = 'C', scaleName: string = 'chromatic'): number {
+  const rounded = Math.round(midi);
+  if (isMidiInScale(rounded, rootKey, scaleName)) return rounded;
+
+  const { rootSemitone, inferredScale } = parseKeyRootSemitone(rootKey);
+  const normScale = (scaleName || inferredScale || 'chromatic').toLowerCase().replace(/[\s-]+/g, '_');
+  const intervals = SCALE_INTERVALS[normScale] || SCALE_INTERVALS.chromatic;
+
+  let bestMidi = rounded;
+  let minDist = Infinity;
+  for (let offset = -2; offset <= 2; offset++) {
+    const candidate = rounded + offset;
+    const rel = (((candidate - rootSemitone) % 12) + 12) % 12;
+    if (intervals.includes(rel) && Math.abs(offset) < minDist) {
+      minDist = Math.abs(offset);
+      bestMidi = candidate;
+    }
+  }
+  return bestMidi;
+}
+
+/**
+ * Parses a standard Scala (.scl) file format string into an array of cent values.
+ */
+export function parseScalaScl(sclText: string): number[] {
+  const lines = sclText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => !l.startsWith('!') && l.length > 0);
+
+  if (lines.length < 2) return BUILTIN_TUNING_CENTS['12tet'];
+
+  // Line 0 is description, Line 1 is note count, Line 2+ are pitch values
+  const noteCount = parseInt(lines[1], 10);
+  if (isNaN(noteCount) || noteCount <= 0) return BUILTIN_TUNING_CENTS['12tet'];
+
+  const cents: number[] = [];
+  for (let i = 2; i < lines.length && cents.length < noteCount; i++) {
+    const token = lines[i].split(/\s+/)[0];
+    if (!token) continue;
+
+    if (token.includes('.')) {
+      const cVal = parseFloat(token);
+      if (!isNaN(cVal)) cents.push(cVal);
+    } else if (token.includes('/')) {
+      const [numStr, denStr] = token.split('/');
+      const num = parseFloat(numStr);
+      const den = parseFloat(denStr);
+      if (num > 0 && den > 0) {
+        cents.push(1200 * Math.log2(num / den));
+      }
+    } else {
+      const ratio = parseFloat(token);
+      if (ratio > 0) {
+        cents.push(1200 * Math.log2(ratio));
+      }
+    }
+  }
+
+  return cents.length > 0 ? cents : BUILTIN_TUNING_CENTS['12tet'];
+}
+
+export class PitchEngine {
+  private currentOctave: number = 4;
+  private tuningConfig: TuningConfiguration = {
+    system: '12tet',
+    rootKey: 'C',
+    scaleName: 'chromatic',
+    scaleLock: false,
+    a4Hz: 440.0,
+  };
+
+  private noteOffsets: Record<string, number> = {
+    c: 0,
+    d: 2,
+    e: 4,
+    f: 5,
+    g: 7,
+    a: 9,
+    b: 11,
+  };
+
+  public reset(defaultOctave: number = 4): void {
+    this.currentOctave = defaultOctave;
+  }
+
+  public setTuningConfiguration(config: TuningConfiguration): void {
+    this.tuningConfig = {
+      ...this.tuningConfig,
+      ...config,
+    };
+  }
+
+  public getTuningConfiguration(): TuningConfiguration {
+    return { ...this.tuningConfig };
+  }
+
+  public getCurrentOctave(): number {
+    return this.currentOctave;
+  }
+
+  public setCurrentOctave(octave: number): void {
+    this.currentOctave = octave;
+  }
+
+  public computeFrequencyForMidi(
+    midi: number,
+    extraCents: number = 0
+  ): number {
+    const a4Hz = this.tuningConfig.a4Hz || 440.0;
+    const systemKey = (this.tuningConfig.system || '12tet').toLowerCase().replace(/\.scl$/i, '');
+
+    let centsTable: number[] | undefined = this.tuningConfig.scalaCents;
+    if (!centsTable && systemKey !== '12tet') {
+      if (systemKey.includes('!') || systemKey.includes('\n')) {
+        centsTable = parseScalaScl(this.tuningConfig.system!);
+      } else if (BUILTIN_TUNING_CENTS[systemKey]) {
+        centsTable = BUILTIN_TUNING_CENTS[systemKey];
+      }
+    }
+
+    if (!centsTable || systemKey === '12tet') {
+      return a4Hz * Math.pow(2, (midi - 69 + extraCents / 100) / 12);
+    }
+
+    const { rootSemitone } = parseKeyRootSemitone(this.tuningConfig.rootKey || 'C');
+    const rootMidi = 60 + rootSemitone; // Anchor tuning root in Octave 4
+    const rootFreq = a4Hz * Math.pow(2, (rootMidi - 69) / 12);
+
+    const degreeCount = centsTable.length;
+    const periodCents = centsTable[degreeCount - 1] || 1200.0;
+    const stepsFromRoot = midi - rootMidi;
+
+    const periods = Math.floor(stepsFromRoot / degreeCount);
+    const degreeIdx = ((stepsFromRoot % degreeCount) + degreeCount) % degreeCount;
+    const degreeCents = degreeIdx === 0 ? 0 : centsTable[degreeIdx - 1];
+    const totalCents = periods * periodCents + degreeCents + extraCents;
+
+    return rootFreq * Math.pow(2, totalCents / 1200.0);
+  }
+
+  public parsePitch(token: string, style: string = 'standard'): PitchResult {
+    const clean = token.trim().toLowerCase();
+
+    if (clean === 'r') {
+      return { midi: 0, frequency: 0, noteName: 'r', isRest: true };
+    }
+
+    if (clean === 's' && style !== 'grid') {
+      return { midi: 0, frequency: 0, noteName: 's', isSpacer: true };
+    }
+
+    if (style === 'grid') {
+      const mappedMidi = DRUM_GRID_MIDI[clean] ?? 36;
+      const frequency = 440.0 * Math.pow(2, (mappedMidi - 69) / 12);
+      return { midi: mappedMidi, frequency, noteName: clean, gridKey: clean };
+    }
+
+    // Support SPEC.md 2.2 PitchLit: [a-g](tqs|tqf|qs|qf|x|#|b|n)*[0-9]*([+-][0-9]+c?)?
+    const match = clean.match(/^([a-g])((?:tqs|tqf|qs|qf|x|#|b|n)*)([0-9]*)(?:([+-]\d+(?:\.\d+)?)c?)?$/);
+
+    if (!match) {
+      if (DRUM_GRID_MIDI[clean] !== undefined) {
+        const mappedMidi = DRUM_GRID_MIDI[clean];
+        const frequency = 440.0 * Math.pow(2, (mappedMidi - 69) / 12);
+        return { midi: mappedMidi, frequency, noteName: clean, gridKey: clean };
+      }
+      throw new Error(`E1001: Invalid PitchLit token: ${token}`);
+    }
+
+    const note = match[1];
+    const accidentalsStr = match[2] || '';
+    const octaveStr = match[3] || '';
+    const centDeviationStr = match[4];
+
+    if (octaveStr !== '') {
+      this.currentOctave = parseInt(octaveStr, 10);
+    }
+
+    let semitoneOffset = this.noteOffsets[note];
+    let microtoneCents = centDeviationStr ? parseFloat(centDeviationStr) : 0;
+
+    // Parse compound microtonal & standard accidentals left-to-right
+    let accCursor = 0;
+    while (accCursor < accidentalsStr.length) {
+      if (accidentalsStr.startsWith('tqs', accCursor)) {
+        semitoneOffset += 1;
+        microtoneCents += 50;
+        accCursor += 3;
+      } else if (accidentalsStr.startsWith('tqf', accCursor)) {
+        semitoneOffset -= 1;
+        microtoneCents -= 50;
+        accCursor += 3;
+      } else if (accidentalsStr.startsWith('qs', accCursor)) {
+        microtoneCents += 50;
+        accCursor += 2;
+      } else if (accidentalsStr.startsWith('qf', accCursor)) {
+        microtoneCents -= 50;
+        accCursor += 2;
+      } else if (accidentalsStr[accCursor] === 'x') {
+        semitoneOffset += 2;
+        accCursor += 1;
+      } else if (accidentalsStr[accCursor] === '#') {
+        semitoneOffset += 1;
+        accCursor += 1;
+      } else if (accidentalsStr[accCursor] === 'b') {
+        semitoneOffset -= 1;
+        accCursor += 1;
+      } else if (accidentalsStr[accCursor] === 'n') {
+        accCursor += 1;
+      } else {
+        accCursor += 1;
+      }
+    }
+
+    let midi = (this.currentOctave + 1) * 12 + semitoneOffset;
+
+    if (this.tuningConfig.scaleLock && this.tuningConfig.scaleName && this.tuningConfig.scaleName !== 'chromatic') {
+      midi = quantizeMidiToScale(
+        midi,
+        this.tuningConfig.rootKey || 'C',
+        this.tuningConfig.scaleName
+      );
+    }
+
+    const frequency = this.computeFrequencyForMidi(midi, microtoneCents);
+
+    const result: PitchResult = {
+      midi,
+      frequency,
+      noteName: `${note}${accidentalsStr}${this.currentOctave}`,
+    };
+    if (microtoneCents !== 0) {
+      result.microtoneCents = microtoneCents;
+    }
+    return result;
+  }
+}
+
+```
+
+### 3.2 `src/parser/ASTSerializer.ts` - Expose `configureTuning` on `ASTSerializer`
+
+In `src/parser/ASTSerializer.ts`, import `TuningConfiguration` from `./PitchEngine` and add a `configureTuning(config: TuningConfiguration): void` method on `ASTSerializer` so `DocumentParser` can configure each track/voice serializer with the score's active scale, root key, and microtonal tuning system:
+
+1. Update line 1 of `src/parser/ASTSerializer.ts`:
+
+```typescript
+import { PitchEngine, PitchResult, TuningConfiguration } from './PitchEngine';
+
+```
+
+2. Add `configureTuning` right below `reset()` in `ASTSerializer`:
+
+```typescript
+  public configureTuning(config: TuningConfiguration): void {
+    this.pitchEngine.setTuningConfiguration(config);
+  }
+
+```
+
+### 3.3 `src/parser/DocumentParser.ts` - Wire `meta @{ key, scale, scale_lock, tuning, a4_hz }` into `ASTSerializer`
+
+In `src/parser/DocumentParser.ts`:
+
+1. Add `scaleLock?: boolean;` and `a4Hz?: number;` to `ScoreMeta`:
+
+```typescript
+export interface ScoreMeta {
+  title: string;
+  tempo: number;
+  time: string;
+  key?: string;
+  scale?: string;
+  scaleLock?: boolean;
+  tuning?: string;
+  a4Hz?: number;
+  quantizeLaunch?: string;
+  crossfader?: number;
+  sidechain: string | null;
+  autoPadVoices: boolean;
+  tempoMap?: Array<{ startWhole: number; tempo: number }>;
+}
+
+```
+
+2. Inside `compile(rawSource: string)` under `// 2. Extract meta @{ ... }`, parse `scale_lock` and `a4_hz`:
+
+```typescript
+      if (typeof parsedMeta.scale_lock === 'boolean') meta.scaleLock = parsedMeta.scale_lock;
+      if (typeof parsedMeta.a4_hz === 'number') meta.a4Hz = parsedMeta.a4_hz;
+
+```
+
+3. Update `getSerializer` and the `new ASTSerializer()` calls in `clip` and `scene` parsing so every `ASTSerializer` receives the active tuning configuration:
+
+```typescript
+    const tuningConfig = {
+      system: meta.tuning || '12tet',
+      rootKey: meta.key || 'C',
+      scaleName: meta.scale || 'chromatic',
+      scaleLock: Boolean(meta.scaleLock),
+      a4Hz: meta.a4Hz || 440.0,
+    };
+
+    const trackSerializers = new Map<string, ASTSerializer>();
+    const getSerializer = (key: string): ASTSerializer => {
+      if (!trackSerializers.has(key)) {
+        const s = new ASTSerializer();
+        s.configureTuning(tuningConfig);
+        trackSerializers.set(key, s);
+      }
+      return trackSerializers.get(key)!;
+    };
+
+```
+
+And call `clipSerializer.configureTuning(tuningConfig);` in step `// 7. Parse standalone Session/Arrangement clip blocks` and `serializer.configureTuning(tuningConfig);` in step `// 8. Parse Session View scene blocks`.
+
+### 3.4 `src/components/WebGPUCanvas.tsx` - Highlight Diatonic Scale Rows & Root Notes on the Piano Roll
+
+In `src/components/WebGPUCanvas.tsx`:
+
+1. Import `isMidiInScale, parseKeyRootSemitone` from `../parser/PitchEngine`.
+2. Add optional `rootKey?: string;` and `scaleName?: string;` props to `WebGPUCanvas`:
+
+```typescript
+export default function WebGPUCanvas({
+  events = [],
+  playheadBeat = 0,
+  isPlaying = false,
+  rootKey,
+  scaleName,
+  onMutation,
+  onSelect,
+}: {
+  events?: any[];
+  playheadBeat?: number;
+  isPlaying?: boolean;
+  rootKey?: string;
+  scaleName?: string;
+  onMutation?: (eventData: any, deltaX: number) => void;
+  onSelect?: (nodeData: any) => void;
+}) {
+
+```
+
+3. Inside `staticPianoRollContent` where horizontal pitch rows are rendered (`Array.from({ length: numRows }).map((_, idx) => ...)`), highlight the root note row and in-scale rows when `rootKey` or `scaleName` is set:
+
+```typescript
+          const { rootSemitone } = parseKeyRootSemitone(rootKey || 'C');
+          const isRootRow = Boolean(rootKey) && noteMod === rootSemitone;
+          const inScale = isMidiInScale(midi, rootKey || 'C', scaleName || 'chromatic');
+          const rowFill = isRootRow
+            ? '#172554'
+            : scaleName && scaleName !== 'chromatic' && !inScale
+              ? '#060911'
+              : isBlackKey
+                ? '#090D16'
+                : '#0F172A';
+
+```
+
+And use `fill={rowFill}` on the row `<rect>` (replacing `fill={isBlackKey ? '#090D16' : '#0F172A'}`), and add `rootKey, scaleName` to the `useMemo` dependency array of `staticPianoRollContent`.
+
+### 3.5 `src/components/Transport.tsx` & `src/components/SplitWorkspace.tsx` - Add Live Key & Scale Selector to Transport Bar
+
+1. In `src/components/Transport.tsx`, add optional props `rootKey?: string;`, `scaleName?: string;`, and `onKeyScaleChange?: (key: string, scale: string) => void;` to `TransportProps`, and render compact Key & Scale selectors inside the center status pill when provided:
+
+```typescript
+interface TransportProps {
+  isPlaying: boolean;
+  onTogglePlay: () => void;
+  onStop?: () => void;
+  isLooping?: boolean;
+  onToggleLoop?: () => void;
+  tempo?: number;
+  timeSignature?: string;
+  title?: string;
+  currentBeat?: number;
+  rootKey?: string;
+  scaleName?: string;
+  onKeyScaleChange?: (newKey: string, newScale: string) => void;
+  masterVolume?: number;
+  onMasterVolumeChange?: (newVolume: number) => void;
+  onSelectPreset?: (code: string) => void;
+  onExportWav?: () => void;
+}
+
+```
+
+Inside `Transport.tsx`, right after `<span className="text-slate-500">{timeSignature}</span>`, add:
+
+```tsx
+          {onKeyScaleChange && (
+            <>
+              <span className="text-slate-700">|</span>
+              <select
+                aria-label="Key Signature"
+                value={rootKey || 'C'}
+                onChange={(e) => onKeyScaleChange(e.target.value, scaleName || 'chromatic')}
+                className="bg-slate-900 border border-slate-700 text-amber-300 text-[11px] rounded px-1 py-0.5 outline-none cursor-pointer"
+              >
+                {['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'].map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
+              <select
+                aria-label="Scale Mode"
+                value={scaleName || 'chromatic'}
+                onChange={(e) => onKeyScaleChange(rootKey || 'C', e.target.value)}
+                className="bg-slate-900 border border-slate-700 text-cyan-300 text-[11px] rounded px-1 py-0.5 outline-none cursor-pointer"
+              >
+                <option value="chromatic">Chromatic</option>
+                <option value="major">Major</option>
+                <option value="minor">Minor</option>
+                <option value="harmonic_minor">Harmonic Minor</option>
+                <option value="dorian">Dorian</option>
+                <option value="phrygian">Phrygian</option>
+                <option value="lydian">Lydian</option>
+                <option value="mixolydian">Mixolydian</option>
+                <option value="minor_pentatonic">Minor Pentatonic</option>
+                <option value="blues">Blues</option>
+              </select>
+            </>
+          )}
+
+```
+
+2. In `src/components/SplitWorkspace.tsx`:
+* Extend `scoreMeta` state to include `key?: string; scale?: string;`:
+```typescript
+const [scoreMeta, setScoreMeta] = useState<{
+  title: string;
+  tempo: number;
+  time: string;
+  key?: string;
+  scale?: string;
+}>({
+  title: 'Sketch',
+  tempo: 120,
+  time: '4/4',
+  key: 'C',
+  scale: 'chromatic',
+});
+
+```
+
+
+* In the `useEffect` that reads `compiledScore.meta`, also store `key: compiledScore.meta.key || 'C'` and `scale: compiledScore.meta.scale || 'chromatic'`.
+* Pass `rootKey={scoreMeta.key}` and `scaleName={scoreMeta.scale}` to both `<Transport />` and `<WebGPUCanvas />`, and wire `onKeyScaleChange` on `<Transport />` to update `meta @{ key, scale }` in `sourceCode` via `topologicalMutator.applyMixerMutationToSource`.
+
+
+
+### 3.6 `tests/scale_and_microtuning.test.ts` - Create Verification Suite for Scale Lock & Microtonal Tuning
+
+Create `tests/scale_and_microtuning.test.ts`:
+
+```typescript
+import { describe, it, expect, beforeEach } from 'vitest';
+import {
+  PitchEngine,
+  parseScalaScl,
+  isMidiInScale,
+  quantizeMidiToScale,
+} from '../src/parser/PitchEngine';
+import { DocumentParser } from '../src/parser/DocumentParser';
+
+describe('TDB-703: Global Scale Lock & Microtonal Tuning Engine (.scl / .tun)', () => {
+  let engine: PitchEngine;
+  let parser: DocumentParser;
+
+  beforeEach(() => {
+    engine = new PitchEngine();
+    parser = new DocumentParser();
+  });
+
+  it('parses quarter-tone accidentals (qs, qf, tqs, tqf, x) and explicit cent offsets', () => {
+    // A4 = 440 Hz
+    const a4 = engine.parsePitch('a4');
+    expect(a4.frequency).toBeCloseTo(440.0, 2);
+
+    // Quarter-sharp A4 (aqs4 = +50 cents above A4 = 440 * 2^(0.5/12) ≈ 452.893 Hz)
+    const aqs4 = engine.parsePitch('aqs4');
+    expect(aqs4.midi).toBe(69);
+    expect(aqs4.microtoneCents).toBe(50);
+    expect(aqs4.frequency).toBeCloseTo(452.893, 2);
+
+    // Quarter-flat A4 (aqf4 = -50 cents below A4 ≈ 427.474 Hz)
+    const aqf4 = engine.parsePitch('aqf4');
+    expect(aqf4.microtoneCents).toBe(-50);
+    expect(aqf4.frequency).toBeCloseTo(427.474, 2);
+
+    // Double-sharp C4 (cx4 = MIDI 62 = D4)
+    const cx4 = engine.parsePitch('cx4');
+    expect(cx4.midi).toBe(62);
+
+    // Explicit cent deviation (c4+25c)
+    const c4Plus25 = engine.parsePitch('c4+25c');
+    expect(c4Plus25.midi).toBe(60);
+    expect(c4Plus25.microtoneCents).toBe(25);
+  });
+
+  it('parses Scala (.scl) tuning definitions and evaluates Just Intonation and Bohlen-Pierce frequencies', () => {
+    const sampleScl = `
+! 5-limit_just.scl
+5-Limit Just Intonation
+ 12
+!
+ 16/15
+ 9/8
+ 6/5
+ 5/4
+ 4/3
+ 45/32
+ 3/2
+ 8/5
+ 5/3
+ 9/5
+ 15/8
+ 2/1
+    `;
+    const cents = parseScalaScl(sampleScl);
+    expect(cents).toHaveLength(12);
+    // 5/4 major third = 386.314 cents (pure major third vs 400c 12-TET)
+    expect(cents[3]).toBeCloseTo(386.314, 2);
+    // 3/2 perfect fifth = 701.955 cents
+    expect(cents[6]).toBeCloseTo(701.955, 2);
+
+    engine.setTuningConfiguration({
+      system: 'just_intonation',
+      rootKey: 'C',
+      a4Hz: 440,
+    });
+
+    const c4 = engine.parsePitch('c4');
+    const e4 = engine.parsePitch('e4');
+    // In pure 5-limit Just Intonation rooted on C, E4 / C4 frequency ratio is exactly 5 / 4 = 1.25
+    expect(e4.frequency / c4.frequency).toBeCloseTo(1.25, 4);
+  });
+
+  it('evaluates scale membership and quantizes out-of-scale pitches when scale_lock is enabled in meta', () => {
+    expect(isMidiInScale(60, 'C', 'major')).toBe(true);  // C4
+    expect(isMidiInScale(61, 'C', 'major')).toBe(false); // C#4
+    expect(quantizeMidiToScale(61, 'C', 'major')).toBe(60);
+
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{
+          title: "Scale Lock & Just Tuning",
+          tempo: 120,
+          time: "4/4",
+          key: "D",
+          scale: "harmonic_minor",
+          scale_lock: true,
+          tuning: "just_intonation"
+        }
+        def lead "Synth" style=synth patch="saw_lead"
+        measure 1 {
+          lead: d4:4 eb4:4 f#4:4 a4:4 |
+        }
+      }
+    `);
+
+    expect(score.events).toHaveLength(4);
+    // D harmonic minor has pitches D(2), E(4), F(5), G(7), A(9), Bb(10), C#(1)
+    // eb4 (MIDI 63) and f#4 (MIDI 66) are out-of-scale and must snap into D harmonic minor
+    for (const ev of score.events) {
+      expect(isMidiInScale(ev.pitch.midi, 'D', 'harmonic_minor')).toBe(true);
+    }
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/audio/`
+* `src/parser/lexer.ts`, `src/parser/TemporalEngine.ts`, `src/parser/IncrementalCompiler.ts`
+* `src/components/CodeEditor.tsx`, `src/components/Mixer.tsx`, `src/components/Inspector.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+* All existing test files in `tests/`
+
+Explicitly:
+
+* Do NOT modify or delete any existing test file in `tests/`.
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero TypeScript errors.
+2. `npx vitest run` passes all existing test suites (`tests/pitch_engine.test.ts`, `tests/daw_grammar_extension.test.ts`, `tests/surgical_ast_mutator.test.ts`, etc.) plus the new `tests/scale_and_microtuning.test.ts` suite.
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. `PitchEngine` accurately parses quarter-tone accidentals (`qs`, `qf`, `tqs`, `tqf`, `x`, `±cents`), Scala `.scl` tuning tables, and scale-locked pitches when `meta @{ scale_lock: true }` is enabled.
+
+---
+
+## 6. Constraints
+
+Must not:
+
+* Break `tests/pitch_engine.test.ts` (default `new PitchEngine()` must remain `12tet` at `A4 = 440.0 Hz` with `scaleLock = false`).
+* Break `tests/transport_binding.test.tsx` or `tests/studio_engine_and_ui.test.tsx`.
+
+---
+
+## 7. Manual Steps
+
+None required for this contract.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or restore `src/parser/PitchEngine.ts`, `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, `src/components/WebGPUCanvas.tsx`, `src/components/Transport.tsx`, and `src/components/SplitWorkspace.tsx`, and remove `tests/scale_and_microtuning.test.ts`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `tests/scale_and_microtuning.test.ts`
+* Modified file(s): `src/parser/PitchEngine.ts`, `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, `src/components/WebGPUCanvas.tsx`, `src/components/Transport.tsx`, `src/components/SplitWorkspace.tsx`
+* Commit message: `feat(pitch): add global scale lock, Scala microtonal tuning engine, and quarter-tone accidentals`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Microtonal & Quarter-Tone Pitches** | Threw `E1001: Invalid PitchLit token` on `aqs4`, `ebqf4`, `cx4`, or `c4+25c` | Parses quarter-sharps (`qs`), quarter-flats (`qf`), three-quarter-tones (`tqs`/`tqf`), double-sharps (`x`), and cent offsets (`±Nc`) |
+| **Microtonal Tuning Systems (`.scl`)** | Hardcoded 12-TET equal temperament only | Supports `just_intonation`, `pythagorean`, `meantone`, `19tet`, `24tet`, `31tet`, `carlos_alpha`, `bohlen_pierce`, `slendro`, `pelog`, and raw Scala `.scl` files |
+| **Ableton Live 12 Global Scale Lock** | No scale awareness or Piano Roll scale highlighting | Supports 22 scales (`meta @{ key: "D", scale: "harmonic_minor", scale_lock: true }`), highlights root and in-scale rows on the Piano Roll, and provides live Key/Scale selectors in Transport |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-24
+Implementer: AI Agent
+
+```
+
+```

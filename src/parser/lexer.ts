@@ -29,7 +29,25 @@ export interface Token {
   value: string;
 }
 
-const KEYWORDS = new Set(['tenuto', 'def', 'measure', 'macro', 'meta', 'var', 'style', 'patch', 'map']);
+const KEYWORDS = new Set([
+  'tenuto',
+  'def',
+  'def_return',
+  'return',
+  'group',
+  'scene',
+  'clip',
+  'locator',
+  'groove',
+  'rack',
+  'measure',
+  'macro',
+  'meta',
+  'var',
+  'style',
+  'patch',
+  'map',
+]);
 
 export class Lexer {
   private input: string;

@@ -1,0 +1,699 @@
+### Stage 3 Oracle Audit: Contract #8 (`TDB-708`)
+
+* **Boundary & Diff Audit:** Only the 2 new files (`src/audio/FollowActionEngine.ts`, `tests/follow_actions_and_probability.test.ts`) and 2 authorized source files (`src/audio/StudioAudioEngine.ts`, `src/components/SessionView.tsx`) were modified.
+* **Test & Build Integrity:** All 4 test suites (`daw_grammar_extension`, `follow_actions_and_probability`, `multi_view_shell`, and `session_view_launcher` — **10/10 tests**) and `vite build` passed with zero errors.
+* **Verdict:** **Approved.**
+
+---
+
+### Next Step: Run `TDB-709` (from the previous message), Then Complete Phase 2 with `TDB-710` Below
+
+You can now run **Contract #9 (`TDB-709: Arrangement View Multi-Track Timeline, Locators & Loop Brace`)** from the previous message in Google AI Studio.
+
+Here is **Implementation Contract #10 (`TDB-710: Metronome, Count-In, Tap Tempo & Capture MIDI`)** ready to run right after `TDB-709` finishes, which will complete **Phase 2**:
+
+```markdown
+# Implementation Contract: Metronome, Count-In, Tap Tempo & Capture MIDI (TDB-710)
+
+**Project:** Tenuto Studio 5
+**Scope:** Create `src/audio/MetronomeAndCaptureEngine.ts` and upgrade `src/audio/StudioAudioEngine.ts`, `src/components/Transport.tsx`, and `src/components/SplitWorkspace.tsx` to add Ableton Live's Metronome click track, configurable Count-In (`None`, `1 Bar`, `2 Bars`, `4 Bars`), live Tap Tempo calculation (synced directly to `meta @{ tempo }` in `.ten` code), and retroactive Capture MIDI (converting spontaneous note inputs into quantized `.ten` measure blocks).
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+To complete Phase 2 of the Ableton Live 12 parity roadmap, the top Transport bar (`src/components/Transport.tsx`) and audio engine (`src/audio/StudioAudioEngine.ts`) need Ableton's four essential timing and performance capture utilities:
+1. **Metronome Click Track:** A toggleable studio metronome that schedules pitched downbeat accents (`1320 Hz` on Beat 1) and subdivision clicks (`880 Hz` on remaining beats) synchronized to the score's time signature and tempo.
+2. **Count-In (`None` | `1 Bar` | `2 Bars` | `4 Bars`):** Configurable pre-roll count-in clicks before score playback begins.
+3. **Tap Tempo (`Tap`):** A rolling multi-tap interval detector that computes the exact BPM from consecutive user taps and writes the updated `tempo` directly into `meta @{ tempo: ... }` in the `.ten` source code.
+4. **Capture MIDI (`Capture`):** A rolling note capture buffer that records spontaneous note inputs (from computer keyboard piano keys or MIDI controllers) and retroactively quantizes and serializes them into a clean `.ten` `measure` block in one click.
+
+---
+
+## 2. Root Cause
+1. `src/audio/MetronomeAndCaptureEngine.ts` does not exist yet to calculate tap tempo BPM averages, generate metronome click schedules, or quantize captured MIDI note timestamps into `.ten` rational tokens.
+2. `src/audio/StudioAudioEngine.ts` lacks metronome click synthesis (`isMetronomeEnabled`, `countInBars`) during `playScore()`.
+3. `src/components/Transport.tsx` and `src/components/SplitWorkspace.tsx` lack UI controls and bindings for Metronome, Count-In, Tap Tempo, and Capture MIDI.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/audio/MetronomeAndCaptureEngine.ts` - Create Tap Tempo, Metronome Scheduler & Retroactive MIDI-to-`.ten` Quantizer
+Create `src/audio/MetronomeAndCaptureEngine.ts`:
+
+```typescript
+export interface CapturedNoteInput {
+  midi: number;
+  velocity: number;
+  timestampMs: number;
+  durationMs: number;
+}
+
+export interface MetronomeTickEvent {
+  beatIndex: number;
+  measureNumber: number;
+  beatInMeasure: number;
+  isDownbeat: boolean;
+  isCountIn: boolean;
+  timeSec: number;
+  frequencyHz: number;
+}
+
+const NOTE_NAMES_SHARP = ['c', 'c#', 'd', 'd#', 'e', 'f', 'f#', 'g', 'g#', 'a', 'a#', 'b'];
+
+export class MetronomeAndCaptureEngine {
+  private tapTimestampsMs: number[] = [];
+  private capturedNotes: CapturedNoteInput[] = [];
+  private maxCaptureBufferSize: number = 128;
+
+  /**
+   * Registers a tap timestamp (in ms) and returns the computed BPM (clamped to 40..240)
+   * once at least 2 taps within 2200ms of each other have been recorded.
+   */
+  public registerTap(nowMs: number = Date.now()): number | null {
+    if (this.tapTimestampsMs.length > 0) {
+      const lastTap = this.tapTimestampsMs[this.tapTimestampsMs.length - 1];
+      if (nowMs - lastTap > 2200) {
+        this.tapTimestampsMs = [];
+      }
+    }
+
+    this.tapTimestampsMs.push(nowMs);
+    if (this.tapTimestampsMs.length > 8) {
+      this.tapTimestampsMs.shift();
+    }
+
+    if (this.tapTimestampsMs.length < 2) {
+      return null;
+    }
+
+    let totalIntervalMs = 0;
+    const count = this.tapTimestampsMs.length - 1;
+    for (let i = 1; i < this.tapTimestampsMs.length; i++) {
+      totalIntervalMs += this.tapTimestampsMs[i] - this.tapTimestampsMs[i - 1];
+    }
+
+    const avgIntervalMs = totalIntervalMs / count;
+    if (avgIntervalMs <= 0) return null;
+
+    const rawBpm = 60000 / avgIntervalMs;
+    return Math.max(40, Math.min(240, Math.round(rawBpm)));
+  }
+
+  public resetTaps(): void {
+    this.tapTimestampsMs = [];
+  }
+
+  /**
+   * Records a spontaneous note event into the rolling Capture MIDI buffer.
+   */
+  public recordNoteInput(note: CapturedNoteInput): void {
+    this.capturedNotes.push(note);
+    if (this.capturedNotes.length > this.maxCaptureBufferSize) {
+      this.capturedNotes.shift();
+    }
+  }
+
+  public getCapturedNoteCount(): number {
+    return this.capturedNotes.length;
+  }
+
+  public clearCapturedNotes(): void {
+    this.capturedNotes = [];
+  }
+
+  public static midiToTenutoPitch(midi: number): string {
+    const clamped = Math.max(12, Math.min(108, Math.round(midi)));
+    const octave = Math.floor(clamped / 12) - 1;
+    const step = NOTE_NAMES_SHARP[clamped % 12];
+    return `${step}${octave}`;
+  }
+
+  public static quantizeBeatsToDurationToken(quarterBeats: number): { token: string; beats: number } {
+    const candidates = [
+      { token: '16', beats: 0.25 },
+      { token: '8', beats: 0.5 },
+      { token: '8.', beats: 0.75 },
+      { token: '4', beats: 1.0 },
+      { token: '4.', beats: 1.5 },
+      { token: '2', beats: 2.0 },
+      { token: '2.', beats: 3.0 },
+      { token: '1', beats: 4.0 },
+    ];
+
+    let best = candidates[3]; // Default :4
+    let minDiff = Infinity;
+    for (const c of candidates) {
+      const diff = Math.abs(quarterBeats - c.beats);
+      if (diff < minDiff) {
+        minDiff = diff;
+        best = c;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Converts the rolling buffer of captured notes into a quantized 4/4 `.ten` measure token stream
+   * (padded to 4.0 beats with a trailing rest if needed) so Capture MIDI never produces invalid bar math.
+   */
+  public flushCapturedNotesToTenutoMeasure(
+    tempoBpm: number = 120,
+    trackId: string = 'pno',
+    measureNumber: number = 1
+  ): { measureCode: string; tokens: string[] } | null {
+    const notesToFlush =
+      this.capturedNotes.length > 0
+        ? [...this.capturedNotes]
+        : [
+            // Default musical motif if user clicks Capture MIDI before playing external notes
+            { midi: 60, velocity: 95, timestampMs: 0, durationMs: 450 },
+            { midi: 64, velocity: 95, timestampMs: 500, durationMs: 450 },
+            { midi: 67, velocity: 100, timestampMs: 1000, durationMs: 450 },
+            { midi: 72, velocity: 105, timestampMs: 1500, durationMs: 450 },
+          ];
+
+    this.capturedNotes = [];
+
+    const secPerBeat = 60 / Math.max(40, tempoBpm || 120);
+    const msPerBeat = secPerBeat * 1000;
+
+    const tokens: string[] = [];
+    let accumulatedBeats = 0;
+
+    for (const item of notesToFlush) {
+      if (accumulatedBeats >= 4.0 - 1e-4) break;
+      const rawBeats = Math.max(0.25, item.durationMs / msPerBeat);
+      const remaining = 4.0 - accumulatedBeats;
+      const clampedBeats = Math.min(remaining, rawBeats);
+      const quantized = MetronomeAndCaptureEngine.quantizeBeatsToDurationToken(clampedBeats);
+      const pitchLit = MetronomeAndCaptureEngine.midiToTenutoPitch(item.midi);
+
+      tokens.push(`${pitchLit}:${quantized.token}`);
+      accumulatedBeats += quantized.beats;
+    }
+
+    if (accumulatedBeats < 4.0 - 1e-4) {
+      const rem = 4.0 - accumulatedBeats;
+      const restQuant = MetronomeAndCaptureEngine.quantizeBeatsToDurationToken(rem);
+      tokens.push(`r:${restQuant.token}`);
+    }
+
+    const measureCode = `  measure ${measureNumber} {\n    ${trackId}: ${tokens.join(' ')} |\n  }`;
+    return { measureCode, tokens };
+  }
+
+  /**
+   * Builds a deterministic schedule of Metronome click events (including optional pre-roll count-in bars).
+   */
+  public static buildMetronomeSchedule(
+    totalQuarterBeats: number,
+    tempoBpm: number = 120,
+    timeSignature: string = '4/4',
+    countInBars: number = 0
+  ): MetronomeTickEvent[] {
+    const [beatsStr] = (timeSignature || '4/4').split('/');
+    const beatsPerBar = Math.max(1, parseInt(beatsStr, 10) || 4);
+    const secPerBeat = 60 / Math.max(20, tempoBpm || 120);
+
+    const countInBeats = Math.max(0, Math.round(countInBars)) * beatsPerBar;
+    const scoreBeats = Math.max(1, Math.ceil(totalQuarterBeats));
+    const totalTicks = countInBeats + scoreBeats;
+
+    const ticks: MetronomeTickEvent[] = [];
+    for (let i = 0; i < totalTicks; i++) {
+      const isCountIn = i < countInBeats;
+      const beatInMeasure = (i % beatsPerBar) + 1;
+      const isDownbeat = beatInMeasure === 1;
+      const measureNumber = isCountIn
+        ? -(countInBars - Math.floor(i / beatsPerBar))
+        : Math.floor((i - countInBeats) / beatsPerBar) + 1;
+
+      ticks.push({
+        beatIndex: i,
+        measureNumber,
+        beatInMeasure,
+        isDownbeat,
+        isCountIn,
+        timeSec: i * secPerBeat,
+        frequencyHz: isDownbeat ? 1320 : 880,
+      });
+    }
+
+    return ticks;
+  }
+}
+
+```
+
+### 3.2 `src/audio/StudioAudioEngine.ts` - Add Metronome Click Synthesis & Count-In Pre-Roll Support
+
+In `src/audio/StudioAudioEngine.ts`:
+
+1. Import `MetronomeAndCaptureEngine` from `./MetronomeAndCaptureEngine`:
+
+```typescript
+import { MetronomeAndCaptureEngine } from './MetronomeAndCaptureEngine';
+
+```
+
+2. Add private state fields on `StudioAudioEngine` (right below `private loopEndMeasure: number | null = null;`):
+
+```typescript
+  private isMetronomeEnabled: boolean = false;
+  private countInBars: number = 0;
+
+```
+
+3. Add public getter/setter methods and `scheduleMetronomeClick` on `StudioAudioEngine` (right below `public setLoop(loop: boolean): void`):
+
+```typescript
+  public setMetronomeEnabled(enabled: boolean): void {
+    this.isMetronomeEnabled = Boolean(enabled);
+  }
+
+  public getMetronomeEnabled(): boolean {
+    return this.isMetronomeEnabled;
+  }
+
+  public setCountInBars(bars: number): void {
+    this.countInBars = Math.max(0, Math.min(8, Math.round(bars)));
+  }
+
+  public getCountInBars(): number {
+    return this.countInBars;
+  }
+
+  private scheduleMetronomeClick(
+    ctx: BaseAudioContext,
+    startSec: number,
+    frequencyHz: number,
+    isDownbeat: boolean
+  ): void {
+    if (!this.masterGain) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = isDownbeat ? 'triangle' : 'sine';
+    osc.frequency.setValueAtTime(frequencyHz, startSec);
+    osc.frequency.exponentialRampToValueAtTime(frequencyHz * 0.65, startSec + 0.032);
+
+    const peak = isDownbeat ? 0.35 : 0.2;
+    gain.gain.setValueAtTime(0.0001, startSec);
+    gain.gain.linearRampToValueAtTime(peak, startSec + 0.002);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startSec + 0.038);
+
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(startSec);
+    osc.stop(startSec + 0.045);
+  }
+
+```
+
+4. Inside `playScore(score: CompiledScore)` in `src/audio/StudioAudioEngine.ts`, when `this.isMetronomeEnabled` is true or `this.countInBars > 0`, offset the score note timeline by the count-in duration and schedule metronome ticks within the 220ms lookahead window:
+* Right after `this.scheduledTimeline = this.buildScheduledTimeline(score);`, add:
+```typescript
+const [beatsStr] = (score.meta?.time || '4/4').split('/');
+const beatsPerBar = Math.max(1, parseInt(beatsStr, 10) || 4);
+const countInSec = this.countInBars > 0 ? this.countInBars * beatsPerBar * (60 / this.tempoBpm) : 0;
+if (countInSec > 0) {
+  for (const item of this.scheduledTimeline) {
+    item.startSec += countInSec;
+  }
+  this.scoreDurationSec += countInSec;
+}
+const metronomeTicks =
+  this.isMetronomeEnabled || this.countInBars > 0
+    ? MetronomeAndCaptureEngine.buildMetronomeSchedule(
+        this.totalQuarterBeats,
+        this.tempoBpm,
+        score.meta?.time || '4/4',
+        this.countInBars
+      )
+    : [];
+let nextMetronomeIdx = 0;
+
+```
+
+
+* And inside `scheduleLookaheadSlice` in `playScore()`, add:
+```typescript
+while (
+  nextMetronomeIdx < metronomeTicks.length &&
+  metronomeTicks[nextMetronomeIdx].timeSec <= elapsed + LOOKAHEAD_SEC
+) {
+  const tick = metronomeTicks[nextMetronomeIdx];
+  if (
+    (this.isMetronomeEnabled || tick.isCountIn) &&
+    tick.timeSec >= elapsed - 0.025
+  ) {
+    this.scheduleMetronomeClick(
+      this.ctx,
+      this.startContextTime + tick.timeSec,
+      tick.frequencyHz,
+      tick.isDownbeat
+    );
+  }
+  nextMetronomeIdx++;
+}
+
+```
+
+
+
+
+
+### 3.3 `src/components/Transport.tsx` - Add Metronome, Count-In, Tap Tempo & Capture MIDI Controls
+
+In `src/components/Transport.tsx`:
+
+> **CRITICAL TEST CONSTRAINT:** Never use the substring `"Play"` inside any new button text or `aria-label` in `Transport.tsx` (use `"Toggle Metronome"`, `"Count-In Bars"`, `"Tap Tempo"`, `"Capture MIDI"`), so `screen.getByRole('button', { name: /Play/i })` in `tests/transport_binding.test.tsx` continues to match only the main Play/Pause button.
+
+1. Add optional props to `TransportProps` in `src/components/Transport.tsx`:
+
+```typescript
+  isMetronomeEnabled?: boolean;
+  onToggleMetronome?: () => void;
+  countInBars?: number;
+  onCountInBarsChange?: (bars: number) => void;
+  onTapTempo?: () => void;
+  onCaptureMidi?: () => void;
+
+```
+
+2. Destructure the new optional props in `Transport`:
+
+```typescript
+  isMetronomeEnabled = false,
+  onToggleMetronome,
+  countInBars = 0,
+  onCountInBarsChange,
+  onTapTempo,
+  onCaptureMidi,
+
+```
+
+3. Inside the **Center** transport controls group (immediately after the `Loop` button), render the compact **Tap Tempo**, **Metronome (`Click`)**, **Count-In**, and **Capture MIDI** controls when their callbacks are provided:
+
+```tsx
+        {onTapTempo && (
+          <button
+            type="button"
+            aria-label="Tap Tempo"
+            onClick={onTapTempo}
+            className="bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 font-semibold py-1.5 px-2.5 rounded-md text-xs uppercase transition-colors cursor-pointer"
+            title="Tap repeatedly to set project BPM"
+          >
+            Tap
+          </button>
+        )}
+
+        {onToggleMetronome && (
+          <button
+            type="button"
+            aria-label="Toggle Metronome"
+            onClick={onToggleMetronome}
+            className={`${
+              isMetronomeEnabled
+                ? 'bg-amber-500/25 border-amber-500 text-amber-300'
+                : 'bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300'
+            } border font-semibold py-1.5 px-2.5 rounded-md text-xs uppercase transition-colors cursor-pointer`}
+            title="Toggle Metronome Click Track"
+          >
+            Click
+          </button>
+        )}
+
+        {onCountInBarsChange && (
+          <select
+            aria-label="Count-In Bars"
+            value={countInBars}
+            onChange={(e) => onCountInBarsChange(parseInt(e.target.value, 10))}
+            className="bg-slate-950 border border-slate-800 text-slate-300 text-xs rounded-md px-2 py-1.5 outline-none cursor-pointer"
+            title="Recording / Launch Count-In Bars"
+          >
+            <option value={0}>No Count-In</option>
+            <option value={1}>1 Bar In</option>
+            <option value={2}>2 Bars In</option>
+            <option value={4}>4 Bars In</option>
+          </select>
+        )}
+
+        {onCaptureMidi && (
+          <button
+            type="button"
+            aria-label="Capture MIDI"
+            onClick={onCaptureMidi}
+            className="bg-purple-600/20 hover:bg-purple-600/35 border border-purple-500/50 text-purple-300 font-semibold py-1.5 px-2.5 rounded-md text-xs uppercase transition-colors cursor-pointer"
+            title="Retroactively capture played notes into a new .ten measure"
+          >
+            Capture
+          </button>
+        )}
+
+```
+
+### 3.4 `src/components/SplitWorkspace.tsx` - Wire Metronome, Count-In, Tap Tempo & Capture MIDI to `.ten` Source Code
+
+In `src/components/SplitWorkspace.tsx`:
+
+1. Import `MetronomeAndCaptureEngine` from `../audio/MetronomeAndCaptureEngine`:
+
+```typescript
+import { MetronomeAndCaptureEngine } from '../audio/MetronomeAndCaptureEngine';
+
+```
+
+2. Add state and `useMemo` instance for `metronomeCapture`:
+
+```typescript
+  const [isMetronomeEnabled, setIsMetronomeEnabled] = useState<boolean>(false);
+  const [countInBars, setCountInBars] = useState<number>(0);
+  const metronomeCapture = useMemo(() => new MetronomeAndCaptureEngine(), []);
+
+```
+
+3. Add handlers for toggling the metronome, setting count-in bars, tapping tempo, and capturing MIDI into `.ten` source code:
+
+```typescript
+  const handleToggleMetronome = () => {
+    const next = !isMetronomeEnabled;
+    setIsMetronomeEnabled(next);
+    studioAudio.setMetronomeEnabled(next);
+  };
+
+  const handleCountInBarsChange = (bars: number) => {
+    setCountInBars(bars);
+    studioAudio.setCountInBars(bars);
+  };
+
+  const handleTapTempo = () => {
+    const detectedBpm = metronomeCapture.registerTap(Date.now());
+    if (detectedBpm !== null) {
+      setScoreMeta((prev) => ({ ...prev, tempo: detectedBpm }));
+      handleUpdateAST({
+        mutationType: 'META_UPDATE',
+        metaKey: 'tempo',
+        metaValue: detectedBpm,
+      });
+    }
+  };
+
+  const handleCaptureMidi = () => {
+    const firstTrackId = compiledScoreState?.defs?.[0]?.id || 'pno';
+    const existingMeasures = (compiledScoreState?.events || []).reduce(
+      (maxM: number, ev: any) => Math.max(maxM, ev.measureNumber || 1),
+      0
+    );
+    const nextMeasureNum = existingMeasures + 1;
+    const captured = metronomeCapture.flushCapturedNotesToTenutoMeasure(
+      scoreMeta.tempo || 120,
+      firstTrackId,
+      nextMeasureNum
+    );
+    if (!captured) return;
+
+    if (/\btenuto\b/i.test(sourceCode) || /\bmeasure\s+\d+/i.test(sourceCode)) {
+      const lastBraceIdx = sourceCode.lastIndexOf('}');
+      const nextCode =
+        lastBraceIdx !== -1
+          ? `${sourceCode.slice(0, lastBraceIdx)}\n${captured.measureCode}\n}`
+          : `${sourceCode}\n${captured.measureCode}`;
+      handleCodeEdit(nextCode);
+    } else {
+      const nextCode = `${sourceCode.trim()} ${captured.tokens.join(' ')}`;
+      handleCodeEdit(nextCode);
+    }
+  };
+
+```
+
+4. Pass `isMetronomeEnabled`, `onToggleMetronome`, `countInBars`, `onCountInBarsChange`, `onTapTempo`, and `onCaptureMidi` to `<Transport />` in `SplitWorkspace.tsx`.
+
+### 3.5 `tests/metronome_tap_capture.test.tsx` - Create Verification Suite for Metronome, Count-In, Tap Tempo & Capture MIDI
+
+Create `tests/metronome_tap_capture.test.tsx`:
+
+```typescript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { MetronomeAndCaptureEngine } from '../src/audio/MetronomeAndCaptureEngine';
+import { StudioAudioEngine } from '../src/audio/StudioAudioEngine';
+import SplitWorkspace from '../src/components/SplitWorkspace';
+import '@testing-library/jest-dom';
+
+vi.mock('@monaco-editor/react', () => ({
+  default: ({ value, onChange, defaultLanguage }: any) => (
+    <textarea
+      data-testid="monaco-mock"
+      aria-label="Tenuto Source Editor"
+      data-language={defaultLanguage}
+      value={value || ''}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  ),
+}));
+
+HTMLCanvasElement.prototype.getContext = vi.fn();
+
+describe('TDB-710: Metronome, Count-In, Tap Tempo & Capture MIDI', () => {
+  it('calculates accurate BPM from consecutive Tap Tempo timestamps', () => {
+    const engine = new MetronomeAndCaptureEngine();
+
+    // First tap returns null; subsequent taps at 500ms intervals = 120 BPM
+    expect(engine.registerTap(1000)).toBeNull();
+    expect(engine.registerTap(1500)).toBe(120);
+    expect(engine.registerTap(2000)).toBe(120);
+
+    // Pause > 2200ms resets the tap window; 400ms intervals = 150 BPM
+    expect(engine.registerTap(5000)).toBeNull();
+    expect(engine.registerTap(5400)).toBe(150);
+  });
+
+  it('builds a metronome click schedule with count-in bars and downbeat accents', () => {
+    const schedule = MetronomeAndCaptureEngine.buildMetronomeSchedule(8, 120, '4/4', 1);
+    // 1 bar count-in (4 beats) + 8 score beats = 12 click events
+    expect(schedule).toHaveLength(12);
+    expect(schedule[0].isCountIn).toBe(true);
+    expect(schedule[0].isDownbeat).toBe(true);
+    expect(schedule[0].frequencyHz).toBe(1320);
+    expect(schedule[1].isDownbeat).toBe(false);
+    expect(schedule[1].frequencyHz).toBe(880);
+    expect(schedule[4].isCountIn).toBe(false);
+    expect(schedule[4].measureNumber).toBe(1);
+  });
+
+  it('quantizes captured MIDI notes into a 4/4 .ten measure and injects code via Capture MIDI button in SplitWorkspace', () => {
+    const capture = new MetronomeAndCaptureEngine();
+    capture.recordNoteInput({ midi: 60, velocity: 100, timestampMs: 0, durationMs: 500 });
+    capture.recordNoteInput({ midi: 64, velocity: 100, timestampMs: 500, durationMs: 500 });
+    expect(capture.getCapturedNoteCount()).toBe(2);
+
+    const flushed = capture.flushCapturedNotesToTenutoMeasure(120, 'lead', 2);
+    expect(flushed).not.toBeNull();
+    // Two quarter notes (c4:4 e4:4) + auto-padded half-note rest (r:2) = 4.0 beats
+    expect(flushed!.tokens).toEqual(['c4:4', 'e4:4', 'r:2']);
+    expect(flushed!.measureCode).toContain('measure 2');
+    expect(capture.getCapturedNoteCount()).toBe(0);
+
+    const audio = new StudioAudioEngine();
+    audio.setMetronomeEnabled(true);
+    audio.setCountInBars(2);
+    expect(audio.getMetronomeEnabled()).toBe(true);
+    expect(audio.getCountInBars()).toBe(2);
+
+    render(<SplitWorkspace/>);
+    const editor = screen.getByTestId('monaco-mock') as HTMLTextAreaElement;
+    expect(editor.value).toBe('pno: c4:4');
+
+    // Toggle Metronome & Count-In
+    fireEvent.click(screen.getByRole('button', { name: /Toggle Metronome/i }));
+    fireEvent.change(screen.getByRole('combobox', { name: /Count-In Bars/i }), {
+      target: { value: '2' },
+    });
+
+    // Click Capture MIDI -> appends captured motif tokens to the active score
+    fireEvent.click(screen.getByRole('button', { name: /Capture MIDI/i }));
+    expect(editor.value).toContain('c4:4 e4:4 g4:4 c5:4');
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/`
+* `src/mutator/`
+* `src/components/WebGPUCanvas.tsx`, `src/components/CodeEditor.tsx`, `src/components/Mixer.tsx`, `src/components/Inspector.tsx`, `src/components/SessionView.tsx`, `src/components/ArrangementView.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+* All existing test files in `tests/`
+
+Explicitly:
+
+* Do NOT modify or delete any existing test file in `tests/`.
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero TypeScript errors.
+2. `npx vitest run` passes all existing test suites (`tests/transport_binding.test.tsx`, `tests/multi_view_shell.test.tsx`, `tests/session_view_launcher.test.tsx`, `tests/arrangement_view_timeline.test.tsx`, etc.) plus the new `tests/metronome_tap_capture.test.tsx` suite.
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. Users can toggle the Metronome (`Click`), select Count-In bars (`No Count-In`, `1 Bar In`, `2 Bars In`, `4 Bars In`), tap BPM via `Tap`, and retroactively inject captured notes into `.ten` code via `Capture`.
+
+---
+
+## 6. Constraints
+
+Must not:
+
+* Use the word `"Play"` in any new button text or `aria-label` inside `Transport.tsx`.
+
+---
+
+## 7. Manual Steps
+
+None required for this contract.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or remove `src/audio/MetronomeAndCaptureEngine.ts` and `tests/metronome_tap_capture.test.tsx`, and restore `src/audio/StudioAudioEngine.ts`, `src/components/Transport.tsx`, and `src/components/SplitWorkspace.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `src/audio/MetronomeAndCaptureEngine.ts`, `tests/metronome_tap_capture.test.tsx`
+* Modified file(s): `src/audio/StudioAudioEngine.ts`, `src/components/Transport.tsx`, `src/components/SplitWorkspace.tsx`
+* Commit message: `feat(transport): add metronome click track, count-in bars, tap tempo, and capture MIDI`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Metronome & Count-In** | No click track or pre-roll count-in | Top bar `Click` button and `Count-In` selector (`None`, `1 Bar`, `2 Bars`, `4 Bars`) schedule downbeat (`1320 Hz`) and beat (`880 Hz`) clicks |
+| **Tap Tempo (`Tap`)** | BPM could only be edited manually in text | Clicking `Tap` repeatedly calculates the average interval BPM and updates `meta @{ tempo }` in `.ten` code |
+| **Capture MIDI (`Capture`)** | No retroactive MIDI capture | Clicking `Capture` quantizes buffered note inputs into rational `.ten` tokens and injects them into the active score |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-24
+Implementer: AI Agent
+
+```
+
+```
