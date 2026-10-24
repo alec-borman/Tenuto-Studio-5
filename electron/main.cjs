@@ -21,6 +21,10 @@ function createMainWindow() {
     },
   });
 
+  mainWindow.on('page-title-updated', (event) => {
+    event.preventDefault();
+  });
+
   // Inject Cross-Origin Isolation headers so SharedArrayBuffer works over local file://
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({

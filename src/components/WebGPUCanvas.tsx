@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useMemo, useState, useCallback } from 'react';
 import * as PIXI from 'pixi.js';
 import { isMidiInScale, parseKeyRootSemitone } from '../parser/PitchEngine';
+import AutomationLaneEditor from './AutomationLaneEditor';
+import { AutomationLane, AutomationCurveType } from '../audio/AutomationEngine';
 
 export function calculateProjectionCoordinates(
   event: any,
@@ -79,16 +81,26 @@ export default function WebGPUCanvas({
   isPlaying = false,
   rootKey,
   scaleName,
+  automationLanes = [],
   onMutation,
   onSelect,
+  onCommitAutomation,
 }: {
   events?: any[];
   playheadBeat?: number;
   isPlaying?: boolean;
   rootKey?: string;
   scaleName?: string;
+  automationLanes?: AutomationLane[];
   onMutation?: (eventData: any, deltaX: number) => void;
   onSelect?: (nodeData: any) => void;
+  onCommitAutomation?: (
+    trackId: string,
+    measureNumber: number,
+    param: string,
+    values: number[],
+    curve: AutomationCurveType
+  ) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollViewportRef = useRef<HTMLDivElement>(null);
@@ -100,6 +112,7 @@ export default function WebGPUCanvas({
 
   const [zoomLevel, setZoomLevel] = useState<number>(1.0);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+  const [isClipEnvelopeOpen, setIsClipEnvelopeOpen] = useState<boolean>(false);
 
   useEffect(() => {
     onMutationRef.current = onMutation;
@@ -342,7 +355,7 @@ export default function WebGPUCanvas({
   // Compute auto-centered pitch range and measure span around visible events
   const { minMidi, maxMidi, maxEndWhole } = useMemo(() => {
     if (!visibleEvents || visibleEvents.length === 0) {
-      return { minMidi: 48, maxMidi: 72, maxEndWhole: 2 };
+      return { minMidi: 36, maxMidi: 84, maxEndWhole: 4 };
     }
     let min = 127;
     let max = 0;
@@ -364,14 +377,15 @@ export default function WebGPUCanvas({
       max = 72;
     }
 
-    const pad = selectedTrackId ? 3 : 4;
-    const minSpan = selectedTrackId ? 12 : 18;
-    const paddedMin = Math.max(12, min - pad);
-    const paddedMax = Math.min(108, Math.max(paddedMin + minSpan, max + pad));
+    const centerMidi = Math.round((min + max) / 2);
+    const minSpan = selectedTrackId ? 28 : 36;
+    const halfSpan = Math.max(Math.ceil((max - min) / 2) + 6, Math.floor(minSpan / 2));
+    const paddedMin = Math.max(12, centerMidi - halfSpan);
+    const paddedMax = Math.min(108, Math.max(paddedMin + minSpan, centerMidi + halfSpan));
     return {
       minMidi: paddedMin,
       maxMidi: paddedMax,
-      maxEndWhole: maxWhole,
+      maxEndWhole: Math.max(4, maxWhole),
     };
   }, [visibleEvents, selectedTrackId]);
 
@@ -703,6 +717,20 @@ export default function WebGPUCanvas({
           >
             Fit All
           </button>
+          <div className="w-px h-3.5 bg-slate-800 mx-0.5" />
+          <button
+            type="button"
+            aria-label="Toggle Clip Envelope Editor"
+            onClick={() => setIsClipEnvelopeOpen((prev) => !prev)}
+            className={`px-1.5 py-0.5 text-[11px] font-mono font-semibold rounded cursor-pointer ${
+              isClipEnvelopeOpen
+                ? 'bg-cyan-600 text-white'
+                : 'text-cyan-400 hover:text-cyan-300'
+            }`}
+            title="Show/Hide Clip Automation Envelope Lane"
+          >
+            Clip Env
+          </button>
         </div>
       </div>
 
@@ -732,6 +760,15 @@ export default function WebGPUCanvas({
           )}
         </svg>
       </div>
+
+      {isClipEnvelopeOpen && (
+        <AutomationLaneEditor
+          trackId={selectedTrackId || availableTracks[0]?.id || 'pno'}
+          measureNumber={1}
+          lanes={automationLanes}
+          onCommitAutomation={onCommitAutomation}
+        />
+      )}
     </div>
   );
 }

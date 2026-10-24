@@ -1,0 +1,727 @@
+### Stage 3 Oracle Audit: Contract #11 (`TDB-711`)
+
+* **Boundary & Diff Audit:** Only the 3 authorized source files (`src/audio/StudioAudioEngine.ts`, `src/components/Mixer.tsx`, `src/components/SplitWorkspace.tsx`) and the new test suite (`tests/studio_mixer_console.test.tsx`) were modified.
+
+
+* **Test & Build Integrity:** All 5 mixer and command integration test suites (`tests/studio_mixer_console.test.tsx`, `tests/mixer.test.tsx`, `tests/mixer_debounced_commits.test.tsx`, `tests/command_integration.test.tsx`, `tests/mixer_workspace_binding.test.tsx` — **8/8 tests**) and `vite build` passed with zero errors.
+
+
+* **Verdict:** **Approved.**
+
+---
+
+### Next Step: Run `TDB-712` (from the previous message), Then Queue Up `TDB-713` Below
+
+You can now paste **Contract #12 (`TDB-712: Send & Return Tracks (bus:// Routing Matrix)`)** from the previous message into Google AI Studio.
+
+Here is **Implementation Contract #13 (`TDB-713: Group Tracks, Folder Folding & Multi-Point Sidechaining`)** ready to run right after `TDB-712` completes:
+
+```markdown
+# Implementation Contract: Group Tracks, Folder Folding & Multi-Point Sidechaining (TDB-713)
+
+**Project:** Tenuto Studio 5
+**Scope:** Upgrade `src/parser/DocumentParser.ts`, `src/mutator/TopologicalMutator.ts`, `src/audio/StudioAudioEngine.ts`, `src/components/Mixer.tsx`, and `src/components/SplitWorkspace.tsx` to support Group Bus summing (scaling member tracks by group volume/pan and propagating group mute/solo), collapsible Group Strips in the Mixer (`▼`/`▶`), and Multi-Point Sidechain Tap routing (`pre_fx` | `post_fx` | `post_mixer`) synced bi-directionally with `.ten` code.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+In `TDB-701`, `DocumentParser.ts` added syntax parsing for `group` blocks (`group synth_bus "Synth Bus" tracks=[lead, pad] .fx(glue_compressor, @{ratio: 4})`), and `Mixer.tsx` has a basic `Global Sidechain Trigger` dropdown[cite: 1]. However:
+1. `StudioAudioEngine.ts` does not yet apply `GroupDefinition` volume, mute, or solo states to member tracks (`def.groupId`), nor does it evaluate sidechain ducking across `pre_fx`, `post_fx`, and `post_mixer` tap points when a sidechain trigger track or group hits.
+2. `Mixer.tsx` does not display collapsible Group Bus strips or allow selecting the sidechain tap point (`Pre-FX`, `Post-FX`, `Post-Mixer`)[cite: 1].
+3. `DocumentParser.ts` and `TopologicalMutator.ts` do not yet parse or mutate `sidechain_tap` in `meta @{ ... }` or group volumes (`var <groupId>_vol = ...`).
+
+This contract wires complete Group Track submix control, folder folding in the Mixer, and Multi-Point Sidechain ducking across the parser, mutator, audio engine, and Mixer UI.
+
+---
+
+## 2. Root Cause
+1. `src/parser/DocumentParser.ts` (`ScoreMeta`) does not parse `sidechain_tap` (`"pre_fx" | "post_fx" | "post_mixer"`).
+2. `src/audio/StudioAudioEngine.ts` (`buildScheduledTimeline`) ignores `score.groups` and `score.meta.sidechain` when calculating member track gain, mute/solo inheritance, and ducking envelopes.
+3. `src/components/Mixer.tsx` lacks collapsible Group Bus strips and a Sidechain Tap Point selector[cite: 1].
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/parser/DocumentParser.ts` - Parse `sidechain_tap` in `meta @{ ... }`
+In `src/parser/DocumentParser.ts`:
+
+1. Add `sidechainTap?: 'pre_fx' | 'post_fx' | 'post_mixer' | string;` to `ScoreMeta`:
+```typescript
+export interface ScoreMeta {
+  title: string;
+  tempo: number;
+  time: string;
+  key?: string;
+  scale?: string;
+  scaleLock?: boolean;
+  tuning?: string;
+  a4Hz?: number;
+  quantizeLaunch?: string;
+  crossfader?: number;
+  sidechain: string | null;
+  sidechainTap?: 'pre_fx' | 'post_fx' | 'post_mixer' | string;
+  autoPadVoices: boolean;
+  tempoMap?: Array<{ startWhole: number; tempo: number }>;
+}
+
+```
+
+2. Inside `compile(rawSource: string)` under `// 2. Extract meta @{ ... }`, parse `sidechain_tap`:
+
+```typescript
+      if (typeof parsedMeta.sidechain_tap === 'string') {
+        meta.sidechainTap = parsedMeta.sidechain_tap.toLowerCase();
+      }
+
+```
+
+### 3.2 `src/mutator/TopologicalMutator.ts` - Support `GROUP_VOLUME_UPDATE` and `META_SIDECHAIN_TAP_UPDATE`
+
+In `src/mutator/TopologicalMutator.ts`:
+
+1. Add `'GROUP_VOLUME_UPDATE'` and `'META_SIDECHAIN_TAP_UPDATE'` to `MixerASTMutation['mutationType']` and add optional `groupId?: string; tapMode?: string;` fields to `MixerASTMutation`.
+2. Inside `applyMixerMutationToSource(sourceCode: string, mutation: MixerASTMutation)`:
+* In block `// 1. Meta block updates...`, also handle `mutation.mutationType === 'META_SIDECHAIN_TAP_UPDATE'` by updating or inserting `sidechain_tap: "${mutation.tapMode || 'post_fx'}"` in `meta @{ ... }`:
+```typescript
+if (mutation.mutationType === 'META_SIDECHAIN_TAP_UPDATE') {
+  return this.applyMixerMutationToSource(sourceCode, {
+    mutationType: 'META_UPDATE',
+    metaKey: 'sidechain_tap',
+    metaValue: mutation.tapMode || 'post_fx',
+  });
+}
+
+```
+
+
+* Right after `META_SIDECHAIN_TAP_UPDATE`, handle `GROUP_VOLUME_UPDATE`:
+```typescript
+if (mutation.mutationType === 'GROUP_VOLUME_UPDATE' && mutation.groupId && mutation.value !== undefined) {
+  const gId = mutation.groupId;
+  const vol = Math.max(0, Math.min(127, Math.round(Number(mutation.value))));
+  const varRegex = new RegExp(`(\\bvar\\s+${gId}_vol\\s*=\\s*)(\\d+)`);
+  if (varRegex.test(sourceCode)) {
+    return sourceCode.replace(varRegex, `$1${vol}`);
+  }
+  const groupLineRegex = new RegExp(`(^\\s*group\\s+${gId}\\b[^\\n]*$)`, 'm');
+  if (groupLineRegex.test(sourceCode)) {
+    return sourceCode.replace(groupLineRegex, `var ${gId}_vol = ${vol}\n$1`);
+  }
+  return sourceCode;
+}
+
+```
+
+
+
+
+
+### 3.3 `src/audio/StudioAudioEngine.ts` - Add Group Bus Summing, Group Mute/Solo Inheritance & Multi-Point Sidechain Ducking
+
+In `src/audio/StudioAudioEngine.ts`:
+
+1. Add private state fields for groups and sidechain tap mode (right below `private armedTracks: Set<string> = new Set();`):
+
+```typescript
+  private groupVolumes: Map<string, number> = new Map();
+  private mutedGroups: Set<string> = new Set();
+  private soloedGroups: Set<string> = new Set();
+  private sidechainTapMode: 'pre_fx' | 'post_fx' | 'post_mixer' = 'post_fx';
+
+```
+
+2. Add public methods on `StudioAudioEngine` (right below `public getArmedTracks(): string[]`):
+
+```typescript
+  public setGroupVolume(groupId: string, volumeMidi: number): void {
+    this.groupVolumes.set(groupId, Math.max(0, Math.min(127, volumeMidi)));
+  }
+
+  public getGroupVolume(groupId: string): number {
+    return this.groupVolumes.get(groupId) ?? 100;
+  }
+
+  public toggleGroupMute(groupId: string): boolean {
+    if (this.mutedGroups.has(groupId)) {
+      this.mutedGroups.delete(groupId);
+      return false;
+    }
+    this.mutedGroups.add(groupId);
+    return true;
+  }
+
+  public toggleGroupSolo(groupId: string): boolean {
+    if (this.soloedGroups.has(groupId)) {
+      this.soloedGroups.delete(groupId);
+      return false;
+    }
+    this.soloedGroups.add(groupId);
+    return true;
+  }
+
+  public getMutedGroups(): string[] {
+    return Array.from(this.mutedGroups);
+  }
+
+  public getSoloedGroups(): string[] {
+    return Array.from(this.soloedGroups);
+  }
+
+  public setSidechainTapMode(mode: 'pre_fx' | 'post_fx' | 'post_mixer'): void {
+    this.sidechainTapMode = mode;
+  }
+
+  public getSidechainTapMode(): 'pre_fx' | 'post_fx' | 'post_mixer' {
+    return this.sidechainTapMode;
+  }
+
+  /**
+   * Computes the sidechain ducking gain scalar (in [0.22, 1.0]) at `noteStartSec`
+   * when a sidechain trigger transient fires near `noteStartSec`:
+   * - `'pre_fx'`: Fixed raw trigger velocity (ignores source track fader and mute)
+   * - `'post_fx'`: Scaled by source event velocity & FX drive (ignores source track fader)
+   * - `'post_mixer'`: Scaled by source track fader volume (and disabled if source track is muted)
+   */
+  public computeSidechainDuckScalar(
+    noteStartSec: number,
+    triggerEvents: Array<{ timeSec: number; velocity: number; sourceTrackVol: number; sourceMuted: boolean }>,
+    tapMode: 'pre_fx' | 'post_fx' | 'post_mixer' = this.sidechainTapMode
+  ): number {
+    if (triggerEvents.length === 0) return 1.0;
+
+    let maxDuckDepth = 0;
+    for (const trig of triggerEvents) {
+      const dt = noteStartSec - trig.timeSec;
+      if (dt >= -0.01 && dt <= 0.24) {
+        if (tapMode === 'post_mixer' && trig.sourceMuted) continue;
+
+        let triggerStrength = Math.max(0.2, Math.min(1.0, trig.velocity / 127));
+        if (tapMode === 'pre_fx') {
+          triggerStrength = Math.max(0.65, triggerStrength);
+        } else if (tapMode === 'post_mixer') {
+          triggerStrength *= Math.max(0, Math.min(1.27, trig.sourceTrackVol / 100));
+        }
+
+        // Fast attack (0..15ms) and exponential release (15..240ms)
+        const envelope = dt <= 0.015 ? 1.0 : Math.exp(-(dt - 0.015) / 0.11);
+        const depth = 0.68 * triggerStrength * envelope;
+        if (depth > maxDuckDepth) {
+          maxDuckDepth = depth;
+        }
+      }
+    }
+
+    return Math.max(0.22, 1.0 - maxDuckDepth);
+  }
+
+```
+
+3. Inside `buildScheduledTimeline(score: CompiledScore)` in `src/audio/StudioAudioEngine.ts`:
+* Build a lookup map of groups (`groupsById`) and collect sidechain trigger timestamps when `score.meta?.sidechain` is set:
+```typescript
+const groupsById = new Map<string, any>();
+for (const g of score.groups || []) {
+  groupsById.set(g.id, g);
+}
+const activeTapMode =
+  (score.meta?.sidechainTap as 'pre_fx' | 'post_fx' | 'post_mixer') || this.sidechainTapMode;
+
+const sidechainSourceId = score.meta?.sidechain?.toLowerCase();
+const sidechainTriggers: Array<{
+  timeSec: number;
+  velocity: number;
+  sourceTrackVol: number;
+  sourceMuted: boolean;
+}> = [];
+
+if (sidechainSourceId) {
+  for (const ev of score.events) {
+    if (!ev.pitch || ev.pitch.isRest || ev.pitch.isSpacer) continue;
+    const tId = ev.trackId || 'pno';
+    const def = defsById.get(tId);
+    const matchesSource =
+      tId.toLowerCase() === sidechainSourceId ||
+      def?.groupId?.toLowerCase() === sidechainSourceId ||
+      (sidechainSourceId.includes('drum') && (ev.style === 'grid' || def?.style === 'grid'));
+    const isKickOrTrigger =
+      ev.style !== 'grid' && def?.style !== 'grid'
+        ? true
+        : ev.pitch.midi === 36 || ev.pitch.gridKey === 'k' || ev.pitch.gridKey === 'bd';
+
+    if (matchesSource && isKickOrTrigger) {
+      const stW = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+      const trigSec = this.wholeNoteToSeconds(stW, tempo, tempoMap);
+      const srcVol = this.trackVolumes.get(tId) ?? def?.volume ?? 100;
+      const srcMuted =
+        this.mutedTracks.has(tId) ||
+        (def?.groupId ? this.mutedGroups.has(def.groupId) : false);
+      sidechainTriggers.push({
+        timeSec: trigSec,
+        velocity: ev.physics?.velocity ?? 100,
+        sourceTrackVol: srcVol,
+        sourceMuted: srcMuted,
+      });
+    }
+  }
+}
+
+```
+
+
+* Inside the `for (const ev of playableEvents)` loop in `buildScheduledTimeline`:
+* Check group mute and solo state:
+```typescript
+const def = defsById.get(trackId);
+const groupId = def?.groupId;
+if (groupId && this.mutedGroups.has(groupId)) continue;
+if (this.soloedGroups.size > 0 && (!groupId || !this.soloedGroups.has(groupId))) continue;
+
+```
+
+
+* Multiply `trackGainScalar` by the parent group's volume scalar (`groupVolScalar`) and apply `computeSidechainDuckScalar` when `sidechainTriggers.length > 0` and the current track is not the sidechain source:
+```typescript
+const groupDef = groupId ? groupsById.get(groupId) : undefined;
+const groupVolMidi = groupId
+  ? (this.groupVolumes.get(groupId) ?? groupDef?.volume ?? 100)
+  : 100;
+const groupVolScalar = groupVolMidi / 100;
+
+const isSidechainSource =
+  Boolean(sidechainSourceId) &&
+  (trackId.toLowerCase() === sidechainSourceId ||
+    groupId?.toLowerCase() === sidechainSourceId ||
+    ev.style === 'grid' ||
+    def?.style === 'grid');
+const duckScalar =
+  !isSidechainSource && sidechainTriggers.length > 0
+    ? this.computeSidechainDuckScalar(rawStartSec, sidechainTriggers, activeTapMode)
+    : 1.0;
+
+const trackGainScalar = (trackVolMidi / 100) * groupVolScalar * duckScalar * 0.95 * this.polyphonyScalar;
+
+```
+
+
+
+
+
+
+
+### 3.4 `src/components/Mixer.tsx` - Add Collapsible Group Bus Strips & Multi-Point Sidechain Tap Selector
+
+In `src/components/Mixer.tsx`:
+
+> **CRITICAL TEST CONSTRAINT:** Keep the Track Volume `<input type="range">` as the ONLY `type="range"` (`role="slider"`) element in `Mixer.tsx`! For Group Bus volume, use a `type="number"` (`role="spinbutton"`) input (`aria-label={`${group.id} group volume`}`) so `screen.getByRole('slider')` in `tests/mixer_debounced_commits.test.tsx` continues to match uniquely.
+> 
+> 
+
+1. Add `MixerGroupState` and extend `ASTState` and `MixerProps` in `src/components/Mixer.tsx`:
+
+```typescript
+export interface MixerGroupState {
+  id: string;
+  name: string;
+  trackIds: string[];
+  volume: number;
+  fx: string[];
+  muted?: boolean;
+  soloed?: boolean;
+}
+
+export interface ASTState {
+  tracks: MixerTrackState[];
+  groups?: MixerGroupState[];
+  meta: {
+    sidechain: string | null;
+    sidechainTap?: 'pre_fx' | 'post_fx' | 'post_mixer' | string;
+  };
+}
+
+interface MixerProps {
+  astState: ASTState;
+  onUpdateAST: (payload: any) => void;
+  onToggleMute?: (trackId: string) => void;
+  onToggleSolo?: (trackId: string) => void;
+  onToggleArm?: (trackId: string) => void;
+  onToggleGroupMute?: (groupId: string) => void;
+  onToggleGroupSolo?: (groupId: string) => void;
+}
+
+```
+
+2. Inside `Mixer`, add `const [collapsedMixerGroups, setCollapsedMixerGroups] = useState<Record<string, boolean>>({});`.
+3. Inside the **Routing Matrix** block in `src/components/Mixer.tsx` (right below the `Global Sidechain Trigger` `<select>`), add the **Sidechain Tap Point** selector (`Pre-FX` | `Post-FX` | `Post-Mixer`):
+
+```tsx
+          <label htmlFor="sidechain-tap-select" className="block text-xs mt-2 mb-1 text-slate-500">
+            Sidechain Tap Point
+          </label>
+          <select
+            id="sidechain-tap-select"
+            aria-label="Sidechain Tap Point"
+            value={astState.meta.sidechainTap || 'post_fx'}
+            onChange={(e) =>
+              onUpdateAST({
+                mutationType: 'META_SIDECHAIN_TAP_UPDATE',
+                tapMode: e.target.value,
+                expectedSyntax: `meta @{ sidechain_tap: "${e.target.value}" }`,
+              })
+            }
+            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 text-amber-300 font-mono"
+          >
+            <option value="pre_fx">Pre-FX</option>
+            <option value="post_fx">Post-FX</option>
+            <option value="post_mixer">Post-Mixer</option>
+          </select>
+
+```
+
+4. Right before `{astState.tracks.map((track) => ...)}` in `src/components/Mixer.tsx`, render the **Group Bus Strips** (`(astState.groups || []).map((grp) => ...)`), each with a Group Fold button (`aria-label={`Fold mixer group ${grp.id}`}`), a Group Volume spinbutton (`aria-label={`${grp.id} group volume`}`), and Group Mute (`M`) / Solo (`S`) buttons:
+
+```tsx
+        {/* Group Bus Channel Strips */}
+        {(astState.groups || []).map((grp) => {
+          const isFolded = Boolean(collapsedMixerGroups[grp.id]);
+          return (
+            <div
+              key={grp.id}
+              data-testid={`mixer-group-strip-${grp.id}`}
+              className="flex flex-col justify-between bg-slate-950/95 p-2.5 rounded border-2 border-amber-500/40 w-36 shrink-0"
+            >
+              <div>
+                <div className="w-full flex items-center justify-between mb-1.5 pb-1 border-b border-slate-800">
+                  <button
+                    type="button"
+                    aria-label={`Fold mixer group ${grp.id}`}
+                    onClick={() =>
+                      setCollapsedMixerGroups((prev) => ({ ...prev, [grp.id]: !prev[grp.id] }))
+                    }
+                    className="flex items-center gap-1 text-xs font-mono font-bold text-amber-300 truncate cursor-pointer"
+                    title="Fold / Unfold Member Tracks in Mixer"
+                  >
+                    <span>{isFolded ? '▶' : '▼'}</span>
+                    <span className="truncate">{grp.id}</span>
+                  </button>
+                  <span className="text-[9px] uppercase px-1 rounded bg-amber-500/20 text-amber-300">
+                    GRP ({grp.trackIds.length})
+                  </span>
+                </div>
+
+                <div className="text-[10px] font-mono text-slate-400 truncate mb-2">
+                  {grp.name}
+                </div>
+
+                {/* Group FX List */}
+                <div className="w-full flex flex-col gap-1 mb-2 max-h-16 overflow-y-auto">
+                  {grp.fx.map((fx, idx) => (
+                    <div
+                      key={idx}
+                      className="bg-slate-800 text-[10px] text-center py-0.5 px-1 rounded truncate border border-slate-700 text-amber-200 font-mono"
+                    >
+                      {fx}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Group Volume Spinbutton */}
+              <div className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 my-2">
+                <label
+                  htmlFor={`grp-vol-${grp.id}`}
+                  className="block text-[9px] font-mono text-slate-400 uppercase mb-1"
+                >
+                  Group Vol ({midiVolumeToDbString(grp.volume)})
+                </label>
+                <input
+                  id={`grp-vol-${grp.id}`}
+                  type="number"
+                  aria-label={`${grp.id} group volume`}
+                  min={0}
+                  max={127}
+                  value={grp.volume}
+                  onChange={(e) => {
+                    const nextVol = Math.max(0, Math.min(127, parseInt(e.target.value, 10) || 0));
+                    onUpdateAST({
+                      groupId: grp.id,
+                      mutationType: 'GROUP_VOLUME_UPDATE',
+                      value: nextVol,
+                      expectedSyntax: `var ${grp.id}_vol = ${nextVol}`,
+                    });
+                  }}
+                  className="w-full bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-xs font-mono text-center text-amber-300"
+                />
+              </div>
+
+              {/* Group Mute & Solo Buttons */}
+              <div className="w-full grid grid-cols-2 gap-1 pt-1 border-t border-slate-800">
+                <button
+                  type="button"
+                  aria-label={`Mute mixer group ${grp.id}`}
+                  onClick={() => onToggleGroupMute?.(grp.id)}
+                  className={`py-0.5 rounded text-[10px] font-mono font-bold border cursor-pointer ${
+                    grp.muted
+                      ? 'bg-amber-500 text-slate-950 border-amber-400'
+                      : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
+                  }`}
+                >
+                  M
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Solo mixer group ${grp.id}`}
+                  onClick={() => onToggleGroupSolo?.(grp.id)}
+                  className={`py-0.5 rounded text-[10px] font-mono font-bold border cursor-pointer ${
+                    grp.soloed
+                      ? 'bg-sky-500 text-slate-950 border-sky-400'
+                      : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
+                  }`}
+                >
+                  S
+                </button>
+              </div>
+            </div>
+          );
+        })}
+
+```
+
+5. Inside `{astState.tracks.map((track) => ...)}` in `src/components/Mixer.tsx`, if `track` belongs to a group that is currently folded in `collapsedMixerGroups`, hide that member track strip:
+
+```typescript
+        {astState.tracks.map((track) => {
+          const parentGroup = (astState.groups || []).find((g) => g.trackIds.includes(track.id));
+          if (parentGroup && collapsedMixerGroups[parentGroup.id]) {
+            return null;
+          }
+
+```
+
+### 3.5 `src/components/SplitWorkspace.tsx` - Sync Group Buses & Sidechain Tap Mode with `Mixer` and `StudioAudioEngine`
+
+In `src/components/SplitWorkspace.tsx`:
+
+1. Add state for `mutedGroups` and `soloedGroups`:
+
+```typescript
+  const [mutedGroups, setMutedGroups] = useState<string[]>([]);
+  const [soloedGroups, setSoloedGroups] = useState<string[]>([]);
+
+```
+
+2. Add handlers `handleToggleGroupMute` and `handleToggleGroupSolo`:
+
+```typescript
+  const handleToggleGroupMute = (groupId: string) => {
+    studioAudio.toggleGroupMute(groupId);
+    setMutedGroups(studioAudio.getMutedGroups());
+  };
+
+  const handleToggleGroupSolo = (groupId: string) => {
+    studioAudio.toggleGroupSolo(groupId);
+    setSoloedGroups(studioAudio.getSoloedGroups());
+  };
+
+```
+
+3. Inside `handleUpdateAST` in `src/components/SplitWorkspace.tsx`:
+* If `newStatePayload?.mutationType === 'GROUP_VOLUME_UPDATE' && newStatePayload.groupId`, call `studioAudio.setGroupVolume(newStatePayload.groupId, Number(newStatePayload.value))`.
+* If `newStatePayload?.mutationType === 'META_SIDECHAIN_TAP_UPDATE' && newStatePayload.tapMode`, call `studioAudio.setSidechainTapMode(newStatePayload.tapMode)`.
+
+
+4. In `enrichedMixerAstState` in `src/components/SplitWorkspace.tsx`, include `groups` from `compiledScoreState?.groups` with their `muted` and `soloed` status, and include `sidechainTap: compiledScoreState?.meta?.sidechainTap || studioAudio.getSidechainTapMode()` on `meta`. Pass `onToggleGroupMute={handleToggleGroupMute}` and `onToggleGroupSolo={handleToggleGroupSolo}` to `<Mixer />`.
+
+### 3.6 `tests/group_tracks_and_sidechain.test.tsx` - Create Verification Suite for Group Summing, Folder Folding & Multi-Point Sidechaining
+
+Create `tests/group_tracks_and_sidechain.test.tsx`:
+
+```typescript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { DocumentParser } from '../src/parser/DocumentParser';
+import { StudioAudioEngine } from '../src/audio/StudioAudioEngine';
+import Mixer, { ASTState } from '../src/components/Mixer';
+import '@testing-library/jest-dom';
+
+describe('TDB-713: Group Tracks, Folder Folding & Multi-Point Sidechaining', () => {
+  it('scales member track gain by group volume, propagates group mute/solo, and evaluates Pre-FX / Post-FX / Post-Mixer sidechain ducking', () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Group & Sidechain Test", tempo: 120, time: "4/4", sidechain: "drums", sidechain_tap: "post_mixer" }
+        var synth_bus_vol = 50
+        def lead "Lead" style=synth patch="saw_lead" group="synth_bus"
+        def drums "Kit" style=grid patch="tenuto_808_kit"
+        group synth_bus "Synth Bus" tracks=[lead] .fx(glue_compressor, @{ratio: 4})
+
+        measure 1 {
+          lead: c4:4 e4:4 g4:2 |
+          drums: k:4 r:4 r:2 |
+        }
+      }
+    `);
+
+    expect(score.meta.sidechainTap).toBe('post_mixer');
+    expect(score.groups).toHaveLength(1);
+    expect(score.groups![0].volume).toBe(50);
+
+    // Beat 1 (t=0s) has a kick hit on 'drums', so 'lead' note 0 at t=0s is ducked compared to note 1 at beat 2 (t=0.5s)
+    const timeline = (engine as any).buildScheduledTimeline(score);
+    const leadNotes = timeline.filter((n: any) => n.event.trackId === 'lead');
+    expect(leadNotes).toHaveLength(3);
+    expect(leadNotes[0].amp).toBeLessThan(leadNotes[1].amp);
+
+    // In post_mixer tap mode, muting the 'drums' trigger track disables sidechain ducking on 'lead'
+    engine.toggleTrackMute('drums');
+    const timelineWithMutedDrums = (engine as any).buildScheduledTimeline(score);
+    const leadNotesUnDucked = timelineWithMutedDrums.filter((n: any) => n.event.trackId === 'lead');
+    expect(leadNotesUnDucked[0].amp).toBeGreaterThan(leadNotes[0].amp);
+
+    // Muting the parent group 'synth_bus' mutes all member tracks ('lead')
+    engine.toggleGroupMute('synth_bus');
+    const timelineWithMutedGroup = (engine as any).buildScheduledTimeline(score);
+    expect(timelineWithMutedGroup.filter((n: any) => n.event.trackId === 'lead')).toHaveLength(0);
+  });
+
+  it('renders collapsible Group Bus strips and the Sidechain Tap Point selector in Mixer', () => {
+    const mockASTState: ASTState = {
+      tracks: [
+        { id: 'lead', volume: 100, fx: [] },
+        { id: 'drums', volume: 100, fx: [] },
+      ],
+      groups: [
+        {
+          id: 'synth_bus',
+          name: 'Synth Bus',
+          trackIds: ['lead'],
+          volume: 95,
+          fx: ['glue_compressor'],
+        },
+      ],
+      meta: { sidechain: 'drums', sidechainTap: 'post_fx' },
+    };
+
+    const onUpdateAST = vi.fn();
+    const onToggleGroupMute = vi.fn();
+    render(
+      <Mixer astState="{mockASTState}" onToggleGroupMute="{onToggleGroupMute}" onUpdateAST="{onUpdateAST}"/>
+    );
+
+    // Verify Group Strip and member track strip both render initially
+    expect(screen.getByTestId('mixer-group-strip-synth_bus')).toBeInTheDocument();
+    expect(screen.getByTestId('mixer-strip-lead')).toBeInTheDocument();
+
+    // Change Sidechain Tap Point to Pre-FX
+    const tapSelect = screen.getByLabelText(/Sidechain Tap Point/i);
+    fireEvent.change(tapSelect, { target: { value: 'pre_fx' } });
+    expect(onUpdateAST).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mutationType: 'META_SIDECHAIN_TAP_UPDATE',
+        tapMode: 'pre_fx',
+      })
+    );
+
+    // Change Group Volume spinbutton
+    const grpVolInput = screen.getByRole('spinbutton', { name: /synth_bus group volume/i });
+    fireEvent.change(grpVolInput, { target: { value: '80' } });
+    expect(onUpdateAST).toHaveBeenCalledWith(
+      expect.objectContaining({
+        groupId: 'synth_bus',
+        mutationType: 'GROUP_VOLUME_UPDATE',
+        value: 80,
+      })
+    );
+
+    // Fold group 'synth_bus' in Mixer -> hides member track strip 'lead' while keeping 'drums' visible
+    fireEvent.click(screen.getByRole('button', { name: /Fold mixer group synth_bus/i }));
+    expect(screen.queryByTestId('mixer-strip-lead')).not.toBeInTheDocument();
+    expect(screen.getByTestId('mixer-strip-drums')).toBeInTheDocument();
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/lexer.ts`, `src/parser/PitchEngine.ts`, `src/parser/TemporalEngine.ts`, `src/parser/ASTSerializer.ts`
+* `src/components/WebGPUCanvas.tsx`, `src/components/CodeEditor.tsx`, `src/components/Inspector.tsx`, `src/components/Transport.tsx`, `src/components/SessionView.tsx`, `src/components/ArrangementView.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+* All existing test files in `tests/`
+
+Explicitly:
+
+* Do NOT modify or delete any existing test file in `tests/`.
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero new TypeScript errors.
+2. `npx vitest run tests/group_tracks_and_sidechain.test.tsx tests/send_return_matrix.test.tsx tests/studio_mixer_console.test.tsx tests/mixer.test.tsx tests/mixer_debounced_commits.test.tsx` passes 100%.
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. Group tracks scale member track gains, propagate group mute/solo, fold/unfold member strips in the Mixer, and support `Pre-FX`, `Post-FX`, and `Post-Mixer` sidechain tap points.
+
+---
+
+## 6. Constraints
+
+Must not:
+
+* Add any `type="range"` (`role="slider"`) input for Group volume in `Mixer.tsx` (use `type="number"` spinbuttons so `screen.getByRole('slider')` in `tests/mixer_debounced_commits.test.tsx` matches only the track volume fader).
+
+
+
+---
+
+## 7. Manual Steps
+
+None required for this contract.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or remove `tests/group_tracks_and_sidechain.test.tsx`, and restore `src/parser/DocumentParser.ts`, `src/mutator/TopologicalMutator.ts`, `src/audio/StudioAudioEngine.ts`, `src/components/Mixer.tsx`, and `src/components/SplitWorkspace.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `tests/group_tracks_and_sidechain.test.tsx`
+* Modified file(s): `src/parser/DocumentParser.ts`, `src/mutator/TopologicalMutator.ts`, `src/audio/StudioAudioEngine.ts`, `src/components/Mixer.tsx`, `src/components/SplitWorkspace.tsx`
+* Commit message: `feat(groups): add Group Bus summing, Mixer folder folding, and multi-point sidechaining`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Group Track Audio Summing** | `group` blocks were parsed as metadata only | Member tracks inherit their parent Group's volume, mute, and solo states in real time |
+| **Mixer Group Strips & Folding** | No Group strips in `Mixer.tsx`
+
+ | Dedicated amber-bordered Group Bus strips with Group Volume, Group FX, Group Mute/Solo, and `▼`/`▶` folder folding |
+| **Multi-Point Sidechaining** | Fixed sidechain trigger without tap selection
+
+ | Supports `Pre-FX`, `Post-FX`, and `Post-Mixer` sidechain tap points in the Mixer Routing Matrix and `.ten` `meta` block |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-24
+Implementer: AI Agent
+
+```
+
+```

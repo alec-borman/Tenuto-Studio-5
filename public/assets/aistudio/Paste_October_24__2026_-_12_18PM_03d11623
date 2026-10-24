@@ -1,0 +1,668 @@
+### Stage 3 Oracle Audit: Contract #12 (`TDB-712`)
+
+* **Boundary & Diff Audit:** Only the 5 authorized source files (`src/audio/SpatialAudioMatrix.ts`, `src/mutator/TopologicalMutator.ts`, `src/audio/StudioAudioEngine.ts`, `src/components/Mixer.tsx`, `src/components/SplitWorkspace.tsx`) and the new test suite (`tests/send_return_matrix.test.tsx`) were modified.
+
+
+* **Test & Build Integrity:** All 5 test suites (`send_return_matrix`, `mixer`, `studio_mixer_console`, `mixer_debounced_commits`, and `spatial_audio_matrix` — **11/11 tests**) and `vite build` passed with zero errors.
+
+
+* **Verdict:** **Approved.**
+
+---
+
+### Next Step: Run `TDB-713` (from the previous message), Then Queue Up `TDB-714` Below
+
+You can now paste **Contract #13 (`TDB-713: Group Tracks, Folder Folding & Multi-Point Sidechaining`)** from the previous message into Google AI Studio.
+
+Here is **Implementation Contract #14 (`TDB-714: Interactive Bezier Automation Lanes (Track & Clip Envelopes)`)** ready to run right after `TDB-713` finishes:
+
+```markdown
+# Implementation Contract: Interactive Bezier Automation Lanes (Track & Clip Envelopes) (TDB-714)
+
+**Project:** Tenuto Studio 5
+**Scope:** Create `src/components/AutomationLaneEditor.tsx` and upgrade `src/mutator/TopologicalMutator.ts`, `src/components/ArrangementView.tsx`, `src/components/WebGPUCanvas.tsx`, and `src/components/SplitWorkspace.tsx` to add expandable Z-axis Bezier/multi-segment automation lanes on both Arrangement tracks and the Piano Roll Clip View, with interactive breakpoint editing, curve shape selectors (`linear`, `exp`, `log`, `s_curve`, `step`), and surgical bi-directional `.automate()` code generation.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+In `TDB-704`, Tenuto added `AutomationEngine.ts` to compile `.cc(controller, [values], curve)` and `.automate("param", [values], curve)` tokens into sample-accurate parameter curves. However, as specified in `SPEC.md` Sections 3.2 and 3.4 ("Decoupled Automation Lanes (The Z-Axis)"), users need a visual curve editor to unfold automation lanes on any track in `ArrangementView.tsx` or inside the Piano Roll (`WebGPUCanvas.tsx`), inspect the rendered SVG curve, add/adjust breakpoints, switch curve shapes (`linear`, `exp`, `log`, `s_curve`, `step`), and have those edits write directly back into the `.ten` source code.
+
+This contract:
+1. Adds `serializeAutomationModifier` and `upsertTrackAutomationInSource` to `src/mutator/TopologicalMutator.ts` so visual curve edits surgically update or inject `.automate("param", [values], "curve")` in the target measure and track of the `.ten` file.
+2. Creates `src/components/AutomationLaneEditor.tsx` rendering an SVG curve preview (sampled via `interpolateCurveValue`), interactive breakpoint controls, a `+ Point` button, parameter selector (`cutoff`, `volume`, `pan`, `resonance`, `reverb_send`, `delay_send`), and curve shape selector (`linear`, `exp`, `log`, `s_curve`, `step`).
+3. Adds per-track `Auto` lane expansion toggles to `src/components/ArrangementView.tsx` and a `Clip Env` drawer toggle to `src/components/WebGPUCanvas.tsx`, wired through `src/components/SplitWorkspace.tsx`.
+
+---
+
+## 2. Root Cause
+1. `src/components/AutomationLaneEditor.tsx` does not exist yet to render or edit `AutomationLane` curves visually.
+2. `src/mutator/TopologicalMutator.ts` lacks a method (`upsertTrackAutomationInSource`) to write or update `.automate(param, [values], curve)` modifiers on a track inside `.ten` source code.
+3. `src/components/ArrangementView.tsx` and `src/components/WebGPUCanvas.tsx` lack expandable Z-axis automation sub-lanes.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/mutator/TopologicalMutator.ts` - Add Surgical `.automate()` Code Serializer & Upsert Mutator
+In `src/mutator/TopologicalMutator.ts`, add `serializeAutomationModifier` and `upsertTrackAutomationInSource` (right below `applyMixerMutationToSource`):
+
+```typescript
+  public serializeAutomationModifier(
+    param: string,
+    values: number[],
+    curve: string = 'linear'
+  ): string {
+    const cleanParam = param.trim().toLowerCase();
+    const formattedValues = values
+      .map((v) => Number(Number(v).toFixed(2)))
+      .join(', ');
+    const cleanCurve = (curve || 'linear').trim().toLowerCase();
+    return `.automate("${cleanParam}", [${formattedValues}], "${cleanCurve}")`;
+  }
+
+  /**
+   * Surgically updates an existing `.automate("<param>", ...)` modifier on `trackId` in `measureNumber`,
+   * or injects a spacer automation token `s:1.automate(...)` into `measureNumber` while preserving
+   * all comments and formatting.
+   */
+  public upsertTrackAutomationInSource(
+    sourceCode: string,
+    trackId: string,
+    measureNumber: number,
+    param: string,
+    values: number[],
+    curve: string = 'linear'
+  ): string {
+    if (!sourceCode.trim() || !trackId || values.length === 0) return sourceCode;
+    const modStr = this.serializeAutomationModifier(param, values, curve);
+    const escapedParam = param.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // 1. If the source already contains `.automate("<param>", [...], "...")` on this track, replace it in-place
+    const existingAutoRegex = new RegExp(
+      `(\\.automate\\(\\s*"?${escapedParam}"?\\s*,\\s*\\[[^\\]]*\\](?:\\s*,\\s*"?[a-zA-Z0-9_-]+"?)?\\s*\\))`,
+      'i'
+    );
+    if (existingAutoRegex.test(sourceCode)) {
+      return sourceCode.replace(existingAutoRegex, modStr);
+    }
+
+    // 2. If inside a full document with `measure <measureNumber> { ... }`, inject or append to `trackId:`
+    const measureRegex = new RegExp(
+      `(\\bmeasure\\s+${measureNumber}\\b[^{]*\\{)([\\s\\S]*?)(\\})`,
+      'i'
+    );
+    const mMatch = sourceCode.match(measureRegex);
+    if (mMatch) {
+      const mHeader = mMatch[1];
+      const mBody = mMatch[2];
+      const mClose = mMatch[3];
+
+      const trackLineRegex = new RegExp(
+        `(^\\s*${trackId}\\s*:\\s*)(.+?)(\\s*\\|?\\s*)$`,
+        'm'
+      );
+      const tMatch = mBody.match(trackLineRegex);
+      if (tMatch) {
+        const prefix = tMatch[1];
+        const rhs = tMatch[2].trim();
+        let nextRhs: string;
+        if (rhs.startsWith('<[') && rhs.endsWith(']>')) {
+          const inner = rhs.slice(2, -2).trim();
+          nextRhs = `<[ ${inner} | s:1${modStr} ]>`;
+        } else {
+          const cleanRhs = rhs.replace(/\|$/, '').trim();
+          nextRhs = `<[ v1: ${cleanRhs} | v2: s:1${modStr} ]>`;
+        }
+        const nextBody = mBody.replace(trackLineRegex, `${prefix}${nextRhs}`);
+        return sourceCode.replace(measureRegex, `${mHeader}${nextBody}${mClose}`);
+      } else {
+        const nextBody = `${mBody.trimEnd()}\n    ${trackId}: s:1${modStr} |\n  `;
+        return sourceCode.replace(measureRegex, `${mHeader}${nextBody}${mClose}`);
+      }
+    }
+
+    // 3. Sketch mode fallback: append spacer automation token
+    return `${sourceCode.trim()} s:1${modStr}`;
+  }
+
+```
+
+### 3.2 `src/components/AutomationLaneEditor.tsx` - Create Interactive SVG Bezier / Multi-Segment Curve Editor
+
+Create `src/components/AutomationLaneEditor.tsx`.
+
+> **CRITICAL TEST CONSTRAINT:** Never use the word `"Play"` in any button text or `aria-label` in `AutomationLaneEditor.tsx`, and use `type="number"` (`role="spinbutton"`) for breakpoint value inputs.
+
+```typescript
+import React, { useState, useMemo, useEffect } from 'react';
+import {
+  AutomationLane,
+  AutomationCurveType,
+  interpolateCurveValue,
+  normalizeCurveType,
+} from '../audio/AutomationEngine';
+
+export interface AutomationLaneEditorProps {
+  trackId: string;
+  measureNumber?: number;
+  lanes?: AutomationLane[];
+  onCommitAutomation?: (
+    trackId: string,
+    measureNumber: number,
+    param: string,
+    values: number[],
+    curve: AutomationCurveType
+  ) => void;
+}
+
+const AUTOMATION_PARAMS = [
+  { id: 'cutoff', label: 'Filter Cutoff (Hz)', defaultValues: [400, 3200], min: 60, max: 16000, step: 50 },
+  { id: 'volume', label: 'Track Volume (0-127)', defaultValues: [60, 110], min: 0, max: 127, step: 1 },
+  { id: 'pan', label: 'Stereo Pan (-1..+1)', defaultValues: [-0.5, 0.5], min: -1, max: 1, step: 0.1 },
+  { id: 'resonance', label: 'Filter Resonance', defaultValues: [20, 90], min: 0, max: 127, step: 1 },
+  { id: 'reverb_send', label: 'Reverb Send', defaultValues: [20, 100], min: 0, max: 127, step: 1 },
+  { id: 'delay_send', label: 'Delay Send', defaultValues: [0, 85], min: 0, max: 127, step: 1 },
+];
+
+export default function AutomationLaneEditor({
+  trackId,
+  measureNumber = 1,
+  lanes = [],
+  onCommitAutomation,
+}: AutomationLaneEditorProps) {
+  const trackLanes = useMemo(
+    () => lanes.filter((l) => l.trackId === trackId),
+    [lanes, trackId]
+  );
+
+  const [selectedParam, setSelectedParam] = useState<string>(
+    trackLanes[0]?.param || 'cutoff'
+  );
+
+  const activeLane = useMemo(
+    () => trackLanes.find((l) => l.param === selectedParam),
+    [trackLanes, selectedParam]
+  );
+
+  const paramMeta = useMemo(
+    () => AUTOMATION_PARAMS.find((p) => p.id === selectedParam) || AUTOMATION_PARAMS[0],
+    [selectedParam]
+  );
+
+  const initialPoints = useMemo(() => {
+    if (activeLane && activeLane.segments.length > 0) {
+      const pts = [activeLane.segments[0].startValue];
+      for (const seg of activeLane.segments) {
+        pts.push(seg.endValue);
+      }
+      return pts;
+    }
+    return [...paramMeta.defaultValues];
+  }, [activeLane, paramMeta]);
+
+  const [points, setPoints] = useState<number[]>(initialPoints);
+  const [curveType, setCurveType] = useState<AutomationCurveType>(
+    activeLane?.segments[0]?.curve || 's_curve'
+  );
+
+  useEffect(() => {
+    setPoints(initialPoints);
+    if (activeLane?.segments[0]?.curve) {
+      setCurveType(activeLane.segments[0].curve);
+    }
+  }, [initialPoints, activeLane]);
+
+  const handlePointChange = (index: number, nextVal: number) => {
+    const clamped = Math.max(paramMeta.min, Math.min(paramMeta.max, nextVal));
+    const nextPts = points.map((p, idx) => (idx === index ? clamped : p));
+    setPoints(nextPts);
+    onCommitAutomation?.(trackId, measureNumber, selectedParam, nextPts, curveType);
+  };
+
+  const handleCurveChange = (nextCurve: AutomationCurveType) => {
+    const norm = normalizeCurveType(nextCurve);
+    setCurveType(norm);
+    onCommitAutomation?.(trackId, measureNumber, selectedParam, points, norm);
+  };
+
+  const handleAddBreakpoint = () => {
+    const lastVal = points[points.length - 1] ?? paramMeta.defaultValues[0];
+    const nextPts = [...points, lastVal];
+    setPoints(nextPts);
+    onCommitAutomation?.(trackId, measureNumber, selectedParam, nextPts, curveType);
+  };
+
+  // Sample SVG polyline coordinates across the breakpoint segments
+  const svgWidth = 420;
+  const svgHeight = 56;
+  const { polylinePoints, nodeCoords } = useMemo(() => {
+    if (points.length === 0) return { polylinePoints: '', nodeCoords: [] };
+    const span = Math.max(1e-6, paramMeta.max - paramMeta.min);
+    const valToY = (v: number) => {
+      const norm = Math.max(0, Math.min(1, (v - paramMeta.min) / span));
+      return Math.round((1 - norm) * (svgHeight - 12) + 6);
+    };
+
+    const coords = points.map((v, idx) => ({
+      x:
+        points.length === 1
+          ? svgWidth / 2
+          : Math.round((idx / (points.length - 1)) * (svgWidth - 20) + 10),
+      y: valToY(v),
+      val: v,
+    }));
+
+    if (points.length === 1) {
+      const y = valToY(points[0]);
+      return {
+        polylinePoints: `10,${y} ${svgWidth - 10},${y}`,
+        nodeCoords: coords,
+      };
+    }
+
+    const samples: string[] = [];
+    const numSegs = points.length - 1;
+    const stepsPerSeg = 16;
+    for (let s = 0; s < numSegs; s++) {
+      const v0 = points[s];
+      const v1 = points[s + 1];
+      const x0 = coords[s].x;
+      const x1 = coords[s + 1].x;
+      for (let k = 0; k <= stepsPerSeg; k++) {
+        const t = k / stepsPerSeg;
+        const interpVal = interpolateCurveValue(v0, v1, t, curveType);
+        const x = (x0 + (x1 - x0) * t).toFixed(1);
+        const y = valToY(interpVal).toFixed(1);
+        samples.push(`${x},${y}`);
+      }
+    }
+
+    return {
+      polylinePoints: samples.join(' '),
+      nodeCoords: coords,
+    };
+  }, [points, curveType, paramMeta]);
+
+  return (
+    <div
+      data-testid={`automation-lane-editor-${trackId}`}
+      className="w-full bg-slate-900/95 border-t border-slate-800 px-3 py-2 flex items-center justify-between gap-4 font-mono text-xs select-none"
+    >
+      {/* Left: Parameter & Curve Shape Selectors */}
+      <div className="flex items-center gap-2 shrink-0 flex-wrap">
+        <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
+          Z-Lane: {trackId}
+        </span>
+
+        <select
+          aria-label={`Automation parameter for ${trackId}`}
+          value={selectedParam}
+          onChange={(e) => setSelectedParam(e.target.value)}
+          className="bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-[11px] text-slate-200 outline-none cursor-pointer"
+        >
+          {AUTOMATION_PARAMS.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+
+        <select
+          aria-label={`Automation curve shape for ${trackId}`}
+          value={curveType}
+          onChange={(e) => handleCurveChange(e.target.value as AutomationCurveType)}
+          className="bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-[11px] text-amber-300 outline-none cursor-pointer"
+        >
+          <option value="linear">Linear</option>
+          <option value="s_curve">S-Curve (Bezier)</option>
+          <option value="exp">Exponential</option>
+          <option value="log">Logarithmic</option>
+          <option value="step">Step Hold</option>
+        </select>
+      </div>
+
+      {/* Center: Interactive SVG Bezier Curve Preview */}
+      <div className="flex-1 flex items-center justify-center min-w-[220px] overflow-hidden">
+        <svg
+          width={svgWidth}
+          height={svgHeight}
+          className="bg-slate-950 border border-slate-800 rounded block max-w-full"
+          aria-label={`Automation curve canvas for ${trackId}`}
+        >
+          <line
+            x1={0}
+            y1={svgHeight / 2}
+            x2={svgWidth}
+            y2={svgHeight / 2}
+            stroke="#1E293B"
+            strokeDasharray="3,3"
+          />
+          {polylinePoints && (
+            <polyline
+              fill="none"
+              stroke="#06B6D4"
+              strokeWidth={2}
+              points={polylinePoints}
+            />
+          )}
+          {nodeCoords.map((pt, idx) => (
+            <circle
+              key={idx}
+              cx={pt.x}
+              cy={pt.y}
+              r={4}
+              fill="#F8FAFC"
+              stroke="#06B6D4"
+              strokeWidth={2}
+            />
+          ))}
+        </svg>
+      </div>
+
+      {/* Right: Breakpoint Node Spinbuttons & + Point Button */}
+      <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+        {points.map((ptVal, idx) => (
+          <div key={idx} className="flex items-center gap-0.5 bg-slate-950 border border-slate-800 rounded px-1 py-0.5">
+            <span className="text-[9px] text-slate-500">P{idx + 1}:</span>
+            <input
+              type="number"
+              aria-label={`${trackId} automation point ${idx + 1}`}
+              step={paramMeta.step}
+              min={paramMeta.min}
+              max={paramMeta.max}
+              value={ptVal}
+              onChange={(e) => handlePointChange(idx, parseFloat(e.target.value) || 0)}
+              className="w-14 bg-slate-900 border border-slate-700 rounded px-1 text-[10px] text-cyan-300 text-center"
+            />
+          </div>
+        ))}
+
+        <button
+          type="button"
+          aria-label={`Add automation breakpoint for ${trackId}`}
+          onClick={handleAddBreakpoint}
+          className="px-2 py-0.5 rounded bg-cyan-600/20 hover:bg-cyan-600/35 border border-cyan-500/50 text-cyan-300 text-[10px] font-semibold cursor-pointer"
+        >
+          + Point
+        </button>
+      </div>
+    </div>
+  );
+}
+
+```
+
+### 3.3 `src/components/ArrangementView.tsx` - Add Expandable Z-Axis Automation Sub-Lanes per Track
+
+In `src/components/ArrangementView.tsx`:
+
+1. Import `AutomationLaneEditor` from `./AutomationLaneEditor` and `AutomationCurveType` from `../audio/AutomationEngine`.
+2. Add an optional prop `onCommitAutomation?: (trackId: string, measureNumber: number, param: string, values: number[], curve: AutomationCurveType) => void;` to `ArrangementViewProps`.
+3. Add state `const [expandedAutomationTracks, setExpandedAutomationTracks] = useState<Record<string, boolean>>({});`.
+4. Inside each track header in `ArrangementView.tsx` (next to the `M` and `S` buttons), add an **`A` (Automation Lane)** toggle button (`aria-label={`Toggle automation lane for ${track.id}`}`):
+
+```tsx
+                      <button
+                        type="button"
+                        aria-label={`Toggle automation lane for ${track.id}`}
+                        onClick={() =>
+                          setExpandedAutomationTracks((prev) => ({
+                            ...prev,
+                            [track.id]: !prev[track.id],
+                          }))
+                        }
+                        className={`w-5 h-5 rounded text-[10px] font-bold cursor-pointer border ${
+                          expandedAutomationTracks[track.id]
+                            ? 'bg-cyan-500 text-slate-950 border-cyan-400'
+                            : 'bg-slate-950 text-slate-400 border-slate-700 hover:text-cyan-300'
+                        }`}
+                        title="Unfold Z-Axis Automation Lane"
+                      >
+                        A
+                      </button>
+
+```
+
+5. Wrap the returned track lane `div` in a `<React.Fragment key={track.id}>` and, when `expandedAutomationTracks[track.id]` is true, render `<AutomationLaneEditor />` directly below that track lane:
+
+```tsx
+              {expandedAutomationTracks[track.id] && (
+                <AutomationLaneEditor []} lanes="{score?.automationLanes" measureNumber="{1}" onCommitAutomation="{onCommitAutomation}" trackId="{track.id}" ||/>
+              )}
+
+```
+
+### 3.4 `src/components/WebGPUCanvas.tsx` - Add Clip Envelope Drawer Toggle to Piano Roll
+
+In `src/components/WebGPUCanvas.tsx`:
+
+1. Import `AutomationLaneEditor` from `./AutomationLaneEditor` and `AutomationLane, AutomationCurveType` from `../audio/AutomationEngine`.
+2. Add optional props `automationLanes?: AutomationLane[];` and `onCommitAutomation?: (trackId: string, measureNumber: number, param: string, values: number[], curve: AutomationCurveType) => void;` to `WebGPUCanvas`.
+3. Add state `const [isClipEnvelopeOpen, setIsClipEnvelopeOpen] = useState<boolean>(false);`.
+4. In the top right toolbar of `WebGPUCanvas.tsx` (right after the `Fit All` button), add a **`Clip Env`** toggle button (`aria-label="Toggle Clip Envelope Editor"`):
+
+```tsx
+          <div className="w-px h-3.5 bg-slate-800 mx-0.5" />
+          <button
+            type="button"
+            aria-label="Toggle Clip Envelope Editor"
+            onClick={() => setIsClipEnvelopeOpen((prev) => !prev)}
+            className={`px-1.5 py-0.5 text-[11px] font-mono font-semibold rounded cursor-pointer ${
+              isClipEnvelopeOpen
+                ? 'bg-cyan-600 text-white'
+                : 'text-cyan-400 hover:text-cyan-300'
+            }`}
+            title="Show/Hide Clip Automation Envelope Lane"
+          >
+            Clip Env
+          </button>
+
+```
+
+5. At the bottom of `WebGPUCanvas.tsx` (immediately after the `piano-roll-scroll-viewport` `div`), render `<AutomationLaneEditor />` when `isClipEnvelopeOpen` is true:
+
+```tsx
+      {isClipEnvelopeOpen && (
+        <AutomationLaneEditor 'pno'} availableTracks[0]?.id lanes="{automationLanes}" measureNumber="{1}" onCommitAutomation="{onCommitAutomation}" trackId="{selectedTrackId" ||/>
+      )}
+
+```
+
+### 3.5 `src/components/SplitWorkspace.tsx` - Wire `handleCommitAutomation` to `<ArrangementView />` & `<WebGPUCanvas />`
+
+In `src/components/SplitWorkspace.tsx`:
+
+1. Add `handleCommitAutomation`:
+
+```typescript
+  const handleCommitAutomation = (
+    trackId: string,
+    measureNumber: number,
+    param: string,
+    values: number[],
+    curve: string
+  ) => {
+    const nextCode = topologicalMutator.upsertTrackAutomationInSource(
+      sourceCode,
+      trackId,
+      measureNumber,
+      param,
+      values,
+      curve
+    );
+    if (nextCode !== sourceCode) {
+      handleCodeEdit(nextCode);
+    }
+  };
+
+```
+
+2. Pass `automationLanes={compiledScoreState?.automationLanes || []}` and `onCommitAutomation={handleCommitAutomation}` to `<WebGPUCanvas />`, and pass `onCommitAutomation={handleCommitAutomation}` to `<ArrangementView />`.
+
+### 3.6 `tests/interactive_automation_lanes.test.tsx` - Create Verification Suite for Interactive Bezier Automation Lanes
+
+Create `tests/interactive_automation_lanes.test.tsx`:
+
+```typescript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import ArrangementView from '../src/components/ArrangementView';
+import WebGPUCanvas from '../src/components/WebGPUCanvas';
+import { DocumentParser } from '../src/parser/DocumentParser';
+import { TopologicalMutator } from '../src/mutator/TopologicalMutator';
+import '@testing-library/jest-dom';
+
+HTMLCanvasElement.prototype.getContext = vi.fn();
+
+describe('TDB-714: Interactive Bezier Automation Lanes (Track & Clip Envelopes)', () => {
+  it('unfolds Z-axis automation lanes in ArrangementView, edits breakpoints and curve shapes, and mutates .ten source code', () => {
+    const parser = new DocumentParser();
+    const mutator = new TopologicalMutator();
+
+    const initialSource = `tenuto "6.0" {
+  meta @{ title: "Automation Lane Test", tempo: 120, time: "4/4" }
+  def lead "Lead Synth" style=synth patch="saw_lead"
+
+  measure 1 {
+    lead: c4:4 e4:4 g4:2 |
+  }
+}`;
+
+    const score = parser.compile(initialSource);
+    const onCommitAutomation = vi.fn();
+
+    render(
+      <ArrangementView onCommitAutomation="{onCommitAutomation}" score="{score}"/>
+    );
+
+    // Click 'A' button on 'lead' track header to unfold the Z-axis automation lane
+    fireEvent.click(screen.getByRole('button', { name: /Toggle automation lane for lead/i }));
+    expect(screen.getByTestId('automation-lane-editor-lead')).toBeInTheDocument();
+
+    // Change curve shape to 'exp'
+    fireEvent.change(screen.getByRole('combobox', { name: /Automation curve shape for lead/i }), {
+      target: { value: 'exp' },
+    });
+    expect(onCommitAutomation).toHaveBeenCalledWith('lead', 1, 'cutoff', [400, 3200], 'exp');
+
+    // Edit Breakpoint 2 value to 4800 Hz
+    fireEvent.change(screen.getByRole('spinbutton', { name: /lead automation point 2/i }), {
+      target: { value: '4800' },
+    });
+    expect(onCommitAutomation).toHaveBeenCalledWith('lead', 1, 'cutoff', [400, 4800], 'exp');
+
+    // Add a 3rd breakpoint (+ Point)
+    fireEvent.click(screen.getByRole('button', { name: /Add automation breakpoint for lead/i }));
+    expect(onCommitAutomation).toHaveBeenCalledWith('lead', 1, 'cutoff', [400, 4800, 4800], 'exp');
+
+    // Verify TopologicalMutator writes the exact .automate(...) voice into the .ten source code
+    const mutatedSource = mutator.upsertTrackAutomationInSource(
+      initialSource,
+      'lead',
+      1,
+      'cutoff',
+      [400, 4800, 1200],
+      's_curve'
+    );
+    expect(mutatedSource).toContain('.automate("cutoff", [400, 4800, 1200], "s_curve")');
+
+    // Re-compile the mutated source and verify the automation lane compiles with 2 segments
+    const recompiled = parser.compile(mutatedSource);
+    expect(recompiled.automationLanes).toHaveLength(1);
+    expect(recompiled.automationLanes![0].segments).toHaveLength(2);
+  });
+
+  it('toggles the Clip Envelope Editor drawer inside WebGPUCanvas Piano Roll', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile('pno: c4:4 e4:4 g4:2');
+    const onCommitAutomation = vi.fn();
+
+    render(
+      <WebGPUCanvas automationLanes="{score.automationLanes}" events="{score.events}" onCommitAutomation="{onCommitAutomation}"/>
+    );
+
+    // Click 'Clip Env' button in Piano Roll toolbar
+    fireEvent.click(screen.getByRole('button', { name: /Toggle Clip Envelope Editor/i }));
+    expect(screen.getByTestId('automation-lane-editor-pno')).toBeInTheDocument();
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/`
+* `src/audio/`
+* `src/components/CodeEditor.tsx`, `src/components/Mixer.tsx`, `src/components/Inspector.tsx`, `src/components/Transport.tsx`, `src/components/SessionView.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+* All existing test files in `tests/`
+
+Explicitly:
+
+* Do NOT modify or delete any existing test file in `tests/`.
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero new TypeScript errors.
+2. `npx vitest run tests/interactive_automation_lanes.test.tsx tests/automation_compiler.test.ts tests/arrangement_view_timeline.test.tsx tests/webgpu_object_pooling.test.tsx tests/webgpu_render_pipeline.test.tsx` passes 100%.
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. Users can unfold Z-axis automation lanes on any track in Arrangement View (or via `Clip Env` in the Piano Roll), edit breakpoints and curve shapes (`linear`, `s_curve`, `exp`, `log`, `step`), and have those edits write `.automate(...)` directly into `.ten` code.
+
+---
+
+## 6. Constraints
+
+Must not:
+
+* Use the word `"Play"` in any button text or `aria-label` in `AutomationLaneEditor.tsx`.
+* Break any existing PIXI object pooling or render pipeline assertions in `WebGPUCanvas.tsx`.
+
+---
+
+## 7. Manual Steps
+
+None required for this contract.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or remove `src/components/AutomationLaneEditor.tsx` and `tests/interactive_automation_lanes.test.tsx`, and restore `src/mutator/TopologicalMutator.ts`, `src/components/ArrangementView.tsx`, `src/components/WebGPUCanvas.tsx`, and `src/components/SplitWorkspace.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `src/components/AutomationLaneEditor.tsx`, `tests/interactive_automation_lanes.test.tsx`
+* Modified file(s): `src/mutator/TopologicalMutator.ts`, `src/components/ArrangementView.tsx`, `src/components/WebGPUCanvas.tsx`, `src/components/SplitWorkspace.tsx`
+* Commit message: `feat(automation-ui): add interactive Bezier automation lanes for Arrangement tracks and Piano Roll clips`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Arrangement Track Automation (`A`)** | Automation could only be written manually as `.cc()` / `.automate()` text | Clicking `A` on any track header unfolds an interactive SVG Bezier/curve editor with breakpoint controls |
+| **Piano Roll Clip Envelopes (`Clip Env`)** | No visual clip envelope editor in Piano Roll | Clicking `Clip Env` in the Piano Roll toolbar opens the Clip Envelope curve editor |
+| **Bi-Directional Curve Sync** | Visual curve editing did not exist | Adjusting breakpoints, adding points (`+ Point`), or switching curve shapes (`Linear`, `S-Curve`, `Exp`, `Log`, `Step`) writes `.automate(...)` directly into `.ten` code |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-24
+Implementer: AI Agent
+
+```
+
+```

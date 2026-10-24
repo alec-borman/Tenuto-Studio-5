@@ -32,6 +32,9 @@ export default function SplitWorkspace() {
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [mutedTracks, setMutedTracks] = useState<string[]>([]);
   const [soloedTracks, setSoloedTracks] = useState<string[]>([]);
+  const [armedTracks, setArmedTracks] = useState<string[]>([]);
+  const [mutedGroups, setMutedGroups] = useState<string[]>([]);
+  const [soloedGroups, setSoloedGroups] = useState<string[]>([]);
   const [loopStartMeasure, setLoopStartMeasure] = useState<number | null>(null);
   const [loopEndMeasure, setLoopEndMeasure] = useState<number | null>(null);
   const [isMetronomeEnabled, setIsMetronomeEnabled] = useState<boolean>(false);
@@ -102,8 +105,12 @@ export default function SplitWorkspace() {
           setAstState({
             tracks: compiledScore.defs.map((d) => ({
               id: d.id,
+              name: d.name,
               volume: d.volume,
+              pan: d.pan,
               fx: d.fx,
+              sends: d.sends,
+              isReturn: d.isReturn,
             })),
             meta: { sidechain: compiledScore.meta.sidechain },
           });
@@ -241,6 +248,37 @@ export default function SplitWorkspace() {
         ? topologicalMutator.applyMixerMutationToSource(sourceCode, newStatePayload)
         : sourceCode;
 
+    if (newStatePayload?.mutationType === 'VOLUME_UPDATE' && newStatePayload.trackId) {
+      studioAudio.setTrackVolume(newStatePayload.trackId, Number(newStatePayload.value));
+    } else if (newStatePayload?.mutationType === 'PAN_UPDATE' && newStatePayload.trackId) {
+      studioAudio.setTrackPan(newStatePayload.trackId, Number(newStatePayload.value));
+    } else if (
+      newStatePayload?.mutationType === 'SEND_UPDATE' &&
+      newStatePayload.trackId &&
+      newStatePayload.sendId
+    ) {
+      const lvl = Number(newStatePayload.sendLevel ?? 0);
+      const mode = newStatePayload.sendMode || 'post';
+      try {
+        studioAudio.setTrackSend(newStatePayload.trackId, newStatePayload.sendId, lvl, mode);
+      } catch {
+        // Ignore circular send route
+      }
+      nextState.tracks = astState.tracks.map((t) =>
+        t.id === newStatePayload.trackId
+          ? {
+              ...t,
+              sends: { ...(t.sends || {}), [newStatePayload.sendId]: lvl },
+              sendModes: { ...(t.sendModes || {}), [newStatePayload.sendId]: mode },
+            }
+          : t
+      );
+    } else if (newStatePayload?.mutationType === 'GROUP_VOLUME_UPDATE' && newStatePayload.groupId) {
+      studioAudio.setGroupVolume(newStatePayload.groupId, Number(newStatePayload.value));
+    } else if (newStatePayload?.mutationType === 'META_SIDECHAIN_TAP_UPDATE' && newStatePayload.tapMode) {
+      studioAudio.setSidechainTapMode(newStatePayload.tapMode);
+    }
+
     commandManager.executeCommand({
       execute: () => {
         setAstState(nextState);
@@ -338,6 +376,21 @@ export default function SplitWorkspace() {
   const handleToggleTrackSolo = (trackId: string) => {
     studioAudio.toggleTrackSolo(trackId);
     setSoloedTracks(studioAudio.getSoloedTracks());
+  };
+
+  const handleToggleTrackArm = (trackId: string) => {
+    studioAudio.toggleTrackArm(trackId);
+    setArmedTracks(studioAudio.getArmedTracks());
+  };
+
+  const handleToggleGroupMute = (groupId: string) => {
+    studioAudio.toggleGroupMute(groupId);
+    setMutedGroups(studioAudio.getMutedGroups());
+  };
+
+  const handleToggleGroupSolo = (groupId: string) => {
+    studioAudio.toggleGroupSolo(groupId);
+    setSoloedGroups(studioAudio.getSoloedGroups());
   };
 
   const handleSeekToMeasure = async (measureNumber: number) => {
@@ -483,6 +536,70 @@ export default function SplitWorkspace() {
     }
   };
 
+  const handleCommitAutomation = (
+    trackId: string,
+    measureNumber: number,
+    param: string,
+    values: number[],
+    curve: string
+  ) => {
+    const nextCode = topologicalMutator.upsertTrackAutomationInSource(
+      sourceCode,
+      trackId,
+      measureNumber,
+      param,
+      values,
+      curve
+    );
+    if (nextCode !== sourceCode) {
+      handleCodeEdit(nextCode);
+    }
+  };
+
+  const enrichedMixerAstState = useMemo<ASTState>(() => {
+    const meterMap = studioAudio.getTrackMeterLevels(compiledScoreState, playheadBeat);
+    return {
+      ...astState,
+      tracks: astState.tracks.map((t) => {
+        const m = meterMap[t.id];
+        return {
+          ...t,
+          muted: mutedTracks.includes(t.id),
+          soloed: soloedTracks.includes(t.id),
+          armed: armedTracks.includes(t.id),
+          peakDb: m?.peakDb,
+          rmsDb: m?.rmsDb,
+          peakNorm: m?.peakNorm,
+          rmsNorm: m?.rmsNorm,
+          clipping: m?.clipping,
+        };
+      }),
+      groups: (compiledScoreState?.groups || []).map((g: any) => ({
+        id: g.id,
+        name: g.name,
+        trackIds: g.trackIds || [],
+        volume: g.volume ?? 100,
+        fx: g.fx || [],
+        muted: mutedGroups.includes(g.id),
+        soloed: soloedGroups.includes(g.id),
+      })),
+      meta: {
+        ...astState.meta,
+        sidechainTap: compiledScoreState?.meta?.sidechainTap || studioAudio.getSidechainTapMode(),
+      },
+    };
+  }, [
+    astState,
+    compiledScoreState,
+    playheadBeat,
+    mutedTracks,
+    soloedTracks,
+    armedTracks,
+    mutedGroups,
+    soloedGroups,
+    studioAudio,
+  ]);
+
   return (
     <div className="h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden flex flex-col">
       {/* Top Bar: Transport Controls & Demo Selector */}
@@ -573,6 +690,8 @@ export default function SplitWorkspace() {
                 isPlaying={isPlaying}
                 rootKey={scoreMeta.key}
                 scaleName={scoreMeta.scale}
+                automationLanes={compiledScoreState?.automationLanes || []}
+                onCommitAutomation={handleCommitAutomation}
               />
             </div>
 
@@ -609,6 +728,7 @@ export default function SplitWorkspace() {
                 onLoopRangeChange={handleLoopRangeChange}
                 onAddLocator={handleAddLocator}
                 onOpenTrackInPianoRoll={() => setActiveMainView('piano_roll')}
+                onCommitAutomation={handleCommitAutomation}
               />
             )}
           </div>
@@ -647,7 +767,15 @@ export default function SplitWorkspace() {
                 : ''
           }
         >
-          <Mixer astState={astState} onUpdateAST={handleUpdateAST} />
+          <Mixer
+            astState={enrichedMixerAstState}
+            onUpdateAST={handleUpdateAST}
+            onToggleMute={handleToggleTrackMute}
+            onToggleSolo={handleToggleTrackSolo}
+            onToggleArm={handleToggleTrackArm}
+            onToggleGroupMute={handleToggleGroupMute}
+            onToggleGroupSolo={handleToggleGroupSolo}
+          />
         </div>
       </div>
     </div>

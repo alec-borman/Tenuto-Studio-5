@@ -99,6 +99,7 @@ export interface ScoreMeta {
   quantizeLaunch?: string;
   crossfader?: number;
   sidechain: string | null;
+  sidechainTap?: 'pre_fx' | 'post_fx' | 'post_mixer' | string;
   autoPadVoices: boolean;
   tempoMap?: Array<{ startWhole: number; tempo: number }>;
 }
@@ -826,6 +827,9 @@ export class DocumentParser {
       else if (typeof parsedMeta.quantize === 'string') meta.quantizeLaunch = parsedMeta.quantize;
       if (typeof parsedMeta.crossfader === 'number') meta.crossfader = parsedMeta.crossfader;
       if (typeof parsedMeta.sidechain === 'string') meta.sidechain = parsedMeta.sidechain;
+      if (typeof parsedMeta.sidechain_tap === 'string') {
+        meta.sidechainTap = parsedMeta.sidechain_tap.toLowerCase();
+      }
       if (typeof parsedMeta.auto_pad_voices === 'boolean') meta.autoPadVoices = parsedMeta.auto_pad_voices;
     }
 

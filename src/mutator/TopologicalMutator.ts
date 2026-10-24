@@ -16,15 +16,22 @@ export interface MixerASTMutation {
     | 'ADD_FX'
     | 'REMOVE_FX'
     | 'SEND_UPDATE'
+    | 'ADD_RETURN_TRACK'
+    | 'GROUP_VOLUME_UPDATE'
     | 'META_SIDECHAIN_UPDATE'
+    | 'META_SIDECHAIN_TAP_UPDATE'
     | 'META_UPDATE'
     | string;
   trackId?: string;
+  groupId?: string;
+  tapMode?: string;
   value?: number | string;
   fxType?: string;
   fxParams?: Record<string, any>;
   sendId?: string;
   sendLevel?: number;
+  returnId?: string;
+  returnName?: string;
   source?: string;
   target?: string;
   metaKey?: string;
@@ -382,6 +389,32 @@ export class TopologicalMutator {
     if (!sourceCode.trim()) return sourceCode;
 
     // 1. Meta block updates (sidechain, tempo, key, scale, crossfader, quantize_launch)
+    if (mutation.mutationType === 'META_SIDECHAIN_TAP_UPDATE') {
+      return this.applyMixerMutationToSource(sourceCode, {
+        mutationType: 'META_UPDATE',
+        metaKey: 'sidechain_tap',
+        metaValue: mutation.tapMode || 'post_fx',
+      });
+    }
+
+    if (
+      mutation.mutationType === 'GROUP_VOLUME_UPDATE' &&
+      mutation.groupId &&
+      mutation.value !== undefined
+    ) {
+      const gId = mutation.groupId;
+      const vol = Math.max(0, Math.min(127, Math.round(Number(mutation.value))));
+      const varRegex = new RegExp(`(\\bvar\\s+${gId}_vol\\s*=\\s*)(\\d+)`);
+      if (varRegex.test(sourceCode)) {
+        return sourceCode.replace(varRegex, `$1${vol}`);
+      }
+      const groupLineRegex = new RegExp(`(^\\s*group\\s+${gId}\\b[^\\n]*$)`, 'm');
+      if (groupLineRegex.test(sourceCode)) {
+        return sourceCode.replace(groupLineRegex, `var ${gId}_vol = ${vol}\n$1`);
+      }
+      return sourceCode;
+    }
+
     if (
       mutation.mutationType === 'META_SIDECHAIN_UPDATE' ||
       mutation.mutationType === 'META_UPDATE'
@@ -414,6 +447,23 @@ export class TopologicalMutator {
         return sourceCode.replace(metaRegex, `$1${nextBody}$3`);
       }
       return sourceCode;
+    }
+
+    if (mutation.mutationType === 'ADD_RETURN_TRACK') {
+      const returnId = mutation.returnId || 'rev_bus';
+      const returnName = mutation.returnName || 'Hall Return';
+      const fxType = mutation.fxType || 'hybrid_reverb';
+      const returnLine = `  return ${returnId} "${returnName}" .fx(${fxType}, @{mix: 1.0})`;
+
+      const firstDefOrMeasure = sourceCode.search(/^\s*(?:def|measure|scene|clip)\b/m);
+      if (firstDefOrMeasure !== -1) {
+        return (
+          sourceCode.slice(0, firstDefOrMeasure) +
+          `${returnLine}\n` +
+          sourceCode.slice(firstDefOrMeasure)
+        );
+      }
+      return `${sourceCode.trim()}\n${returnLine}\n`;
     }
 
     const trackId = mutation.trackId;
@@ -508,4 +558,83 @@ export class TopologicalMutator {
 
     return sourceCode;
   }
+
+  public serializeAutomationModifier(
+    param: string,
+    values: number[],
+    curve: string = 'linear'
+  ): string {
+    const cleanParam = param.trim().toLowerCase();
+    const formattedValues = values
+      .map((v) => Number(Number(v).toFixed(2)))
+      .join(', ');
+    const cleanCurve = (curve || 'linear').trim().toLowerCase();
+    return `.automate("${cleanParam}", [${formattedValues}], "${cleanCurve}")`;
+  }
+
+  /**
+   * Surgically updates an existing `.automate("<param>", ...)` modifier on `trackId` in `measureNumber`,
+   * or injects a spacer automation token `s:1.automate(...)` into `measureNumber` while preserving
+   * all comments and formatting.
+   */
+  public upsertTrackAutomationInSource(
+    sourceCode: string,
+    trackId: string,
+    measureNumber: number,
+    param: string,
+    values: number[],
+    curve: string = 'linear'
+  ): string {
+    if (!sourceCode.trim() || !trackId || values.length === 0) return sourceCode;
+    const modStr = this.serializeAutomationModifier(param, values, curve);
+    const escapedParam = param.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // 1. If the source already contains `.automate("<param>", [...], "...")` on this track, replace it in-place
+    const existingAutoRegex = new RegExp(
+      `(\\.automate\\(\\s*"?${escapedParam}"?\\s*,\\s*\\[[^\\]]*\\](?:\\s*,\\s*"?[a-zA-Z0-9_-]+"?)?\\s*\\))`,
+      'i'
+    );
+    if (existingAutoRegex.test(sourceCode)) {
+      return sourceCode.replace(existingAutoRegex, modStr);
+    }
+
+    // 2. If inside a full document with `measure <measureNumber> { ... }`, inject or append to `trackId:`
+    const measureRegex = new RegExp(
+      `(\\bmeasure\\s+${measureNumber}\\b[^{]*\\{)([\\s\\S]*?)(\\})`,
+      'i'
+    );
+    const mMatch = sourceCode.match(measureRegex);
+    if (mMatch) {
+      const mHeader = mMatch[1];
+      const mBody = mMatch[2];
+      const mClose = mMatch[3];
+
+      const trackLineRegex = new RegExp(
+        `(^\\s*${trackId}\\s*:\\s*)(.+?)(\\s*\\|?\\s*)$`,
+        'm'
+      );
+      const tMatch = mBody.match(trackLineRegex);
+      if (tMatch) {
+        const prefix = tMatch[1];
+        const rhs = tMatch[2].trim();
+        let nextRhs: string;
+        if (rhs.startsWith('<[') && rhs.endsWith(']>')) {
+          const inner = rhs.slice(2, -2).trim();
+          nextRhs = `<[ ${inner} | s:1${modStr} ]>`;
+        } else {
+          const cleanRhs = rhs.replace(/\|$/, '').trim();
+          nextRhs = `<[ v1: ${cleanRhs} | v2: s:1${modStr} ]>`;
+        }
+        const nextBody = mBody.replace(trackLineRegex, `${prefix}${nextRhs}`);
+        return sourceCode.replace(measureRegex, `${mHeader}${nextBody}${mClose}`);
+      } else {
+        const nextBody = `${mBody.trimEnd()}\n    ${trackId}: s:1${modStr} |\n  `;
+        return sourceCode.replace(measureRegex, `${mHeader}${nextBody}${mClose}`);
+      }
+    }
+
+    // 3. Sketch mode fallback: append spacer automation token
+    return `${sourceCode.trim()} s:1${modStr}`;
+  }
 }
+

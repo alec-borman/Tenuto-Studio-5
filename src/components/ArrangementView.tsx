@@ -1,6 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import { CompiledScore, TrackDefinition, LocatorDefinition, GroupDefinition } from '../parser/DocumentParser';
 import { AtomicEvent } from '../parser/ASTSerializer';
+import AutomationLaneEditor from './AutomationLaneEditor';
+import { AutomationCurveType } from '../audio/AutomationEngine';
 
 export interface ArrangementViewProps {
   score: CompiledScore | null;
@@ -16,6 +18,13 @@ export interface ArrangementViewProps {
   onLoopRangeChange?: (startMeasure: number | null, endMeasure: number | null) => void;
   onAddLocator?: (name: string, measureNumber: number) => void;
   onOpenTrackInPianoRoll?: (trackId: string) => void;
+  onCommitAutomation?: (
+    trackId: string,
+    measureNumber: number,
+    param: string,
+    values: number[],
+    curve: AutomationCurveType
+  ) => void;
 }
 
 const TRACK_COLORS = [
@@ -43,9 +52,11 @@ export default function ArrangementView({
   onLoopRangeChange,
   onAddLocator,
   onOpenTrackInPianoRoll,
+  onCommitAutomation,
 }: ArrangementViewProps) {
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [collapsedTracks, setCollapsedTracks] = useState<Record<string, boolean>>({});
+  const [expandedAutomationTracks, setExpandedAutomationTracks] = useState<Record<string, boolean>>({});
   const [newLocatorMeasure, setNewLocatorMeasure] = useState<number>(1);
 
   const tracks: TrackDefinition[] = useMemo(() => {
@@ -320,8 +331,8 @@ export default function ArrangementView({
             const trackMeasureMap = eventsByTrackAndMeasure.get(track.id);
 
             return (
+              <React.Fragment key={track.id}>
               <div
-                key={track.id}
                 data-testid={`arrangement-track-lane-${track.id}`}
                 className={`flex border-b border-slate-800/90 ${rowHeightClass} transition-all ${
                   isMuted ? 'opacity-50 bg-slate-950' : 'bg-slate-950/90'
@@ -377,6 +388,24 @@ export default function ArrangementView({
                         title={`Solo ${track.name}`}
                       >
                         S
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Toggle automation lane for ${track.id}`}
+                        onClick={() =>
+                          setExpandedAutomationTracks((prev) => ({
+                            ...prev,
+                            [track.id]: !prev[track.id],
+                          }))
+                        }
+                        className={`w-5 h-5 rounded text-[10px] font-bold cursor-pointer border ${
+                          expandedAutomationTracks[track.id]
+                            ? 'bg-cyan-500 text-slate-950 border-cyan-400'
+                            : 'bg-slate-950 text-slate-400 border-slate-700 hover:text-cyan-300'
+                        }`}
+                        title="Unfold Z-Axis Automation Lane"
+                      >
+                        A
                       </button>
                     </div>
                   </div>
@@ -464,6 +493,15 @@ export default function ArrangementView({
                   })}
                 </div>
               </div>
+              {expandedAutomationTracks[track.id] && (
+                <AutomationLaneEditor
+                  trackId={track.id}
+                  measureNumber={1}
+                  lanes={score?.automationLanes || []}
+                  onCommitAutomation={onCommitAutomation}
+                />
+              )}
+              </React.Fragment>
             );
           })}
 

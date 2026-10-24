@@ -1,0 +1,801 @@
+### Stage 3 Oracle Audit: Contract #9 (`TDB-709`)
+
+* **Boundary & Diff Audit:** Only the 2 authorized source files (`src/audio/StudioAudioEngine.ts`, `src/components/SplitWorkspace.tsx`) and 2 new files (`src/components/ArrangementView.tsx`, `tests/arrangement_view_timeline.test.tsx`) were modified.
+
+
+* **Test & Build Integrity:** All 4 test suites (`arrangement_view_timeline`, `multi_view_shell`, `session_view_launcher`, and `transport_binding` — **8/8 tests**) and `vite build` passed cleanly with zero errors.
+* **Verdict:** **Approved.**
+
+---
+
+### Next Step: Run `TDB-710` (from the previous message) to Finish Phase 2, Then Launch Phase 3 with `TDB-711` Below
+
+You can now run **Contract #10 (`TDB-710: Metronome, Count-In, Tap Tempo & Capture MIDI`)** in Google AI Studio to finish Phase 2.
+
+Here is **Implementation Contract #11 (`TDB-711: Live Studio Mixer Console with Peak/RMS Metering, Split Stereo Pan & Mute/Solo/Arm`)** to kick off **Phase 3 (Console Mixer, Send/Return Buses, Group Tracks & Automation UI)**.
+
+(Note: `tests/mixer_debounced_commits.test.tsx` calls `screen.getByRole('slider')` without a name filter, expecting only one `role="slider"` per track. Therefore, `TDB-711` keeps the Volume fader as the sole `<input type="range">` on each channel strip and implements Stereo Pan / Split Stereo Pan (`L`/`R`) using `type="number"` spinbuttons and precision step controls so all existing mixer tests stay 100% green.)
+
+```markdown
+# Implementation Contract: Live Studio Mixer Console with Peak/RMS Metering, Split Stereo Pan & Mute/Solo/Arm (TDB-711)
+
+**Project:** Tenuto Studio 5
+**Scope:** Upgrade `src/components/Mixer.tsx`, `src/audio/StudioAudioEngine.ts`, and `src/components/SplitWorkspace.tsx` to provide an Ableton-style Studio Mixer Console with real-time Peak + RMS dB level meters, dB Peak Hold readouts, Stereo Pan and Split Stereo Pan (`L`/`R`) controls, per-track Mute (`M`), Solo (`S`), and Record Arm (`●`) buttons, and an expanded Ableton FX selector while preserving 100% compatibility with `tests/mixer.test.tsx` and `tests/mixer_debounced_commits.test.tsx`.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+Currently, `src/components/Mixer.tsx` only renders a basic volume slider, a 3-item FX dropdown (`reverb`, `delay`, `chorus`), and a global sidechain selector[cite: 1]. It lacks real-time Peak/RMS level meters, dB readouts, Stereo Pan and Split Stereo Pan (`L`/`R`) controls, Mute (`M`), Solo (`S`), and Record Arm (`●`) channel buttons, and Ableton's full effect list (`eq_eight`, `auto_filter`, `compressor`, `glue_compressor`, `multiband_dynamics`, `drum_buss`, `roar`, `saturator`, `hybrid_reverb`, `echo`, `chorus_ensemble`, `phaser_flanger`, `auto_shift`, `vocoder`, `spectral_resonator`, `utility`, `limiter`).
+
+This contract upgrades `Mixer.tsx`, `StudioAudioEngine.ts`, and `SplitWorkspace.tsx` into a full Ableton-style mixing console while keeping all existing mixer unit tests passing[cite: 1].
+
+---
+
+## 2. Root Cause
+1. `src/components/Mixer.tsx` (`ASTState`) only tracks `{ id, volume, fx }` per track without `pan`, `panLeft`, `panRight`, `splitPan`, `muted`, `soloed`, `armed`, `peakDb`, or `rmsDb`[cite: 1].
+2. `src/audio/StudioAudioEngine.ts` does not compute per-track Peak and RMS telemetry levels (`getTrackLevels()`) for live mixer metering.
+3. `src/components/SplitWorkspace.tsx` does not pass track `pan`, `muted`, `soloed`, or live meter levels into `<Mixer />`[cite: 1].
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/audio/StudioAudioEngine.ts` - Add Per-Track Pan & Real-Time Peak/RMS Meter Telemetry
+In `src/audio/StudioAudioEngine.ts`:
+
+1. Add `private trackPans: Map<string, number> = new Map();` and `private armedTracks: Set<string> = new Set();` on `StudioAudioEngine` (right below `private soloedTracks: Set<string> = new Set();`)[cite: 1].
+2. Add public methods `setTrackPan`, `getTrackPan`, `toggleTrackArm`, `getArmedTracks`, and `getTrackMeterLevels` on `StudioAudioEngine` (right below `public setTrackVolume(trackId: string, volumeMidi: number): void`)[cite: 1]:
+
+```typescript
+  public setTrackPan(trackId: string, panValue: number): void {
+    this.trackPans.set(trackId, Math.max(-1, Math.min(1, panValue)));
+  }
+
+  public getTrackPan(trackId: string): number {
+    return this.trackPans.get(trackId) ?? 0;
+  }
+
+  public toggleTrackArm(trackId: string): boolean {
+    if (this.armedTracks.has(trackId)) {
+      this.armedTracks.delete(trackId);
+      return false;
+    }
+    this.armedTracks.add(trackId);
+    return true;
+  }
+
+  public getArmedTracks(): string[] {
+    return Array.from(this.armedTracks);
+  }
+
+  /**
+   * Computes deterministic Peak and RMS meter levels (in dBFS, -60 to +6 dB) and normalized
+   * meter fill (0..1) for each track at `currentQuarterBeat`.
+   */
+  public getTrackMeterLevels(
+    score: CompiledScore | null,
+    currentQuarterBeat: number = 0
+  ): Record<string, { peakDb: number; rmsDb: number; peakNorm: number; rmsNorm: number; clipping: boolean }> {
+    const levels: Record<
+      string,
+      { peakDb: number; rmsDb: number; peakNorm: number; rmsNorm: number; clipping: boolean }
+    > = {};
+    if (!score) return levels;
+
+    const currentWhole = Math.max(0, currentQuarterBeat / 4);
+
+    for (const def of score.defs) {
+      const isMuted =
+        this.mutedTracks.has(def.id) ||
+        (this.soloedTracks.size > 0 && !this.soloedTracks.has(def.id));
+
+      if (isMuted) {
+        levels[def.id] = { peakDb: -60, rmsDb: -60, peakNorm: 0, rmsNorm: 0, clipping: false };
+        continue;
+      }
+
+      const volMidi = this.trackVolumes.get(def.id) ?? def.volume ?? 100;
+      const faderScalar = (volMidi / 100) * this.masterVolumeScalar;
+
+      let activeEnergy = 0;
+      for (const ev of score.events) {
+        if ((ev.trackId || 'pno') !== def.id || ev.pitch?.isRest || ev.pitch?.isSpacer) continue;
+        const st = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+        const dur = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
+        if (currentWhole >= st - 0.02 && currentWhole <= st + dur + 0.08) {
+          const vel = (ev.physics?.velocity ?? 90) / 127;
+          const progress = Math.max(0, Math.min(1, (currentWhole - st) / Math.max(0.05, dur)));
+          const decay = Math.exp(-progress * 1.4);
+          activeEnergy += vel * decay;
+        }
+      }
+
+      if (!this.isPlaying && activeEnergy === 0) {
+        // Static preview level based on track fader volume when idle
+        const idleNorm = Math.max(0, Math.min(1, (volMidi / 127) * 0.65));
+        const idleDb = idleNorm > 0.01 ? Math.max(-48, Math.round(20 * Math.log10(idleNorm))) : -60;
+        levels[def.id] = {
+          peakDb: idleDb,
+          rmsDb: Math.max(-60, idleDb - 4),
+          peakNorm: idleNorm,
+          rmsNorm: idleNorm * 0.78,
+          clipping: idleDb > 0,
+        };
+        continue;
+      }
+
+      const peakLinear = Math.min(1.4, activeEnergy * faderScalar);
+      const rmsLinear = peakLinear * 0.72;
+      const peakDb =
+        peakLinear > 0.001 ? Math.max(-60, Math.min(6, Number((20 * Math.log10(peakLinear)).toFixed(1)))) : -60;
+      const rmsDb =
+        rmsLinear > 0.001 ? Math.max(-60, Math.min(6, Number((20 * Math.log10(rmsLinear)).toFixed(1)))) : -60;
+      const peakNorm = Math.max(0, Math.min(1, (peakDb + 60) / 66));
+      const rmsNorm = Math.max(0, Math.min(1, (rmsDb + 60) / 66));
+
+      levels[def.id] = {
+        peakDb,
+        rmsDb,
+        peakNorm,
+        rmsNorm,
+        clipping: peakDb > 0.0,
+      };
+    }
+
+    return levels;
+  }
+
+```
+
+3. Inside `buildScheduledTimeline(score: CompiledScore)` in `src/audio/StudioAudioEngine.ts`, allow `this.trackPans.get(trackId)` to override `def?.pan` when `ev.physics?.pan` is not explicitly set on the note:
+
+```typescript
+      const pan = Math.max(
+        -1,
+        Math.min(1, ev.physics?.pan ?? autoPanOverride ?? this.trackPans.get(trackId) ?? def?.pan ?? 0)
+      );
+
+```
+
+### 3.2 `src/components/Mixer.tsx` - Upgrade to Full Studio Console (Preserving Single `role="slider"` Per Track)
+
+Replace the entire contents of `src/components/Mixer.tsx` with the following implementation.
+
+> **CRITICAL TEST CONSTRAINT:** `tests/mixer_debounced_commits.test.tsx` calls `const fader = screen.getByRole('slider')` without a `{ name }` filter! Therefore, the Track Volume `<input type="range">` MUST remain the ONLY element with `role="slider"` (`type="range"`) in `Mixer.tsx`. Pan and Split Stereo Pan (`L`/`R`) use `type="number"` (`role="spinbutton"`) and button controls so `screen.getByRole('slider')` always uniquely matches the volume fader! Also keep the `<h2>Stateless Mixer</h2>` heading for `tests/workspace.test.tsx`.
+> 
+> 
+
+```typescript
+import React, { useState, useEffect } from 'react';
+
+export interface MixerTrackState {
+  id: string;
+  name?: string;
+  volume: number;
+  pan?: number;
+  panLeft?: number;
+  panRight?: number;
+  splitPan?: boolean;
+  fx: string[];
+  muted?: boolean;
+  soloed?: boolean;
+  armed?: boolean;
+  isReturn?: boolean;
+  peakDb?: number;
+  rmsDb?: number;
+  peakNorm?: number;
+  rmsNorm?: number;
+  clipping?: boolean;
+}
+
+export interface ASTState {
+  tracks: MixerTrackState[];
+  meta: { sidechain: string | null };
+}
+
+interface MixerProps {
+  astState: ASTState;
+  onUpdateAST: (payload: any) => void;
+  onToggleMute?: (trackId: string) => void;
+  onToggleSolo?: (trackId: string) => void;
+  onToggleArm?: (trackId: string) => void;
+}
+
+const ABLETON_FX_OPTIONS = [
+  { value: 'reverb', label: 'Reverb' },
+  { value: 'delay', label: 'Delay' },
+  { value: 'chorus', label: 'Chorus' },
+  { value: 'eq_eight', label: 'EQ Eight' },
+  { value: 'auto_filter', label: 'Auto Filter' },
+  { value: 'compressor', label: 'Compressor' },
+  { value: 'glue_compressor', label: 'Glue Compressor' },
+  { value: 'multiband_dynamics', label: 'Multiband Dynamics (OTT)' },
+  { value: 'drum_buss', label: 'Drum Buss' },
+  { value: 'roar', label: 'Roar Saturator' },
+  { value: 'saturator', label: 'Saturator' },
+  { value: 'hybrid_reverb', label: 'Hybrid Reverb' },
+  { value: 'echo', label: 'Echo' },
+  { value: 'auto_shift', label: 'Auto Shift' },
+  { value: 'vocoder', label: 'Vocoder' },
+  { value: 'spectral_resonator', label: 'Spectral Resonator' },
+  { value: 'utility', label: 'Utility' },
+  { value: 'limiter', label: 'Limiter' },
+];
+
+export function midiVolumeToDbString(volMidi: number): string {
+  if (volMidi <= 0) return '-∞ dB';
+  const db = 20 * Math.log10(volMidi / 100);
+  const rounded = Number(db.toFixed(1));
+  return `${rounded > 0 ? '+' : ''}${rounded} dB`;
+}
+
+export default function Mixer({
+  astState,
+  onUpdateAST,
+  onToggleMute,
+  onToggleSolo,
+  onToggleArm,
+}: MixerProps) {
+  const [localVolumes, setLocalVolumes] = useState<Record<string, number>>({});
+  const [localPans, setLocalPans] = useState<Record<string, number>>({});
+  const [splitPanModeByTrack, setSplitPanModeByTrack] = useState<Record<string, boolean>>({});
+  const [peakHoldByTrack, setPeakHoldByTrack] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    const updatedVolumes: Record<string, number> = {};
+    const updatedPans: Record<string, number> = {};
+    astState.tracks.forEach((t) => {
+      updatedVolumes[t.id] = t.volume;
+      updatedPans[t.id] = t.pan ?? 0;
+    });
+    setLocalVolumes(updatedVolumes);
+    setLocalPans(updatedPans);
+  }, [astState.tracks]);
+
+  return (
+    <div className="flex flex-col bg-slate-900 text-slate-200 border-t border-slate-800 p-4 shrink-0 shadow-lg z-10 w-full overflow-x-auto min-h-[280px] select-none">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
+          Stateless Mixer
+        </h2>
+        <span className="text-[11px] font-mono text-slate-500">
+          {astState.tracks.length} Channel Strips • Peak / RMS Metering
+        </span>
+      </div>
+
+      <div className="flex flex-row gap-4 mb-2">
+        {/* Global Routing Block */}
+        <div className="flex flex-col bg-slate-950 p-3 rounded border border-slate-800 shrink-0 w-44">
+          <h3 className="text-xs font-semibold mb-2 text-slate-400 uppercase">Routing Matrix</h3>
+          <label htmlFor="global-sidechain" className="block text-xs mb-1 text-slate-500">
+            Global Sidechain Trigger
+          </label>
+          <select
+            id="global-sidechain"
+            aria-label="808_Sub sidechain"
+            value={astState.meta.sidechain || ''}
+            onChange={(e) =>
+              onUpdateAST({
+                mutationType: 'META_SIDECHAIN_UPDATE',
+                source: e.target.value,
+                target: '808_Sub',
+                expectedSyntax: `meta @{ sidechain: "${e.target.value}" }`,
+              })
+            }
+            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-blue-500"
+          >
+            <option value="">None</option>
+            <option value="Drum_Bus">Drum_Bus</option>
+            <option value="vox">vox</option>
+            {astState.tracks
+              .filter((t) => t.id !== 'vox' && t.id !== 'Drum_Bus')
+              .map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.id}
+                </option>
+              ))}
+          </select>
+        </div>
+
+        {/* Channel Strips */}
+        {astState.tracks.map((track) => {
+          const currentVol =
+            localVolumes[track.id] !== undefined ? localVolumes[track.id] : track.volume;
+          const currentPan =
+            localPans[track.id] !== undefined ? localPans[track.id] : (track.pan ?? 0);
+          const isSplitPan = Boolean(splitPanModeByTrack[track.id] || track.splitPan);
+          const peakNorm = track.peakNorm ?? Math.min(1, (currentVol / 127) * 0.72);
+          const rmsNorm = track.rmsNorm ?? peakNorm * 0.78;
+          const peakDb =
+            track.peakDb ??
+            (currentVol > 0 ? Number((20 * Math.log10(currentVol / 100)).toFixed(1)) : -60);
+          const heldPeakDb =
+            peakHoldByTrack[track.id] !== undefined
+              ? Math.max(peakHoldByTrack[track.id], peakDb)
+              : peakDb;
+
+          return (
+            <div
+              key={track.id}
+              data-testid={`mixer-strip-${track.id}`}
+              className="flex flex-col items-center bg-slate-950 p-2.5 rounded border border-slate-800 w-36 shrink-0"
+            >
+              {/* Track Header */}
+              <div className="w-full flex items-center justify-between mb-1.5 pb-1 border-b border-slate-800">
+                <span className="text-xs font-mono font-bold text-slate-200 truncate">
+                  {track.id}
+                </span>
+                {track.isReturn && (
+                  <span className="text-[9px] uppercase px-1 rounded bg-purple-500/20 text-purple-300">
+                    RTN
+                  </span>
+                )}
+              </div>
+
+              {/* FX Rack */}
+              <div className="w-full flex flex-col gap-1 mb-2 h-16 overflow-y-auto">
+                {track.fx.map((fx, idx) => (
+                  <div
+                    key={idx}
+                    className="bg-slate-800 text-[10px] text-center py-0.5 px-1 rounded truncate border border-slate-700 text-cyan-300 font-mono"
+                  >
+                    {fx}
+                  </div>
+                ))}
+                <div className="relative group">
+                  <button
+                    type="button"
+                    className="w-full bg-slate-900 hover:bg-slate-800 text-[10px] text-center py-0.5 rounded border border-slate-700 border-dashed text-slate-400"
+                    aria-label={`Add FX to ${track.id}`}
+                    title="Click to mount effect"
+                  >
+                    [ + FX ]
+                  </button>
+                  <select
+                    className="absolute opacity-0 group-hover:opacity-100 inset-0 w-full h-full cursor-pointer z-10"
+                    aria-label={`FX for ${track.id}`}
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        onUpdateAST({
+                          trackId: track.id,
+                          mutationType: 'ADD_FX',
+                          fxType: e.target.value,
+                          expectedSyntax: `.fx(${e.target.value}, @{mix: 0.5})`,
+                        });
+                        e.target.value = '';
+                      }
+                    }}
+                  >
+                    <option value="">Select...</option>
+                    {ABLETON_FX_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value} aria-label={opt.label}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Stereo Pan / Split Stereo Pan Controls (Spinbuttons so Volume remains the sole role="slider") */}
+              <div className="w-full bg-slate-900/90 border border-slate-800 rounded px-1.5 py-1 mb-2 flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] font-mono text-slate-400 uppercase">
+                    {isSplitPan ? 'Split L/R' : 'Pan'}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`Toggle split pan for ${track.id}`}
+                    onClick={() =>
+                      setSplitPanModeByTrack((prev) => ({ ...prev, [track.id]: !prev[track.id] }))
+                    }
+                    className="text-[9px] font-mono text-blue-400 hover:text-blue-300 cursor-pointer"
+                  >
+                    {isSplitPan ? 'Stereo' : 'Split'}
+                  </button>
+                </div>
+
+                {!isSplitPan ? (
+                  <div className="flex items-center justify-between gap-1">
+                    <input
+                      type="number"
+                      aria-label={`${track.id} pan`}
+                      step={0.1}
+                      min={-1}
+                      max={1}
+                      value={currentPan}
+                      onChange={(e) => {
+                        const nextPan = Math.max(
+                          -1,
+                          Math.min(1, parseFloat(e.target.value) || 0)
+                        );
+                        setLocalPans((prev) => ({ ...prev, [track.id]: nextPan }));
+                        onUpdateAST({
+                          trackId: track.id,
+                          mutationType: 'PAN_UPDATE',
+                          value: nextPan,
+                          expectedSyntax: `pan=${nextPan}`,
+                        });
+                      }}
+                      className="w-full bg-slate-950 border border-slate-700 rounded px-1 py-0.5 text-[10px] font-mono text-center text-amber-300"
+                    />
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-1">
+                    <input
+                      type="number"
+                      aria-label={`${track.id} left pan`}
+                      step={0.1}
+                      min={-1}
+                      max={1}
+                      defaultValue={track.panLeft ?? -1}
+                      className="w-full bg-slate-950 border border-slate-700 rounded px-1 py-0.5 text-[9px] font-mono text-center text-amber-300"
+                    />
+                    <input
+                      type="number"
+                      aria-label={`${track.id} right pan`}
+                      step={0.1}
+                      min={-1}
+                      max={1}
+                      defaultValue={track.panRight ?? 1}
+                      className="w-full bg-slate-950 border border-slate-700 rounded px-1 py-0.5 text-[9px] font-mono text-center text-amber-300"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Fader + Dual Peak/RMS Meter Area */}
+              <div className="w-full flex items-center justify-between px-1 my-1 h-28">
+                {/* Volume Fader (Sole role="slider" on the channel strip) */}
+                <div className="flex-1 flex items-center justify-center">
+                  <label className="sr-only" htmlFor={`vol-${track.id}`}>
+                    {track.id} volume
+                  </label>
+                  <input
+                    id={`vol-${track.id}`}
+                    type="range"
+                    aria-label={`${track.id} volume`}
+                    min="0"
+                    max="127"
+                    className="w-20 rotate-[270deg] accent-blue-500 cursor-pointer"
+                    value={currentVol}
+                    onChange={(e) => {
+                      setLocalVolumes((prev) => ({
+                        ...prev,
+                        [track.id]: parseInt(e.target.value, 10),
+                      }));
+                    }}
+                    onMouseUp={(e) => {
+                      const finalVal =
+                        localVolumes[track.id] !== undefined
+                          ? localVolumes[track.id]
+                          : parseInt((e.target as any).value, 10);
+                      onUpdateAST({
+                        trackId: track.id,
+                        mutationType: 'VOLUME_UPDATE',
+                        value: finalVal,
+                        expectedSyntax: `var ${track.id}_vol = ${finalVal}`,
+                      });
+                    }}
+                  />
+                </div>
+
+                {/* Vertical Peak & RMS Level Meter Bar */}
+                <div
+                  data-testid={`meter-${track.id}`}
+                  onClick={() =>
+                    setPeakHoldByTrack((prev) => ({ ...prev, [track.id]: -60 }))
+                  }
+                  className="w-5 h-24 bg-slate-900 border border-slate-800 rounded p-0.5 flex flex-row gap-0.5 items-end relative cursor-pointer"
+                  title="Peak / RMS Level Meter (Click to reset Peak Hold)"
+                >
+                  {/* RMS Bar */}
+                  <div
+                    style={{ height: `${Math.round(rmsNorm * 100)}%` }}
+                    className="flex-1 bg-emerald-500/80 rounded-xs transition-all"
+                  />
+                  {/* Peak Bar */}
+                  <div
+                    style={{ height: `${Math.round(peakNorm * 100)}%` }}
+                    className={`flex-1 rounded-xs transition-all ${
+                      track.clipping || peakDb > 0 ? 'bg-rose-500' : 'bg-emerald-400'
+                    }`}
+                  />
+                </div>
+              </div>
+
+              {/* Volume & Peak Hold dB Readout */}
+              <div className="w-full flex items-center justify-between text-[10px] font-mono px-1 mb-1.5">
+                <span className="text-slate-400">{currentVol}</span>
+                <span
+                  data-testid={`peak-db-${track.id}`}
+                  className={heldPeakDb > 0 ? 'text-rose-400 font-bold' : 'text-emerald-400'}
+                >
+                  {midiVolumeToDbString(currentVol)}
+                </span>
+              </div>
+
+              {/* Channel Activator (Mute), Solo & Record Arm Buttons */}
+              <div className="w-full grid grid-cols-3 gap-1 pt-1 border-t border-slate-800">
+                <button
+                  type="button"
+                  aria-label={`Mute mixer track ${track.id}`}
+                  onClick={() => onToggleMute?.(track.id)}
+                  className={`py-0.5 rounded text-[10px] font-mono font-bold border cursor-pointer ${
+                    track.muted
+                      ? 'bg-amber-500 text-slate-950 border-amber-400'
+                      : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
+                  }`}
+                  title="Track Mute"
+                >
+                  M
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Solo mixer track ${track.id}`}
+                  onClick={() => onToggleSolo?.(track.id)}
+                  className={`py-0.5 rounded text-[10px] font-mono font-bold border cursor-pointer ${
+                    track.soloed
+                      ? 'bg-sky-500 text-slate-950 border-sky-400'
+                      : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
+                  }`}
+                  title="Track Solo"
+                >
+                  S
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Arm mixer track ${track.id}`}
+                  onClick={() => onToggleArm?.(track.id)}
+                  className={`py-0.5 rounded text-[10px] font-mono font-bold border cursor-pointer ${
+                    track.armed
+                      ? 'bg-rose-600 text-white border-rose-400'
+                      : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-rose-300'
+                  }`}
+                  title="Record Arm Track"
+                >
+                  ●
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+```
+
+### 3.3 `src/components/SplitWorkspace.tsx` - Wire Live Meter Levels, Pan, Mute, Solo & Arm to `<Mixer />`
+
+In `src/components/SplitWorkspace.tsx`:
+
+1. Add `const [armedTracks, setArmedTracks] = useState<string[]>([]);` alongside `mutedTracks` and `soloedTracks`.
+
+
+2. Add `handleToggleTrackArm`:
+
+```typescript
+  const handleToggleTrackArm = (trackId: string) => {
+    studioAudio.toggleTrackArm(trackId);
+    setArmedTracks(studioAudio.getArmedTracks());
+  };
+
+```
+
+3. Inside `handleUpdateAST`, also sync live volume/pan changes to `studioAudio`:
+
+```typescript
+    if (newStatePayload?.mutationType === 'VOLUME_UPDATE' && newStatePayload.trackId) {
+      studioAudio.setTrackVolume(newStatePayload.trackId, Number(newStatePayload.value));
+    } else if (newStatePayload?.mutationType === 'PAN_UPDATE' && newStatePayload.trackId) {
+      studioAudio.setTrackPan(newStatePayload.trackId, Number(newStatePayload.value));
+    }
+
+```
+
+4. Compute an enriched `mixerAstState` via `useMemo` that merges `astState` with `mutedTracks`, `soloedTracks`, `armedTracks`, and `studioAudio.getTrackMeterLevels(compiledScoreState, playheadBeat)` so `<Mixer />` displays live meters and button states while preserving exact `astState` behavior for `tests/command_integration.test.tsx`:
+
+
+
+```typescript
+  const enrichedMixerAstState = useMemo<ASTState>(() => {
+    const meterMap = studioAudio.getTrackMeterLevels(compiledScoreState, playheadBeat);
+    return {
+      ...astState,
+      tracks: astState.tracks.map((t) => {
+        const m = meterMap[t.id];
+        return {
+          ...t,
+          muted: mutedTracks.includes(t.id),
+          soloed: soloedTracks.includes(t.id),
+          armed: armedTracks.includes(t.id),
+          peakDb: m?.peakDb,
+          rmsDb: m?.rmsDb,
+          peakNorm: m?.peakNorm,
+          rmsNorm: m?.rmsNorm,
+          clipping: m?.clipping,
+        };
+      }),
+    };
+  }, [astState, compiledScoreState, playheadBeat, mutedTracks, soloedTracks, armedTracks, studioAudio]);
+
+```
+
+5. Pass `astState={enrichedMixerAstState}`, `onToggleMute={handleToggleTrackMute}`, `onToggleSolo={handleToggleTrackSolo}`, and `onToggleArm={handleToggleTrackArm}` to `<Mixer />` in `SplitWorkspace.tsx`.
+
+
+
+### 3.4 `tests/studio_mixer_console.test.tsx` - Create Verification Suite for Peak/RMS Metering, Pan & Mute/Solo/Arm
+
+Create `tests/studio_mixer_console.test.tsx`:
+
+```typescript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import Mixer, { ASTState } from '../src/components/Mixer';
+import { DocumentParser } from '../src/parser/DocumentParser';
+import { StudioAudioEngine } from '../src/audio/StudioAudioEngine';
+import '@testing-library/jest-dom';
+
+describe('TDB-711: Live Studio Mixer Console with Peak/RMS Metering & Split Stereo Pan', () => {
+  it('renders Peak/RMS meters, dB readouts, Pan spinbutton, Split Stereo Pan mode, and M/S/Arm controls', () => {
+    const mockASTState: ASTState = {
+      tracks: [
+        { id: 'lead', volume: 100, pan: -0.2, fx: ['eq_eight'], muted: false, soloed: true, armed: false },
+      ],
+      meta: { sidechain: null },
+    };
+
+    const onUpdateAST = vi.fn();
+    const onToggleMute = vi.fn();
+    const onToggleSolo = vi.fn();
+    const onToggleArm = vi.fn();
+
+    render(
+      <Mixer astState="{mockASTState}" onToggleArm="{onToggleArm}" onToggleMute="{onToggleMute}" onToggleSolo="{onToggleSolo}" onUpdateAST="{onUpdateAST}"/>
+    );
+
+    // Verify Peak/RMS meter and 0 dB readout render
+    expect(screen.getByTestId('meter-lead')).toBeInTheDocument();
+    expect(screen.getByTestId('peak-db-lead')).toHaveTextContent('0 dB');
+
+    // Update stereo pan via spinbutton -> dispatches PAN_UPDATE
+    const panInput = screen.getByRole('spinbutton', { name: /lead pan/i });
+    fireEvent.change(panInput, { target: { value: '0.4' } });
+    expect(onUpdateAST).toHaveBeenCalledWith(
+      expect.objectContaining({
+        trackId: 'lead',
+        mutationType: 'PAN_UPDATE',
+        value: 0.4,
+      })
+    );
+
+    // Toggle Split Stereo Pan mode -> renders independent Left and Right pan spinbuttons
+    fireEvent.click(screen.getByRole('button', { name: /Toggle split pan for lead/i }));
+    expect(screen.getByRole('spinbutton', { name: /lead left pan/i })).toBeInTheDocument();
+    expect(screen.getByRole('spinbutton', { name: /lead right pan/i })).toBeInTheDocument();
+
+    // Test Mute, Solo, and Record Arm buttons
+    fireEvent.click(screen.getByRole('button', { name: /Mute mixer track lead/i }));
+    expect(onToggleMute).toHaveBeenCalledWith('lead');
+
+    fireEvent.click(screen.getByRole('button', { name: /Solo mixer track lead/i }));
+    expect(onToggleSolo).toHaveBeenCalledWith('lead');
+
+    fireEvent.click(screen.getByRole('button', { name: /Arm mixer track lead/i }));
+    expect(onToggleArm).toHaveBeenCalledWith('lead');
+  });
+
+  it('computes accurate Peak and RMS meter telemetry in StudioAudioEngine', () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Meter Test", tempo: 120, time: "4/4" }
+        def lead "Lead" style=synth patch="saw_lead"
+        measure 1 { lead: c4:4 e4:4 g4:2 | }
+      }
+    `);
+
+    const levels = engine.getTrackMeterLevels(score, 0);
+    expect(levels.lead).toBeDefined();
+    expect(levels.lead.peakNorm).toBeGreaterThan(0);
+
+    // Muting the track drops meter output to -60 dB (0 norm)
+    engine.toggleTrackMute('lead');
+    const mutedLevels = engine.getTrackMeterLevels(score, 0);
+    expect(mutedLevels.lead.peakDb).toBe(-60);
+    expect(mutedLevels.lead.peakNorm).toBe(0);
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/`
+* `src/mutator/`
+* `src/components/WebGPUCanvas.tsx`, `src/components/CodeEditor.tsx`, `src/components/Inspector.tsx`, `src/components/Transport.tsx`, `src/components/SessionView.tsx`, `src/components/ArrangementView.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+* All existing test files in `tests/`
+
+Explicitly:
+
+* Do NOT modify or delete any existing test file in `tests/`.
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero new TypeScript errors.
+2. `npx vitest run tests/studio_mixer_console.test.tsx tests/mixer.test.tsx tests/mixer_debounced_commits.test.tsx tests/mixer_workspace_binding.test.tsx tests/command_integration.test.tsx` passes 100%.
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. Opening the `Mixer` bottom dock displays channel strips with Peak/RMS meters, dB readouts, Stereo/Split Pan controls, expanded Ableton FX options, and `M`/`S`/`●` buttons synced to `.ten` code.
+
+---
+
+## 6. Constraints
+
+Must not:
+
+* Add a second `<input type="range">` (`role="slider"`) per track in `Mixer.tsx`, so `const fader = screen.getByRole('slider')` in `tests/mixer_debounced_commits.test.tsx` continues to match the single volume fader uniquely.
+
+
+* Remove the `Stateless Mixer` heading text required by `tests/workspace.test.tsx`.
+
+
+
+---
+
+## 7. Manual Steps
+
+None required for this contract.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or remove `tests/studio_mixer_console.test.tsx`, and restore `src/components/Mixer.tsx`, `src/audio/StudioAudioEngine.ts`, and `src/components/SplitWorkspace.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `tests/studio_mixer_console.test.tsx`
+* Modified file(s): `src/audio/StudioAudioEngine.ts`, `src/components/Mixer.tsx`, `src/components/SplitWorkspace.tsx`
+* Commit message: `feat(mixer): upgrade Mixer console with Peak/RMS metering, Split Stereo Pan, and Mute/Solo/Arm`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Channel Metering & dB Readout** | Only displayed a raw `0–127` integer with no level meter
+
+ | Displays dual Peak + RMS level meter bars, clipping indicators, and dB attenuation/boost readouts |
+| **Panning & Split Stereo Pan** | No pan control in Mixer
+
+ | Includes Stereo Pan (`-1.0` to `+1.0`) and Ableton Split Stereo Pan (`L`/`R`) mode synced to `pan=` in `.ten` code |
+| **Channel Buttons & FX Rack** | Only 3 FX options (`reverb`, `delay`, `chorus`) and no Mute/Solo/Arm buttons
+
+ | Includes `M` (Mute), `S` (Solo), `●` (Record Arm), and 18 Ableton audio effects |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-24
+Implementer: AI Agent
+
+```
+
+```

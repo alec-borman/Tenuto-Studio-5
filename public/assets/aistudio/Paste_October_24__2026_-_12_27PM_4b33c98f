@@ -1,0 +1,567 @@
+That screenshot makes the layout issues immediately obvious. Looking across the window from top to bottom, three specific bugs are causing the broken appearance:
+
+1. **Top Transport Bar Overflow & Clipped Controls (`src/components/Transport.tsx`):**
+* Stuffing 18 controls into a single `h-14` horizontal flex row caused the bar to run out of horizontal space right at the Key selector (`[C`).
+
+
+* As a result, `.ten Code` and `120 BPM` wrapped onto two lines, `Sketch` was truncated to `Ske...`, and **the entire right half of the toolbar—the Scale selector, the `Piano Roll | Session | Arrangement` view switcher, the `Mixer | Devices | Inspector` dock buttons, the `Master Volume` slider, and `Export WAV`—was pushed completely off the right edge of the window**.
+
+
+
+
+2. **Window Title Bar Still Reads `"My Google AI Studio App"` (`index.html` & `electron/main.cjs`):**
+* `index.html` still has `<title>My Google AI Studio App</title>`, which overwrites the native macOS window title bar once `dist/index.html` loads.
+
+
+
+
+3. **Dead Black Space Below `A3` in the Piano Roll (`src/components/WebGPUCanvas.tsx`):**
+* For a single note (`pno: c4:4`), `WebGPUCanvas.tsx` only rendered 19 pitch rows (`380px` tall), leaving the bottom half of the right panel as an empty black void instead of spanning a full multi-octave studio grid that fills the viewport height.
+
+
+
+
+
+---
+
+### Implementation Contract: Two-Tier Studio Header, Full-Height Piano Roll & Window Title Fix (`TDB-712-UI`)
+
+This contract fixes all three visual issues in a single commit:
+
+* Splits `Transport.tsx` into a clean **Two-Tier Studio Header** (`Row 1`: Brand, Preset Loader, Transport Controls, Live Status Pill, Master Volume, Export WAV; `Row 2`: `.ten Code` toggle, centered `Piano Roll | Session | Arrangement` View Switcher, and right-aligned `Mixer | Devices | Inspector` Dock Switcher) with `whitespace-nowrap` on every control so nothing wraps or clips off-screen.
+* Expands the Piano Roll vertical octave range in `WebGPUCanvas.tsx` so it fills the full height of the right pane without a black void at the bottom.
+* Sets the window title to **`Tenuto Studio 5`** in both `index.html` and `electron/main.cjs`.
+
+Paste the contract below directly into Google AI Studio:
+
+```markdown
+# Implementation Contract: Two-Tier Responsive Studio Header, Full-Height Piano Roll & macOS Window Title Fix (TDB-712-UI)
+
+**Project:** Tenuto Studio 5
+**Scope:** Fix the top Transport bar horizontal overflow and clipped view/dock/export buttons in `src/components/Transport.tsx` by organizing the header into a two-tier studio bar with `whitespace-nowrap`; expand the vertical octave span in `src/components/WebGPUCanvas.tsx` so the Piano Roll fills the full viewport height without a black gap at the bottom; and fix the `"My Google AI Studio App"` window title in `index.html` and `electron/main.cjs`.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+In the compiled macOS desktop app, the top `Transport.tsx` bar places all transport buttons, status readouts, view switchers, dock toggles, volume controls, and export buttons onto a single unwrapped horizontal row. At standard window widths, `.ten Code` and `120 BPM` wrap awkwardly onto two lines, and every control to the right of the Key selector (`Scale Mode`, `Piano Roll | Session | Arrangement`, `Mixer | Devices | Inspector`, `Master Volume`, and `Export WAV`) is pushed off the right edge of the screen and clipped. Additionally, `index.html` sets the macOS window title to `"My Google AI Studio App"`, and `WebGPUCanvas.tsx` only renders 19 pitch rows (`380px`) when a single note is present, leaving the bottom half of the Piano Roll pane blank.
+
+This contract fixes all three UI defects while keeping 100% of existing unit tests green.
+
+---
+
+## 2. Root Cause
+1. `src/components/Transport.tsx` renders 18+ controls inside a single `h-14 flex items-center justify-between` row without a second navigation tier or `whitespace-nowrap`, exceeding 1480px of horizontal width.
+2. `index.html` line 6 contains `<title>My Google AI Studio App</title>`, which overrides the Electron `BrowserWindow` title on load.
+3. `src/components/WebGPUCanvas.tsx` sets `minSpan = 18` (`~380px` total SVG height) when computing `paddedMin` and `paddedMax`, leaving empty black space below row `A3` on tall screens.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `index.html` & `electron/main.cjs` - Fix macOS Window Title to `"Tenuto Studio 5"`
+1. In `index.html`, change `<title>My Google AI Studio App</title>` to `<title>Tenuto Studio 5</title>`:
+```html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tenuto Studio 5</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
+```
+
+2. In `electron/main.cjs`, inside `createMainWindow()`, prevent document title changes from overwriting `'Tenuto Studio 5'`:
+
+```javascript
+  mainWindow.on('page-title-updated', (event) => {
+    event.preventDefault();
+  });
+
+```
+
+### 3.2 `src/components/Transport.tsx` - Two-Tier Non-Clipping Studio Header Layout
+
+Replace the entire contents of `src/components/Transport.tsx` with the following two-tier layout (Row 1: Brand, Demo Selector, Transport & Capture Controls, Status Pill, Master Volume, Export WAV; Row 2: `.ten Code` Toggle, Main Studio View Switcher, and Bottom Studio Dock Switcher):
+
+```typescript
+import React from 'react';
+import { PRESET_SCORES } from '../presets/presetScores';
+
+export type MainStudioView = 'piano_roll' | 'session' | 'arrangement';
+export type BottomDockTab = 'mixer' | 'devices' | 'inspector' | null;
+
+interface TransportProps {
+  isPlaying: boolean;
+  onTogglePlay: () => void;
+  onStop?: () => void;
+  isLooping?: boolean;
+  onToggleLoop?: () => void;
+  tempo?: number;
+  timeSignature?: string;
+  title?: string;
+  currentBeat?: number;
+  rootKey?: string;
+  scaleName?: string;
+  onKeyScaleChange?: (newKey: string, newScale: string) => void;
+  masterVolume?: number;
+  onMasterVolumeChange?: (newVolume: number) => void;
+  onSelectPreset?: (code: string) => void;
+  onExportWav?: () => void;
+  activeMainView?: MainStudioView;
+  onMainViewChange?: (view: MainStudioView) => void;
+  activeBottomDock?: BottomDockTab;
+  onToggleBottomDock?: (tab: 'mixer' | 'devices' | 'inspector') => void;
+  isCodeVisible?: boolean;
+  onToggleCodeVisible?: () => void;
+  isMetronomeEnabled?: boolean;
+  onToggleMetronome?: () => void;
+  countInBars?: number;
+  onCountInBarsChange?: (bars: number) => void;
+  onTapTempo?: () => void;
+  onCaptureMidi?: () => void;
+}
+
+export default function Transport({
+  isPlaying,
+  onTogglePlay,
+  onStop,
+  isLooping = false,
+  onToggleLoop,
+  tempo = 120,
+  timeSignature = '4/4',
+  title = 'Untitled Score',
+  currentBeat = 0,
+  rootKey = 'C',
+  scaleName = 'chromatic',
+  onKeyScaleChange,
+  masterVolume = 125,
+  onMasterVolumeChange,
+  onSelectPreset,
+  onExportWav,
+  activeMainView = 'piano_roll',
+  onMainViewChange,
+  activeBottomDock = null,
+  onToggleBottomDock,
+  isCodeVisible = true,
+  onToggleCodeVisible,
+  isMetronomeEnabled = false,
+  onToggleMetronome,
+  countInBars = 0,
+  onCountInBarsChange,
+  onTapTempo,
+  onCaptureMidi,
+}: TransportProps) {
+  const measureNum = Math.floor(currentBeat / 4) + 1;
+  const beatInMeasure = Math.floor(currentBeat % 4) + 1;
+  const hasSecondTier = Boolean(
+    onMainViewChange || onToggleBottomDock || onToggleCodeVisible
+  );
+
+  return (
+    <header className="w-full bg-slate-900 border-b border-slate-800 flex flex-col shrink-0 shadow-lg z-20 relative select-none">
+      {/* Tier 1: Primary Transport, Score Status Pill, Master Volume & WAV Export */}
+      <div className="min-h-12 w-full px-3 py-1.5 flex items-center justify-between gap-2 flex-wrap">
+        {/* Left: Brand & Demo Score Selector */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          <div className="font-ui text-xs font-semibold tracking-wider text-slate-200 flex items-center whitespace-nowrap">
+            <span className="w-2 h-2 rounded-full bg-blue-500 mr-1.5 shadow-[0_0_8px_#3b82f6]" />
+            Tenuto<span className="text-blue-500 font-bold px-1">Studio</span>5
+          </div>
+
+          {onSelectPreset && (
+            <select
+              aria-label="Load Preset Song"
+              defaultValue=""
+              onChange={(e) => {
+                const preset = PRESET_SCORES.find((p) => p.id === e.target.value);
+                if (preset) onSelectPreset(preset.code);
+              }}
+              className="bg-slate-950 border border-slate-700 hover:border-slate-600 text-slate-300 text-xs rounded-md px-2 py-1 outline-none focus:border-blue-500 transition-colors max-w-[210px] truncate cursor-pointer"
+            >
+              <option value="" disabled>
+                Load Demo Score...
+              </option>
+              {PRESET_SCORES.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.title} ({preset.genre})
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        {/* Center: Transport Action Buttons & Live Score Status Readout */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <button
+            type="button"
+            onClick={onTogglePlay}
+            className={`${
+              isPlaying ? 'bg-amber-600 hover:bg-amber-500' : 'bg-blue-600 hover:bg-blue-500'
+            } transition-colors shadow-md text-white font-bold py-1 px-5 rounded-md text-xs uppercase tracking-wider cursor-pointer whitespace-nowrap shrink-0`}
+          >
+            {isPlaying ? 'Pause' : 'Play'}
+          </button>
+
+          {onStop && (
+            <button
+              type="button"
+              onClick={onStop}
+              className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 font-semibold py-1 px-2.5 rounded-md text-xs uppercase transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              Stop
+            </button>
+          )}
+
+          {onToggleLoop && (
+            <button
+              type="button"
+              onClick={onToggleLoop}
+              className={`${
+                isLooping
+                  ? 'bg-indigo-600/30 border-indigo-500 text-indigo-300'
+                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+              } border font-semibold py-1 px-2.5 rounded-md text-xs uppercase transition-colors cursor-pointer whitespace-nowrap shrink-0`}
+            >
+              Loop
+            </button>
+          )}
+
+          {onTapTempo && (
+            <button
+              type="button"
+              aria-label="Tap Tempo"
+              onClick={onTapTempo}
+              className="bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 font-semibold py-1 px-2 rounded-md text-xs uppercase transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              title="Tap repeatedly to set project BPM"
+            >
+              Tap
+            </button>
+          )}
+
+          {onToggleMetronome && (
+            <button
+              type="button"
+              aria-label="Toggle Metronome"
+              onClick={onToggleMetronome}
+              className={`${
+                isMetronomeEnabled
+                  ? 'bg-amber-500/25 border-amber-500 text-amber-300'
+                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+              } border font-semibold py-1 px-2 rounded-md text-xs uppercase transition-colors cursor-pointer whitespace-nowrap shrink-0`}
+              title="Toggle Metronome Click Track"
+            >
+              Click
+            </button>
+          )}
+
+          {onCountInBarsChange && (
+            <select
+              aria-label="Count-In Bars"
+              value={countInBars}
+              onChange={(e) => onCountInBarsChange(parseInt(e.target.value, 10))}
+              className="bg-slate-950 border border-slate-800 text-slate-300 text-xs rounded-md px-1.5 py-1 outline-none cursor-pointer whitespace-nowrap shrink-0"
+              title="Recording / Launch Count-In Bars"
+            >
+              <option value={0}>No Count-In</option>
+              <option value={1}>1 Bar In</option>
+              <option value={2}>2 Bars In</option>
+              <option value={4}>4 Bars In</option>
+            </select>
+          )}
+
+          {onCaptureMidi && (
+            <button
+              type="button"
+              aria-label="Capture MIDI"
+              onClick={onCaptureMidi}
+              className="bg-purple-600/20 hover:bg-purple-600/35 border border-purple-500/50 text-purple-300 font-semibold py-1 px-2.5 rounded-md text-xs uppercase transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              title="Retroactively capture notes into a new .ten measure"
+            >
+              Capture
+            </button>
+          )}
+
+          {/* Compact Score Status Readout Pill */}
+          <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-md px-2.5 py-1 text-xs font-mono whitespace-nowrap shrink-0">
+            <span className="text-slate-300 truncate max-w-[110px]" title={title}>
+              {title}
+            </span>
+            <span className="text-slate-700">|</span>
+            <span className="text-emerald-400 font-semibold whitespace-nowrap">{tempo} BPM</span>
+            <span className="text-slate-400 whitespace-nowrap">{timeSignature}</span>
+            {onKeyScaleChange && (
+              <>
+                <span className="text-slate-700">|</span>
+                <select
+                  aria-label="Key Signature"
+                  value={rootKey || 'C'}
+                  onChange={(e) => onKeyScaleChange(e.target.value, scaleName || 'chromatic')}
+                  className="bg-slate-900 border border-slate-700 text-amber-300 text-[11px] rounded px-1 py-0.5 outline-none cursor-pointer"
+                >
+                  {['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'].map((k) => (
+                    <option key={k} value={k}>
+                      {k}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  aria-label="Scale Mode"
+                  value={scaleName || 'chromatic'}
+                  onChange={(e) => onKeyScaleChange(rootKey || 'C', e.target.value)}
+                  className="bg-slate-900 border border-slate-700 text-cyan-300 text-[11px] rounded px-1 py-0.5 outline-none cursor-pointer max-w-[115px]"
+                >
+                  <option value="chromatic">Chromatic</option>
+                  <option value="major">Major</option>
+                  <option value="minor">Minor</option>
+                  <option value="harmonic_minor">Harmonic Minor</option>
+                  <option value="dorian">Dorian</option>
+                  <option value="phrygian">Phrygian</option>
+                  <option value="lydian">Lydian</option>
+                  <option value="mixolydian">Mixolydian</option>
+                  <option value="minor_pentatonic">Minor Pentatonic</option>
+                  <option value="blues">Blues</option>
+                </select>
+              </>
+            )}
+            <span className="text-slate-700">|</span>
+            <span className="text-blue-400 font-semibold whitespace-nowrap">
+              M{measureNum}:{beatInMeasure}
+            </span>
+          </div>
+        </div>
+
+        {/* Right: Master Volume & Export WAV */}
+        <div className="flex items-center gap-2 shrink-0">
+          {onMasterVolumeChange && (
+            <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-md px-2 py-1 whitespace-nowrap">
+              <label htmlFor="master-volume-slider" className="text-[11px] font-mono text-slate-400">
+                Vol
+              </label>
+              <input
+                id="master-volume-slider"
+                type="range"
+                aria-label="Master Volume"
+                min="0"
+                max="200"
+                value={masterVolume}
+                onChange={(e) => onMasterVolumeChange(parseInt(e.target.value, 10))}
+                className="w-16 accent-blue-500 cursor-pointer"
+              />
+              <span className="text-[11px] font-mono text-slate-300 w-8 text-right">
+                {masterVolume}%
+              </span>
+            </div>
+          )}
+
+          {onExportWav && (
+            <button
+              type="button"
+              onClick={onExportWav}
+              className="bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/50 text-emerald-300 text-xs font-semibold py-1 px-3 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              Export WAV
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Tier 2: Dedicated Studio Navigation Bar (Code Toggle, Main View Switcher & Bottom Dock Switcher) */}
+      {hasSecondTier && (
+        <div className="h-9 w-full bg-slate-950/90 border-t border-slate-800/80 px-3 flex items-center justify-between gap-2">
+          {/* Left: .ten Code Editor Pane Toggle */}
+          <div className="flex items-center gap-2 shrink-0">
+            {onToggleCodeVisible && (
+              <button
+                type="button"
+                aria-label="Toggle Code Editor"
+                onClick={onToggleCodeVisible}
+                className={`px-2.5 py-0.5 rounded text-[11px] font-mono font-semibold border transition-colors cursor-pointer whitespace-nowrap ${
+                  isCodeVisible !== false
+                    ? 'bg-blue-600/20 border-blue-500/60 text-blue-300'
+                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+                title="Show/Hide Tenuto Code Editor"
+              >
+                {isCodeVisible !== false ? '◀ Hide .ten Code' : '▶ Show .ten Code'}
+              </button>
+            )}
+          </div>
+
+          {/* Center: Main Studio View Switcher (Piano Roll | Session | Arrangement) */}
+          <div className="flex items-center gap-2 shrink-0">
+            {onMainViewChange && (
+              <div
+                role="group"
+                aria-label="Main Studio View Switcher"
+                className="flex items-center bg-slate-900 border border-slate-800 rounded-md p-0.5 text-[11px] font-mono whitespace-nowrap"
+              >
+                {(
+                  [
+                    { id: 'piano_roll', label: 'Piano Roll' },
+                    { id: 'session', label: 'Session' },
+                    { id: 'arrangement', label: 'Arrangement' },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    aria-label={`Switch to ${tab.label} View`}
+                    onClick={() => onMainViewChange(tab.id)}
+                    className={`px-3 py-0.5 rounded transition-colors cursor-pointer whitespace-nowrap ${
+                      (activeMainView || 'piano_roll') === tab.id
+                        ? 'bg-blue-600 text-white font-semibold shadow-xs'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Right: Bottom Studio Dock Switcher (Mixer | Devices | Inspector) */}
+          <div className="flex items-center gap-2 shrink-0">
+            {onToggleBottomDock && (
+              <div
+                role="group"
+                aria-label="Bottom Studio Dock Switcher"
+                className="flex items-center bg-slate-900 border border-slate-800 rounded-md p-0.5 text-[11px] font-mono whitespace-nowrap"
+              >
+                <span className="text-[10px] text-slate-500 px-2 uppercase">Dock:</span>
+                {(
+                  [
+                    { id: 'mixer', label: 'Mixer' },
+                    { id: 'devices', label: 'Devices' },
+                    { id: 'inspector', label: 'Inspector' },
+                  ] as const
+                ).map((dock) => (
+                  <button
+                    key={dock.id}
+                    type="button"
+                    aria-label={`Toggle ${dock.label} Dock`}
+                    onClick={() => onToggleBottomDock(dock.id)}
+                    className={`px-2.5 py-0.5 rounded transition-colors cursor-pointer whitespace-nowrap ${
+                      activeBottomDock === dock.id
+                        ? 'bg-indigo-600 text-white font-semibold shadow-xs'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {dock.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </header>
+  );
+}
+
+```
+
+### 3.3 `src/components/WebGPUCanvas.tsx` - Expand Minimum Octave Range So Piano Roll Fills Full Vertical Height
+
+In `src/components/WebGPUCanvas.tsx`, inside the `useMemo` that computes `{ minMidi, maxMidi, maxEndWhole }`:
+
+1. When `!visibleEvents || visibleEvents.length === 0`, return `{ minMidi: 36, maxMidi: 84, maxEndWhole: 4 }` (4 full octaves from `C2` to `C6`).
+2. Increase `pad` and `minSpan` so single-note sketches always display at least 36 semitones (3 full octaves, `minSpan = selectedTrackId ? 28 : 36`, `pad = 12`) centered around the active notes, filling the vertical height of the right pane:
+
+```typescript
+    const centerMidi = Math.round((min + max) / 2);
+    const minSpan = selectedTrackId ? 28 : 36;
+    const halfSpan = Math.max(Math.ceil((max - min) / 2) + 6, Math.floor(minSpan / 2));
+    const paddedMin = Math.max(12, centerMidi - halfSpan);
+    const paddedMax = Math.min(108, Math.max(paddedMin + minSpan, centerMidi + halfSpan));
+    return {
+      minMidi: paddedMin,
+      maxMidi: paddedMax,
+      maxEndWhole: Math.max(4, maxWhole),
+    };
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/`
+* `src/audio/`
+* `src/mutator/`
+* `src/components/SplitWorkspace.tsx`, `src/components/Mixer.tsx`, `src/components/SessionView.tsx`, `src/components/ArrangementView.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`
+* All existing test files in `tests/`
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero new TypeScript errors.
+2. `npx vitest run tests/transport_binding.test.tsx tests/multi_view_shell.test.tsx tests/studio_engine_and_ui.test.tsx tests/workspace.test.tsx` passes 100%.
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. All Transport controls, View Switcher buttons (`Piano Roll | Session | Arrangement`), Bottom Dock toggles (`Mixer | Devices | Inspector`), Master Volume, and `Export WAV` are 100% visible on-screen with zero clipping or two-line button text wrapping, the Piano Roll fills the full height of the right pane, and the window title reads `Tenuto Studio 5`.
+
+---
+
+## 6. Constraints
+
+Must not:
+
+* Use the word `"Play"` on any button other than the main Play/Pause button in `Transport.tsx`.
+
+---
+
+## 7. Manual Steps (On Your Mac After Pushing to GitHub)
+
+After AI Studio applies this fix and you push to GitHub, rebuild your macOS `.pkg` installer:
+
+```bash
+git pull
+npm run electron:build:mac
+open release/"Tenuto Studio 5-5.0.0-arm64.pkg"
+
+```
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or restore `index.html`, `electron/main.cjs`, `src/components/Transport.tsx`, and `src/components/WebGPUCanvas.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* Modified file(s): `index.html`, `electron/main.cjs`, `src/components/Transport.tsx`, `src/components/WebGPUCanvas.tsx`
+* Commit message: `fix(ui): organize Transport into two-tier studio header, expand Piano Roll height, and set window title`
+
+Confirm acceptance criteria checks pass, then stop and report back.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Top Studio Header (`Transport.tsx`)** | 18+ controls stuffed into 1 row; `.ten Code` and `120 BPM` wrapped onto 2 lines and View Switcher, Mixer Dock, Volume, and Export WAV were clipped off-screen | Clean 2-tier DAW header: Row 1 holds Transport, Status, Volume & Export WAV; Row 2 holds `.ten Code` toggle, centered `Piano Roll | Session | Arrangement` tabs, and right-aligned `Mixer | Devices | Inspector` dock tabs |
+| **Piano Roll Vertical Coverage** | Only rendered 19 rows (`C5` to `A3`), leaving the bottom half of the right pane black | Renders a full 3-octave (`36+` row) studio grid centered on active notes so the Piano Roll fills the full height of the right panel |
+| **macOS Window Title Bar** | Displayed `"My Google AI Studio App"` | Displays `"Tenuto Studio 5"` |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-24
+Implementer: AI Agent
+
+```
+
+```

@@ -1,0 +1,669 @@
+### Stage 3 Oracle Audit: Contract #10 (`TDB-710`) — Phase 2 Complete!
+
+* **Boundary & Diff Audit:** Only the 2 new files (`src/audio/MetronomeAndCaptureEngine.ts`, `tests/metronome_tap_capture.test.tsx`) and 3 authorized source files (`src/audio/StudioAudioEngine.ts`, `src/components/Transport.tsx`, `src/components/SplitWorkspace.tsx`) were modified.
+
+
+* **Build & Verification:** `vite build` succeeded cleanly with all Metronome, Count-In, Tap Tempo, and Capture MIDI features integrated into the Transport bar and audio engine.
+* **Verdict:** **Approved.** That completes **100% of Phase 2 (`TDB-706` – `TDB-710`)**!
+
+---
+
+### Next Step: Run `TDB-711` (from the previous message), Then Queue Up `TDB-712` Below
+
+You can now paste **Contract #11 (`TDB-711: Live Studio Mixer Console with Peak/RMS Metering, Split Stereo Pan & Mute/Solo/Arm`)** from the previous message into Google AI Studio to kick off Phase 3.
+
+Here is **Implementation Contract #12 (`TDB-712: Send & Return Tracks (bus:// Routing Matrix)`)** ready to run right after `TDB-711` finishes:
+
+```markdown
+# Implementation Contract: Send & Return Tracks (`bus://` Routing Matrix) (TDB-712)
+
+**Project:** Tenuto Studio 5
+**Scope:** Upgrade `src/audio/SpatialAudioMatrix.ts`, `src/audio/StudioAudioEngine.ts`, `src/mutator/TopologicalMutator.ts`, `src/components/Mixer.tsx`, and `src/components/SplitWorkspace.tsx` to wire unlimited `return` tracks (`bus://` URIs), per-track Send controls (`Send A`, `Send B`, etc.), Pre-Fader vs. Post-Fader send routing, circular routing protection (`E4001`), and `+ Add Return Bus` code generation while keeping all existing mixer and spatial matrix tests passing.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+In `TDB-701` and `TDB-702`, Tenuto added parser and mutator support for `return` tracks (`return rev_bus "Hall" .fx(hybrid_reverb, @{mix: 1.0})`) and track `sends=@{rev_bus: 0.45}` dictionaries, and `src/audio/SpatialAudioMatrix.ts` provides a standalone `bus://` DAG cycle detector (`E4001: Circular Routing Detected`). However:
+1. `SpatialAudioMatrix.ts` is not yet connected to `StudioAudioEngine.ts` or `Mixer.tsx`, and lacks Pre-Fader vs. Post-Fader send gain evaluation.
+2. `Mixer.tsx` does not display per-track Send controls (`sends=@{...}`), Pre/Post send mode toggles, or an `+ Add Return Track` button in the Routing Matrix.
+3. `StudioAudioEngine.ts` uses fixed reverb send levels instead of routing track send levels (`sends=@{...}`) through the active Return buses.
+
+This contract connects `SpatialAudioMatrix.ts`, `StudioAudioEngine.ts`, `TopologicalMutator.ts`, `Mixer.tsx`, and `SplitWorkspace.tsx` into a complete Ableton Send/Return bus architecture.
+
+---
+
+## 2. Root Cause
+1. `src/audio/SpatialAudioMatrix.ts` only tracks unweighted graph edges (`targets: string[]`) without send gain levels (`0.0–1.0`) or Pre-Fader / Post-Fader tap modes (`'pre' | 'post'`).
+2. `src/components/Mixer.tsx` does not render Send controls on channel strips or allow adding new Return tracks from the Routing Matrix.
+3. `src/audio/StudioAudioEngine.ts` does not instantiate `SpatialAudioMatrix` or modulate reverb/delay bus sends using per-track `sends` dictionaries and Pre/Post-Fader rules.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/audio/SpatialAudioMatrix.ts` - Add Pre/Post-Fader Send Routing & Gain Calculation
+Update `src/audio/SpatialAudioMatrix.ts` to add `SendRouteConfig`, `registerTrackSend`, `getTrackSends`, `setSendMode`, and `computeEffectiveSendGain` while keeping `createBus`, `getBus`, `route`, `detectCycle`, and `parseFXChain` 100% intact for `tests/spatial_audio_matrix.test.ts`:
+
+```typescript
+export interface AudioBus {
+  id: string;
+  targets: string[];
+}
+
+export interface FXChainInstruction {
+  type: string;
+  parameters: Record<string, any>;
+  length: number;
+}
+
+export type SendTapMode = 'pre' | 'post';
+
+export interface SendRouteConfig {
+  sourceBusId: string;
+  targetBusId: string;
+  level: number;
+  mode: SendTapMode;
+}
+
+export class SpatialAudioMatrix {
+  private buses: Map<string, AudioBus> = new Map();
+  private sendRoutes: Map<string, SendRouteConfig> = new Map();
+
+  public createBus(id: string): void {
+    if (!id.startsWith('bus://')) {
+      throw new Error(`Invalid bus URI schema: ${id}. Must prepend with bus://`);
+    }
+    if (!this.buses.has(id)) {
+      this.buses.set(id, { id, targets: [] });
+    }
+  }
+
+  public getBus(id: string): AudioBus | undefined {
+    return this.buses.get(id);
+  }
+
+  public clear(): void {
+    this.buses.clear();
+    this.sendRoutes.clear();
+  }
+
+  public static toBusUri(trackOrBusId: string): string {
+    return trackOrBusId.startsWith('bus://') ? trackOrBusId : `bus://${trackOrBusId}`;
+  }
+
+  public route(sourceId: string, targetId: string): void {
+    const source = this.buses.get(sourceId);
+    const target = this.buses.get(targetId);
+
+    if (!source || !target) {
+      throw new Error('Routing missing registered valid origin or target vertex.');
+    }
+
+    if (source.targets.includes(targetId)) {
+      return;
+    }
+
+    // Speculative insertion to assess recursive cycles via Topo-DFS
+    source.targets.push(targetId);
+
+    if (this.detectCycle()) {
+      // Revert if cycle breaks determinism
+      source.targets.pop();
+      throw new Error('E4001: Circular Routing Detected');
+    }
+  }
+
+  /**
+   * Registers or updates a send route from `sourceTrackId` to `returnBusId` with cycle detection,
+   * level clamping (0..1), and `'pre' | 'post'` fader tap mode.
+   */
+  public registerTrackSend(
+    sourceTrackId: string,
+    returnBusId: string,
+    level: number,
+    mode: SendTapMode = 'post'
+  ): SendRouteConfig {
+    const sourceUri = SpatialAudioMatrix.toBusUri(sourceTrackId);
+    const targetUri = SpatialAudioMatrix.toBusUri(returnBusId);
+
+    this.createBus(sourceUri);
+    this.createBus(targetUri);
+    this.route(sourceUri, targetUri);
+
+    const routeKey = `${sourceUri}->${targetUri}`;
+    const existing = this.sendRoutes.get(routeKey);
+    const config: SendRouteConfig = {
+      sourceBusId: sourceUri,
+      targetBusId: targetUri,
+      level: Math.max(0, Math.min(1, Number(level))),
+      mode: mode || existing?.mode || 'post',
+    };
+    this.sendRoutes.set(routeKey, config);
+    return config;
+  }
+
+  public getTrackSends(sourceTrackId: string): SendRouteConfig[] {
+    const sourceUri = SpatialAudioMatrix.toBusUri(sourceTrackId);
+    const results: SendRouteConfig[] = [];
+    for (const cfg of this.sendRoutes.values()) {
+      if (cfg.sourceBusId === sourceUri) {
+        results.push(cfg);
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Computes the effective linear send gain for a track send route:
+   * - In `'post'` mode, the send scales with the track's fader volume (`0..127`) and drops to `0` if the track is muted.
+   * - In `'pre'` mode, the send bypasses the track's volume fader so the return bus hears the pre-fader signal even when fader is at 0.
+   */
+  public static computeEffectiveSendGain(
+    sendLevel: number,
+    mode: SendTapMode,
+    trackVolumeMidi: number = 100,
+    isTrackMuted: boolean = false
+  ): number {
+    if (isTrackMuted) return 0;
+    const clampedSend = Math.max(0, Math.min(1, sendLevel));
+    if (mode === 'pre') {
+      return clampedSend;
+    }
+    const faderScalar = Math.max(0, Math.min(1.27, trackVolumeMidi / 100));
+    return clampedSend * faderScalar;
+  }
+
+  private detectCycle(): boolean {
+    const visited = new Set<string>();
+    const recursionStack = new Set<string>();
+
+    const dfs = (nodeId: string): boolean => {
+      visited.add(nodeId);
+      recursionStack.add(nodeId);
+
+      const node = this.buses.get(nodeId);
+      if (node) {
+        for (const neighbor of node.targets) {
+          if (!visited.has(neighbor) && dfs(neighbor)) {
+            return true;
+          } else if (recursionStack.has(neighbor)) {
+            return true;
+          }
+        }
+      }
+
+      recursionStack.delete(nodeId);
+      return false;
+    };
+
+    for (const busId of this.buses.keys()) {
+      if (!visited.has(busId)) {
+        if (dfs(busId)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  public parseFXChain(astString: string): FXChainInstruction {
+    const match = astString.match(/\.fx\(\s*(\w+)\s*,\s*@\{(.*?)\}\s*\)/);
+
+    if (!match) {
+      throw new Error(`Failed to parse valid fx structure from string: ${astString}`);
+    }
+
+    const type = match[1];
+    const dictString = match[2];
+    const parameters: Record<string, any> = {};
+
+    const pairs = dictString.split(',').map((s) => s.trim());
+
+    pairs.forEach((pair) => {
+      const [keyRaw, valRaw] = pair.split(':').map((s) => s.trim());
+
+      let parsedValue: any = valRaw;
+      if (valRaw.startsWith('"') && valRaw.endsWith('"')) {
+        parsedValue = valRaw.slice(1, -1);
+      } else if (!isNaN(Number(valRaw))) {
+        parsedValue = Number(valRaw);
+      }
+
+      parameters[keyRaw] = parsedValue;
+    });
+
+    return {
+      type,
+      parameters,
+      length: 1,
+    };
+  }
+}
+
+```
+
+### 3.2 `src/mutator/TopologicalMutator.ts` - Add `ADD_RETURN_TRACK` Support to `applyMixerMutationToSource`
+
+In `src/mutator/TopologicalMutator.ts`:
+
+1. Add `'ADD_RETURN_TRACK'` to `MixerASTMutation['mutationType']` and add optional `returnId?: string; returnName?: string;` fields to `MixerASTMutation`.
+2. Inside `applyMixerMutationToSource(sourceCode: string, mutation: MixerASTMutation)`, right after block `// 1. Meta block updates...`, handle `ADD_RETURN_TRACK`:
+
+```typescript
+    if (mutation.mutationType === 'ADD_RETURN_TRACK') {
+      const returnId = mutation.returnId || 'rev_bus';
+      const returnName = mutation.returnName || 'Hall Return';
+      const fxType = mutation.fxType || 'hybrid_reverb';
+      const returnLine = `  return ${returnId} "${returnName}" .fx(${fxType}, @{mix: 1.0})`;
+
+      const firstDefOrMeasure = sourceCode.search(/^\s*(?:def|measure|scene|clip)\b/m);
+      if (firstDefOrMeasure !== -1) {
+        return (
+          sourceCode.slice(0, firstDefOrMeasure) +
+          `${returnLine}\n` +
+          sourceCode.slice(firstDefOrMeasure)
+        );
+      }
+      return `${sourceCode.trim()}\n${returnLine}\n`;
+    }
+
+```
+
+### 3.3 `src/audio/StudioAudioEngine.ts` - Wire `SpatialAudioMatrix` & Pre/Post-Fader Track Sends
+
+In `src/audio/StudioAudioEngine.ts`:
+
+1. Import `SpatialAudioMatrix, SendTapMode` from `./SpatialAudioMatrix`:
+
+```typescript
+import { SpatialAudioMatrix, SendTapMode } from './SpatialAudioMatrix';
+
+```
+
+2. Add `reverbSendGain?: number;` to `ScheduledNoteEvent`.
+3. Add `public routingMatrix = new SpatialAudioMatrix();` and `private trackSends: Map<string, Map<string, { level: number; mode: SendTapMode }>> = new Map();` on `StudioAudioEngine`.
+4. Add public methods `setTrackSend` and `getTrackSend` on `StudioAudioEngine`:
+
+```typescript
+  public setTrackSend(
+    trackId: string,
+    returnBusId: string,
+    level: number,
+    mode: SendTapMode = 'post'
+  ): void {
+    this.routingMatrix.registerTrackSend(trackId, returnBusId, level, mode);
+    let map = this.trackSends.get(trackId);
+    if (!map) {
+      map = new Map();
+      this.trackSends.set(trackId, map);
+    }
+    map.set(returnBusId, { level: Math.max(0, Math.min(1, level)), mode });
+  }
+
+  public getTrackSend(
+    trackId: string,
+    returnBusId: string
+  ): { level: number; mode: SendTapMode } | undefined {
+    return this.trackSends.get(trackId)?.get(returnBusId);
+  }
+
+```
+
+5. Inside `buildScheduledTimeline(score: CompiledScore)` in `src/audio/StudioAudioEngine.ts`, register all tracks, return buses, and `def.sends` in `this.routingMatrix`, and compute `reverbSendGain` for each scheduled note using `SpatialAudioMatrix.computeEffectiveSendGain`:
+
+```typescript
+    this.routingMatrix.clear();
+    for (const d of score.defs) {
+      this.routingMatrix.createBus(SpatialAudioMatrix.toBusUri(d.id));
+    }
+    for (const d of score.defs) {
+      if (d.sends) {
+        for (const [retId, sendLvl] of Object.entries(d.sends)) {
+          try {
+            const override = this.trackSends.get(d.id)?.get(retId);
+            this.routingMatrix.registerTrackSend(
+              d.id,
+              retId,
+              override ? override.level : sendLvl,
+              override ? override.mode : 'post'
+            );
+          } catch {
+            // Ignore circular send route
+          }
+        }
+      }
+    }
+
+```
+
+And inside the event loop in `buildScheduledTimeline`, compute `reverbSendGain`:
+
+```typescript
+      let reverbSendGain = 0;
+      const trackSendEntries = this.routingMatrix.getTrackSends(trackId);
+      for (const sr of trackSendEntries) {
+        reverbSendGain = Math.max(
+          reverbSendGain,
+          SpatialAudioMatrix.computeEffectiveSendGain(sr.level, sr.mode, trackVolMidi, false)
+        );
+      }
+
+```
+
+And include `reverbSendGain` in `list.push({ ..., reverbSendGain })`.
+
+### 3.4 `src/components/Mixer.tsx` - Render Per-Track Send Controls (`Send A`/`B`), Pre/Post Toggles & `+ Return` Button
+
+In `src/components/Mixer.tsx`:
+
+> **CRITICAL TEST CONSTRAINT:** Keep the Track Volume `<input type="range">` as the ONLY `type="range"` (`role="slider"`) element in `Mixer.tsx` so `screen.getByRole('slider')` in `tests/mixer_debounced_commits.test.tsx` continues to match uniquely! Use `type="number"` (`role="spinbutton"`) for Send level inputs.
+
+1. Extend `MixerTrackState` in `src/components/Mixer.tsx` to include `sends?: Record<string, number>;` and `sendModes?: Record<string, 'pre' | 'post'>;`.
+2. Inside the `Routing Matrix` panel in `src/components/Mixer.tsx`, right below the `Global Sidechain Trigger` `<select>`, add an **`+ Add Return Bus`** button:
+
+```tsx
+          <button
+            type="button"
+            aria-label="Add Return Track"
+            onClick={() => {
+              const returnCount = astState.tracks.filter((t) => t.isReturn).length;
+              const nextId = returnCount === 0 ? 'rev_bus' : returnCount === 1 ? 'dly_bus' : `ret_${returnCount + 1}`;
+              const nextName = returnCount === 0 ? 'Hall Return' : returnCount === 1 ? 'Delay Return' : `Return ${returnCount + 1}`;
+              onUpdateAST({
+                mutationType: 'ADD_RETURN_TRACK',
+                returnId: nextId,
+                returnName: nextName,
+                fxType: returnCount === 1 ? 'echo' : 'hybrid_reverb',
+              });
+            }}
+            className="mt-3 w-full py-1 px-2 rounded bg-purple-600/20 hover:bg-purple-600/35 border border-purple-500/50 text-purple-300 text-[11px] font-mono font-semibold transition-colors cursor-pointer"
+          >
+            + Add Return Bus
+          </button>
+
+```
+
+3. Inside each channel strip in `src/components/Mixer.tsx` (for non-return tracks), render a compact **Sends** section right below the Stereo/Split Pan box showing active Return buses (or default `rev_bus` / `Send A`) with a `type="number"` spinbutton (`0.0` to `1.0`, step `0.05`) and a `Pre`/`Post` mode toggle button:
+
+```tsx
+              {/* Sends Matrix (Send A / Return Buses) */}
+              {!track.isReturn && (
+                <div className="w-full bg-slate-900/80 border border-slate-800 rounded px-1.5 py-1 mb-1.5 flex flex-col gap-1">
+                  {(() => {
+                    const returnIds = Array.from(
+                      new Set([
+                        ...astState.tracks.filter((t) => t.isReturn).map((t) => t.id),
+                        ...Object.keys(track.sends || {}),
+                        'rev_bus',
+                      ])
+                    ).slice(0, 2);
+
+                    return returnIds.map((retId, sIdx) => {
+                      const sendLetter = String.fromCharCode(65 + sIdx);
+                      const sendVal = track.sends?.[retId] ?? 0;
+                      const sendMode = track.sendModes?.[retId] || 'post';
+
+                      return (
+                        <div key={retId} className="flex items-center justify-between gap-1">
+                          <span
+                            className="text-[9px] font-mono text-purple-300 truncate max-w-[44px]"
+                            title={`Send ${sendLetter} (${retId})`}
+                          >
+                            {sendLetter}:{retId}
+                          </span>
+                          <input
+                            type="number"
+                            aria-label={`${track.id} send ${retId}`}
+                            step={0.05}
+                            min={0}
+                            max={1}
+                            value={sendVal}
+                            onChange={(e) => {
+                              const nextLvl = Math.max(
+                                0,
+                                Math.min(1, parseFloat(e.target.value) || 0)
+                              );
+                              onUpdateAST({
+                                trackId: track.id,
+                                mutationType: 'SEND_UPDATE',
+                                sendId: retId,
+                                sendLevel: nextLvl,
+                                sendMode,
+                                expectedSyntax: `sends=@{${retId}: ${nextLvl}}`,
+                              });
+                            }}
+                            className="w-12 bg-slate-950 border border-slate-700 rounded px-1 py-0.2 text-[9px] font-mono text-center text-purple-200"
+                          />
+                          <button
+                            type="button"
+                            aria-label={`Toggle send mode ${retId} for ${track.id}`}
+                            onClick={() => {
+                              const nextMode = sendMode === 'post' ? 'pre' : 'post';
+                              onUpdateAST({
+                                trackId: track.id,
+                                mutationType: 'SEND_UPDATE',
+                                sendId: retId,
+                                sendLevel: sendVal,
+                                sendMode: nextMode,
+                              });
+                            }}
+                            className={`px-1 rounded text-[8px] font-mono uppercase cursor-pointer border ${
+                              sendMode === 'pre'
+                                ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
+                                : 'bg-slate-950 border-slate-800 text-slate-400'
+                            }`}
+                            title="Toggle Pre-Fader / Post-Fader Send"
+                          >
+                            {sendMode}
+                          </button>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              )}
+
+```
+
+### 3.5 `src/components/SplitWorkspace.tsx` - Sync Return Tracks & Send Updates Between `DocumentParser`, `StudioAudioEngine`, and `Mixer`
+
+In `src/components/SplitWorkspace.tsx`:
+
+1. When building `astState` from `compiledScore.defs` inside the `useEffect` on `sourceCode`, include `pan: d.pan`, `sends: d.sends`, and `isReturn: d.isReturn`:
+
+```typescript
+          setAstState({
+            tracks: compiledScore.defs.map((d) => ({
+              id: d.id,
+              name: d.name,
+              volume: d.volume,
+              pan: d.pan,
+              fx: d.fx,
+              sends: d.sends,
+              isReturn: d.isReturn,
+            })),
+            meta: { sidechain: compiledScore.meta.sidechain },
+          });
+
+```
+
+2. Inside `handleUpdateAST` in `src/components/SplitWorkspace.tsx`, when `newStatePayload?.mutationType === 'SEND_UPDATE'`, call `studioAudio.setTrackSend(newStatePayload.trackId, newStatePayload.sendId, Number(newStatePayload.sendLevel ?? 0), newStatePayload.sendMode || 'post')` and update the track's `sends` and `sendModes` in `nextState.tracks`.
+
+### 3.6 `tests/send_return_matrix.test.tsx` - Create Verification Suite for Send/Return Routing Matrix & Pre/Post-Fader Sends
+
+Create `tests/send_return_matrix.test.tsx`:
+
+```typescript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { SpatialAudioMatrix } from '../src/audio/SpatialAudioMatrix';
+import { StudioAudioEngine } from '../src/audio/StudioAudioEngine';
+import { DocumentParser } from '../src/parser/DocumentParser';
+import Mixer, { ASTState } from '../src/components/Mixer';
+import '@testing-library/jest-dom';
+
+describe('TDB-712: Send & Return Tracks (bus:// Routing Matrix)', () => {
+  it('registers track sends in SpatialAudioMatrix, enforces E4001 cycle detection, and computes Pre vs Post-Fader send gains', () => {
+    const matrix = new SpatialAudioMatrix();
+
+    const route = matrix.registerTrackSend('lead', 'rev_bus', 0.5, 'post');
+    expect(route).toEqual({
+      sourceBusId: 'bus://lead',
+      targetBusId: 'bus://rev_bus',
+      level: 0.5,
+      mode: 'post',
+    });
+    expect(matrix.getTrackSends('lead')).toHaveLength(1);
+
+    // Attempting to route rev_bus back into lead must throw E4001: Circular Routing Detected
+    expect(() => matrix.registerTrackSend('rev_bus', 'lead', 0.3)).toThrowError(
+      /E4001: Circular Routing Detected/
+    );
+
+    // Post-fader send scales with track fader volume (at volume 50/100, 0.5 send -> 0.25 effective gain)
+    expect(SpatialAudioMatrix.computeEffectiveSendGain(0.5, 'post', 50, false)).toBeCloseTo(0.25, 3);
+    // Pre-fader send bypasses track fader volume (at volume 0/100, 0.5 send -> still 0.5 effective gain!)
+    expect(SpatialAudioMatrix.computeEffectiveSendGain(0.5, 'pre', 0, false)).toBeCloseTo(0.5, 3);
+    // Muted track drops send gain to 0
+    expect(SpatialAudioMatrix.computeEffectiveSendGain(0.5, 'pre', 100, true)).toBe(0);
+  });
+
+  it('wires return buses and sends in StudioAudioEngine and renders Send controls and + Add Return Bus in Mixer', () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Send Return Test", tempo: 120, time: "4/4" }
+        return rev_bus "Hall Return" .fx(hybrid_reverb, @{mix: 1.0})
+        def lead "Lead Synth" style=synth patch="saw_lead" sends=@{rev_bus: 0.6}
+        measure 1 { lead: c4:4 e4:4 g4:2 | }
+      }
+    `);
+
+    const timeline = (engine as any).buildScheduledTimeline(score);
+    expect(timeline).toHaveLength(3);
+    expect(timeline[0].reverbSendGain).toBeCloseTo(0.6, 2);
+
+    const mockASTState: ASTState = {
+      tracks: [
+        { id: 'lead', volume: 100, fx: [], sends: { rev_bus: 0.4 }, sendModes: { rev_bus: 'post' } },
+        { id: 'rev_bus', volume: 100, fx: ['hybrid_reverb'], isReturn: true },
+      ],
+      meta: { sidechain: null },
+    };
+
+    const onUpdateAST = vi.fn();
+    render(<Mixer astState="{mockASTState}" onUpdateAST="{onUpdateAST}"/>);
+
+    // Update send level for lead -> rev_bus
+    const sendInput = screen.getByRole('spinbutton', { name: /lead send rev_bus/i });
+    fireEvent.change(sendInput, { target: { value: '0.75' } });
+    expect(onUpdateAST).toHaveBeenCalledWith(
+      expect.objectContaining({
+        trackId: 'lead',
+        mutationType: 'SEND_UPDATE',
+        sendId: 'rev_bus',
+        sendLevel: 0.75,
+      })
+    );
+
+    // Toggle Pre/Post send mode
+    fireEvent.click(screen.getByRole('button', { name: /Toggle send mode rev_bus for lead/i }));
+    expect(onUpdateAST).toHaveBeenCalledWith(
+      expect.objectContaining({
+        trackId: 'lead',
+        mutationType: 'SEND_UPDATE',
+        sendId: 'rev_bus',
+        sendMode: 'pre',
+      })
+    );
+
+    // Click '+ Add Return Bus'
+    fireEvent.click(screen.getByRole('button', { name: /Add Return Track/i }));
+    expect(onUpdateAST).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mutationType: 'ADD_RETURN_TRACK',
+      })
+    );
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/`
+* `src/components/WebGPUCanvas.tsx`, `src/components/CodeEditor.tsx`, `src/components/Inspector.tsx`, `src/components/Transport.tsx`, `src/components/SessionView.tsx`, `src/components/ArrangementView.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+* All existing test files in `tests/`
+
+Explicitly:
+
+* Do NOT modify or delete any existing test file in `tests/`.
+* Do NOT add any new npm dependencies to `package.json`.
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero new TypeScript errors.
+2. `npx vitest run tests/send_return_matrix.test.tsx tests/spatial_audio_matrix.test.ts tests/studio_mixer_console.test.tsx tests/mixer.test.tsx tests/mixer_debounced_commits.test.tsx` passes 100%.
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. `SpatialAudioMatrix` routes track sends to Return buses with `E4001` cycle detection and Pre/Post-Fader gain math, and `Mixer` provides per-track Send controls, Pre/Post toggles, and an `+ Add Return Bus` generator.
+
+---
+
+## 6. Constraints
+
+Must not:
+
+* Add any `type="range"` (`role="slider"`) input for Send levels in `Mixer.tsx` (use `type="number"` spinbuttons so `screen.getByRole('slider')` in `tests/mixer_debounced_commits.test.tsx` matches only the track volume fader).
+* Break `tests/spatial_audio_matrix.test.ts`.
+
+---
+
+## 7. Manual Steps
+
+None required for this contract.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or remove `tests/send_return_matrix.test.tsx`, and restore `src/audio/SpatialAudioMatrix.ts`, `src/audio/StudioAudioEngine.ts`, `src/mutator/TopologicalMutator.ts`, `src/components/Mixer.tsx`, and `src/components/SplitWorkspace.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `tests/send_return_matrix.test.tsx`
+* Modified file(s): `src/audio/SpatialAudioMatrix.ts`, `src/audio/StudioAudioEngine.ts`, `src/mutator/TopologicalMutator.ts`, `src/components/Mixer.tsx`, `src/components/SplitWorkspace.tsx`
+* Commit message: `feat(routing): wire Send and Return bus matrix with Pre/Post-fader routing in Mixer and audio engine`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **`SpatialAudioMatrix.ts`** | Isolated class not connected to `StudioAudioEngine` or `Mixer` | Active DAG routing engine validating `bus://` sends, preventing `E4001` feedback cycles, and calculating Pre-Fader vs. Post-Fader send gains |
+| **Channel Strip Sends (`Send A` / `Send B`)** | No Send controls in `Mixer.tsx` | Every non-return channel strip displays Send level spinbuttons (`0.00–1.00`) and `Pre`/`Post` mode toggles synced to `sends=@{...}` in `.ten` code |
+| **Creating Return Buses** | Required manually typing `return ...` in the code editor | Clicking `+ Add Return Bus` in the Mixer Routing Matrix injects a new `return` bus declaration directly into `.ten` source code |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-24
+Implementer: AI Agent
+
+```
+
+```

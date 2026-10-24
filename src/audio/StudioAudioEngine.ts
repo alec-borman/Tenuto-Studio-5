@@ -18,6 +18,7 @@ import { GrooveEngine } from './GrooveEngine';
 import { PhonemeEngine } from './PhonemeEngine';
 import { FollowActionEngine } from './FollowActionEngine';
 import { MetronomeAndCaptureEngine } from './MetronomeAndCaptureEngine';
+import { SpatialAudioMatrix, SendTapMode } from './SpatialAudioMatrix';
 
 export interface PlaybackProgress {
   isPlaying: boolean;
@@ -49,6 +50,7 @@ interface ScheduledNoteEvent {
   isEnsembleSection?: boolean;
   normalizedVelocity?: number;
   cutoffHzOverride?: number;
+  reverbSendGain?: number;
 }
 
 interface ActiveVoiceCleanup {
@@ -77,6 +79,12 @@ export class StudioAudioEngine {
   private trackVolumes: Map<string, number> = new Map();
   private mutedTracks: Set<string> = new Set();
   private soloedTracks: Set<string> = new Set();
+  private trackPans: Map<string, number> = new Map();
+  private armedTracks: Set<string> = new Set();
+  private groupVolumes: Map<string, number> = new Map();
+  private mutedGroups: Set<string> = new Set();
+  private soloedGroups: Set<string> = new Set();
+  private sidechainTapMode: 'pre_fx' | 'post_fx' | 'post_mixer' = 'post_fx';
   private polyphonyScalar: number = 1.0;
   private masterVolumeScalar: number = 1.25;
 
@@ -88,7 +96,9 @@ export class StudioAudioEngine {
   private loopEndMeasure: number | null = null;
   private isMetronomeEnabled: boolean = false;
   private countInBars: number = 0;
+  private trackSends: Map<string, Map<string, { level: number; mode: SendTapMode }>> = new Map();
 
+  public routingMatrix = new SpatialAudioMatrix();
   public soundfontLoader = new SoundfontBankLoader();
   public onProgress?: (progress: PlaybackProgress) => void;
   public onClipFollowTransition?: (trackId: string, nextClip: ClipDefinition | null) => void;
@@ -234,6 +244,207 @@ export class StudioAudioEngine {
 
   public setTrackVolume(trackId: string, volumeMidi: number): void {
     this.trackVolumes.set(trackId, Math.max(0, Math.min(127, volumeMidi)));
+  }
+
+  public setTrackPan(trackId: string, panValue: number): void {
+    this.trackPans.set(trackId, Math.max(-1, Math.min(1, panValue)));
+  }
+
+  public getTrackPan(trackId: string): number {
+    return this.trackPans.get(trackId) ?? 0;
+  }
+
+  public toggleTrackArm(trackId: string): boolean {
+    if (this.armedTracks.has(trackId)) {
+      this.armedTracks.delete(trackId);
+      return false;
+    }
+    this.armedTracks.add(trackId);
+    return true;
+  }
+
+  public getArmedTracks(): string[] {
+    return Array.from(this.armedTracks);
+  }
+
+  public setGroupVolume(groupId: string, volumeMidi: number): void {
+    this.groupVolumes.set(groupId, Math.max(0, Math.min(127, volumeMidi)));
+  }
+
+  public getGroupVolume(groupId: string): number {
+    return this.groupVolumes.get(groupId) ?? 100;
+  }
+
+  public toggleGroupMute(groupId: string): boolean {
+    if (this.mutedGroups.has(groupId)) {
+      this.mutedGroups.delete(groupId);
+      return false;
+    }
+    this.mutedGroups.add(groupId);
+    return true;
+  }
+
+  public toggleGroupSolo(groupId: string): boolean {
+    if (this.soloedGroups.has(groupId)) {
+      this.soloedGroups.delete(groupId);
+      return false;
+    }
+    this.soloedGroups.add(groupId);
+    return true;
+  }
+
+  public getMutedGroups(): string[] {
+    return Array.from(this.mutedGroups);
+  }
+
+  public getSoloedGroups(): string[] {
+    return Array.from(this.soloedGroups);
+  }
+
+  public setSidechainTapMode(mode: 'pre_fx' | 'post_fx' | 'post_mixer'): void {
+    this.sidechainTapMode = mode;
+  }
+
+  public getSidechainTapMode(): 'pre_fx' | 'post_fx' | 'post_mixer' {
+    return this.sidechainTapMode;
+  }
+
+  /**
+   * Computes the sidechain ducking gain scalar (in [0.22, 1.0]) at `noteStartSec`
+   * when a sidechain trigger transient fires near `noteStartSec`:
+   * - `'pre_fx'`: Fixed raw trigger velocity (ignores source track fader and mute)
+   * - `'post_fx'`: Scaled by source event velocity & FX drive (ignores source track fader)
+   * - `'post_mixer'`: Scaled by source track fader volume (and disabled if source track is muted)
+   */
+  public computeSidechainDuckScalar(
+    noteStartSec: number,
+    triggerEvents: Array<{ timeSec: number; velocity: number; sourceTrackVol: number; sourceMuted: boolean }>,
+    tapMode: 'pre_fx' | 'post_fx' | 'post_mixer' = this.sidechainTapMode
+  ): number {
+    if (triggerEvents.length === 0) return 1.0;
+
+    let maxDuckDepth = 0;
+    for (const trig of triggerEvents) {
+      const dt = noteStartSec - trig.timeSec;
+      if (dt >= -0.01 && dt <= 0.24) {
+        if (tapMode === 'post_mixer' && trig.sourceMuted) continue;
+
+        let triggerStrength = Math.max(0.2, Math.min(1.0, trig.velocity / 127));
+        if (tapMode === 'pre_fx') {
+          triggerStrength = Math.max(0.65, triggerStrength);
+        } else if (tapMode === 'post_mixer') {
+          triggerStrength *= Math.max(0, Math.min(1.27, trig.sourceTrackVol / 100));
+        }
+
+        // Fast attack (0..15ms) and exponential release (15..240ms)
+        const envelope = dt <= 0.015 ? 1.0 : Math.exp(-(dt - 0.015) / 0.11);
+        const depth = 0.68 * triggerStrength * envelope;
+        if (depth > maxDuckDepth) {
+          maxDuckDepth = depth;
+        }
+      }
+    }
+
+    return Math.max(0.22, 1.0 - maxDuckDepth);
+  }
+
+  public setTrackSend(
+    trackId: string,
+    returnBusId: string,
+    level: number,
+    mode: SendTapMode = 'post'
+  ): void {
+    this.routingMatrix.registerTrackSend(trackId, returnBusId, level, mode);
+    let map = this.trackSends.get(trackId);
+    if (!map) {
+      map = new Map();
+      this.trackSends.set(trackId, map);
+    }
+    map.set(returnBusId, { level: Math.max(0, Math.min(1, level)), mode });
+  }
+
+  public getTrackSend(
+    trackId: string,
+    returnBusId: string
+  ): { level: number; mode: SendTapMode } | undefined {
+    return this.trackSends.get(trackId)?.get(returnBusId);
+  }
+
+  /**
+   * Computes deterministic Peak and RMS meter levels (in dBFS, -60 to +6 dB) and normalized
+   * meter fill (0..1) for each track at `currentQuarterBeat`.
+   */
+  public getTrackMeterLevels(
+    score: CompiledScore | null,
+    currentQuarterBeat: number = 0
+  ): Record<string, { peakDb: number; rmsDb: number; peakNorm: number; rmsNorm: number; clipping: boolean }> {
+    const levels: Record<
+      string,
+      { peakDb: number; rmsDb: number; peakNorm: number; rmsNorm: number; clipping: boolean }
+    > = {};
+    if (!score) return levels;
+
+    const currentWhole = Math.max(0, currentQuarterBeat / 4);
+
+    for (const def of score.defs) {
+      const isMuted =
+        this.mutedTracks.has(def.id) ||
+        (this.soloedTracks.size > 0 && !this.soloedTracks.has(def.id));
+
+      if (isMuted) {
+        levels[def.id] = { peakDb: -60, rmsDb: -60, peakNorm: 0, rmsNorm: 0, clipping: false };
+        continue;
+      }
+
+      const volMidi = this.trackVolumes.get(def.id) ?? def.volume ?? 100;
+      const faderScalar = (volMidi / 100) * this.masterVolumeScalar;
+
+      let activeEnergy = 0;
+      for (const ev of score.events) {
+        if ((ev.trackId || 'pno') !== def.id || ev.pitch?.isRest || ev.pitch?.isSpacer) continue;
+        const st = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+        const dur = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
+        if (currentWhole >= st - 0.02 && currentWhole <= st + dur + 0.08) {
+          const vel = (ev.physics?.velocity ?? 90) / 127;
+          const progress = Math.max(0, Math.min(1, (currentWhole - st) / Math.max(0.05, dur)));
+          const decay = Math.exp(-progress * 1.4);
+          activeEnergy += vel * decay;
+        }
+      }
+
+      if (!this.isPlaying && activeEnergy === 0) {
+        // Static preview level based on track fader volume when idle
+        const idleNorm = Math.max(0, Math.min(1, (volMidi / 127) * 0.65));
+        const idleDb = idleNorm > 0.01 ? Math.max(-48, Math.round(20 * Math.log10(idleNorm))) : -60;
+        levels[def.id] = {
+          peakDb: idleDb,
+          rmsDb: Math.max(-60, idleDb - 4),
+          peakNorm: idleNorm,
+          rmsNorm: idleNorm * 0.78,
+          clipping: idleDb > 0,
+        };
+        continue;
+      }
+
+      const peakLinear = Math.min(1.4, activeEnergy * faderScalar);
+      const rmsLinear = peakLinear * 0.72;
+      const peakDb =
+        peakLinear > 0.001 ? Math.max(-60, Math.min(6, Number((20 * Math.log10(peakLinear)).toFixed(1)))) : -60;
+      const rmsDb =
+        rmsLinear > 0.001 ? Math.max(-60, Math.min(6, Number((20 * Math.log10(rmsLinear)).toFixed(1)))) : -60;
+      const peakNorm = Math.max(0, Math.min(1, (peakDb + 60) / 66));
+      const rmsNorm = Math.max(0, Math.min(1, (rmsDb + 60) / 66));
+
+      levels[def.id] = {
+        peakDb,
+        rmsDb,
+        peakNorm,
+        rmsNorm,
+        clipping: peakDb > 0.0,
+      };
+    }
+
+    return levels;
   }
 
   public setLoop(loop: boolean): void {
@@ -423,6 +634,28 @@ export class StudioAudioEngine {
       trackOrderById.set(d.id, idx);
     });
 
+    this.routingMatrix.clear();
+    for (const d of score.defs) {
+      this.routingMatrix.createBus(SpatialAudioMatrix.toBusUri(d.id));
+    }
+    for (const d of score.defs) {
+      if (d.sends) {
+        for (const [retId, sendLvl] of Object.entries(d.sends)) {
+          try {
+            const override = this.trackSends.get(d.id)?.get(retId);
+            this.routingMatrix.registerTrackSend(
+              d.id,
+              retId,
+              override ? override.level : sendLvl,
+              override ? override.mode : 'post'
+            );
+          } catch {
+            // Ignore circular send route
+          }
+        }
+      }
+    }
+
     const numTracks = Math.max(1, score.defs.length);
     this.polyphonyScalar = numTracks >= 10 ? 0.78 : numTracks >= 6 ? 0.85 : numTracks >= 3 ? 0.92 : 1.0;
 
@@ -442,6 +675,52 @@ export class StudioAudioEngine {
       }
     }
 
+    const groupsById = new Map<string, any>();
+    for (const g of score.groups || []) {
+      groupsById.set(g.id, g);
+    }
+    const activeTapMode =
+      (score.meta?.sidechainTap as 'pre_fx' | 'post_fx' | 'post_mixer') || this.sidechainTapMode;
+
+    const sidechainSourceId = score.meta?.sidechain?.toLowerCase();
+    const sidechainTriggers: Array<{
+      timeSec: number;
+      velocity: number;
+      sourceTrackVol: number;
+      sourceMuted: boolean;
+    }> = [];
+
+    if (sidechainSourceId) {
+      for (const ev of score.events) {
+        if (!ev.pitch || ev.pitch.isRest || ev.pitch.isSpacer) continue;
+        const tId = ev.trackId || 'pno';
+        const def = defsById.get(tId);
+        const matchesSource =
+          tId.toLowerCase() === sidechainSourceId ||
+          def?.groupId?.toLowerCase() === sidechainSourceId ||
+          (sidechainSourceId.includes('drum') && (ev.style === 'grid' || def?.style === 'grid'));
+        const isKickOrTrigger =
+          ev.style !== 'grid' && def?.style !== 'grid'
+            ? true
+            : ev.pitch.midi === 36 || ev.pitch.gridKey === 'k' || ev.pitch.gridKey === 'bd';
+
+        if (matchesSource && isKickOrTrigger) {
+          const stW = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+          const trigSec = this.wholeNoteToSeconds(stW, tempo, tempoMap);
+          const srcVol = this.trackVolumes.get(tId) ?? def?.volume ?? 100;
+          const srcMuted =
+            this.mutedTracks.has(tId) ||
+            (def?.groupId ? this.mutedGroups.has(def.groupId) : false);
+          sidechainTriggers.push({
+            timeSec: trigSec,
+            velocity: ev.physics?.velocity ?? 100,
+            sourceTrackVol: srcVol,
+            sourceMuted: srcMuted,
+          });
+        }
+      }
+    }
+
     const list: ScheduledNoteEvent[] = [];
     const playableEvents = FollowActionEngine.evaluateNoteProbabilities(score.events);
 
@@ -453,11 +732,14 @@ export class StudioAudioEngine {
       if (this.mutedTracks.has(trackId)) continue;
 
       const def = defsById.get(trackId);
+      const groupId = def?.groupId;
+      if (groupId && this.mutedGroups.has(groupId)) continue;
+      if (this.soloedGroups.size > 0 && (!groupId || !this.soloedGroups.has(groupId))) continue;
+
       const style = (ev.style || def?.style || 'standard').toLowerCase();
       const patch = (ev.patch || def?.patch || 'salamander_grand').toLowerCase();
 
       const trackVolMidi = this.trackVolumes.get(trackId) ?? def?.volume ?? 100;
-      const trackGainScalar = (trackVolMidi / 100) * 0.95 * this.polyphonyScalar;
 
       const startWhole = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
       const durWhole = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
@@ -469,6 +751,26 @@ export class StudioAudioEngine {
       const seatingOffsetSec = isGridOrDrum ? 0 : (trackIdx % 7) * 0.0014;
       const rawStartSec = this.wholeNoteToSeconds(startWhole, tempo, tempoMap);
       const rawEndSec = this.wholeNoteToSeconds(startWhole + durWhole, tempo, tempoMap);
+
+      const groupDef = groupId ? groupsById.get(groupId) : undefined;
+      const groupVolMidi = groupId
+        ? (this.groupVolumes.get(groupId) ?? groupDef?.volume ?? 100)
+        : 100;
+      const groupVolScalar = groupVolMidi / 100;
+
+      const isSidechainSource =
+        Boolean(sidechainSourceId) &&
+        (trackId.toLowerCase() === sidechainSourceId ||
+          groupId?.toLowerCase() === sidechainSourceId ||
+          ev.style === 'grid' ||
+          def?.style === 'grid');
+      const duckScalar =
+        !isSidechainSource && sidechainTriggers.length > 0
+          ? this.computeSidechainDuckScalar(rawStartSec, sidechainTriggers, activeTapMode)
+          : 1.0;
+
+      const trackGainScalar =
+        (trackVolMidi / 100) * groupVolScalar * duckScalar * 0.95 * this.polyphonyScalar;
       let startSec = rawStartSec + seatingOffsetSec;
       if (isGrace) {
         startSec = Math.max(0, startSec - 0.045);
@@ -547,7 +849,10 @@ export class StudioAudioEngine {
           autoPanOverride = ccOrValueToPan(rawPan, panLane.controller !== undefined);
         }
       }
-      const pan = Math.max(-1, Math.min(1, ev.physics?.pan ?? autoPanOverride ?? def?.pan ?? 0));
+      const pan = Math.max(
+        -1,
+        Math.min(1, ev.physics?.pan ?? autoPanOverride ?? this.trackPans.get(trackId) ?? def?.pan ?? 0)
+      );
 
       let cutoffHzOverride: number | undefined;
       if (cutoffLane) {
@@ -576,6 +881,15 @@ export class StudioAudioEngine {
       );
       const isEnsembleSection = isEnsembleSectionTrack(trackId, def?.name, sfInstrument);
 
+      let reverbSendGain = 0;
+      const trackSendEntries = this.routingMatrix.getTrackSends(trackId);
+      for (const sr of trackSendEntries) {
+        reverbSendGain = Math.max(
+          reverbSendGain,
+          SpatialAudioMatrix.computeEffectiveSendGain(sr.level, sr.mode, trackVolMidi, false)
+        );
+      }
+
       list.push({
         event: ev,
         def,
@@ -595,6 +909,7 @@ export class StudioAudioEngine {
         isEnsembleSection,
         normalizedVelocity,
         cutoffHzOverride,
+        reverbSendGain,
       });
     }
 
