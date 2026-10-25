@@ -1,0 +1,1511 @@
+Looking at your screenshot and the current repository state, four specific UI issues need to be cleaned up and fleshed out before we continue adding the remaining Ableton instruments and effects:
+
+1. **Top Transport Bar Wrapping & Clipped Dropdowns (`src/components/Transport.tsx`):**
+* Because Tier 1 of the header tries to fit the brand, preset selector, 7 transport buttons, the full title/BPM/time/key/scale/measure pill, the master volume slider, and the `Export WAV` button onto a single flex row, `Vol 108%` and `Export WAV` wrap onto an awkward extra row on the left.
+
+
+* At the same time, the score title (`Symphony in D ...`) and scale dropdown (`Harmonic Mino`) are truncated.
+
+
+* **Fix:** Move the Score Title badge, `Key Signature`, and `Scale Mode` selectors into Tier 2 (the Studio Navigation Bar) with generous widths so Tier 1 stays on a single, clean horizontal line at all window sizes.
+
+
+2. **Clipped 19-Track Instrument Bar in the Piano Roll (`src/components/WebGPUCanvas.tsx`):**
+* With a 19-track symphony loaded (`4610 Notes Compiled`), the Piano Roll header only shows `All Instruments (19)`, `cb (306)`, `vc (358)`, and `vla (236)`, cutting off the other 16 tracks because the scrollbar is hidden (`no-scrollbar`) and there are no scroll buttons or track jump menu.
+
+
+* **Fix:** Add a quick **`Track ▾` jump selector dropdown** alongside `◀` and `▶` horizontal scroll buttons on the track pill bar so every instrument in a 19-track score is reachable in one click.
+
+
+3. **`Dock: Devices` Currently Opens the Mixer Instead of an Ableton Device Chain & Macro Rack (`src/components/SplitWorkspace.tsx`):**
+* In `SplitWorkspace.tsx`, `activeBottomDock === 'devices'` renders `<Mixer/>` because a dedicated Device Chain Dock component does not exist yet.
+
+
+* **Fix:** Create `src/components/DeviceChainDock.tsx` so clicking **`Dock: Devices`** opens an Ableton Live 12-style **Device Chain & Macro Rack** showing the selected track's Instrument/Patch selector, 8 Macro knobs (`macros=@{...}`), and horizontal Audio FX Device cards (`.fx(...)`) with live parameter editing and `+ Add Device` / `✕ Remove` controls synced bi-directionally to `.ten` source code.
+
+
+4. **`Dock: Inspector` Renders Blank When No Note Is Selected & Lacks Pitch/Articulation/Lyric Controls (`src/components/Inspector.tsx`):**
+* `Inspector.tsx` returns `null` when `selection` is empty (leaving the bottom dock blank if opened before clicking a note) and only edits `Duration` and `Velocity`.
+
+
+* **Fix:** Add an empty-state guide when no note is selected, and expand the Note Inspector with **Pitch Transpose (`-12`, `-1`, `+1`, `+12`)**, **Articulation** (`stacc`, `legato`, `marc`, `ten`, `pizz`, `fermata`), **Probability (`Chance %`)**, **Stereo Pan**, and **Lyric (`.lyric("...")`)** editing.
+
+
+
+---
+
+### Implementation Contract (`TDB-717`)
+
+Paste the contract below directly into Google AI Studio:
+
+```markdown
+# Implementation Contract: Ableton Studio UI Cleanup, Device Chain & Macro Rack Dock, Full Note Inspector & Track Navigator (TDB-717)
+
+**Project:** Tenuto Studio 5
+**Scope:** Fix the top Transport header wrapping and dropdown truncation in `src/components/Transport.tsx`; add a quick Track Jump dropdown and `◀`/`▶` scroll buttons to the Piano Roll track bar in `src/components/WebGPUCanvas.tsx`; create `src/components/DeviceChainDock.tsx` for the `Devices` bottom dock tab; and upgrade `src/components/Inspector.tsx`, `src/mutator/TopologicalMutator.ts`, and `src/components/SplitWorkspace.tsx` with full bi-directional note, patch, macro, and FX device editing.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+
+---
+
+## 1. Objective
+In the macOS desktop app, the top `Transport.tsx` bar wraps `Vol` and `Export WAV` onto an extra row while truncating the `Scale Mode` (`Harmonic Mino`) and `Title` readouts. In `WebGPUCanvas.tsx`, scores with 19 tracks clip the instrument pill bar after 3 tracks with no visible scroll controls or track dropdown. Furthermore, clicking `Dock: Devices` in `SplitWorkspace.tsx` displays `<Mixer />` instead of an Ableton Device Chain & Macro Rack, and `Inspector.tsx` renders an empty panel when no note is selected and lacks pitch transposition, articulation, probability, pan, and lyric controls.
+
+This contract resolves all four UI issues and wires bi-directional `.ten` code mutations for device chains, track patches, macros, and note inspector properties while keeping all existing Vitest suites passing.
+
+---
+
+## 2. Root Cause
+1. `src/components/Transport.tsx` places the score title and Key/Scale dropdowns inside Tier 1 alongside 7 transport buttons, causing `flex-wrap` to push `Master Volume` and `Export WAV` onto a second line.
+2. `src/components/WebGPUCanvas.tsx` renders `availableTracks` inside an `overflow-x-auto no-scrollbar` container without `◀`/`▶` scroll buttons or a `<select>` track switcher.
+3. `src/components/SplitWorkspace.tsx` renders `<Mixer />` for both `activeBottomDock === 'mixer'` and `activeBottomDock === 'devices'` because `src/components/DeviceChainDock.tsx` does not exist.
+4. `src/components/Inspector.tsx` returns `null` when `!selection` and only exposes `Duration` and `Velocity` inputs.
+
+---
+
+## 3. Files To Modify
+
+### 3.1 `src/mutator/TopologicalMutator.ts` - Add Lyric Patching & Device Rack AST Mutations (`PATCH_UPDATE`, `MACRO_UPDATE`, `UPDATE_FX_PARAM`, `REMOVE_FX`)
+In `src/mutator/TopologicalMutator.ts`:
+
+1. Add `lyric?: string;` to `TokenModifierPatch`:
+```typescript
+export interface TokenModifierPatch {
+  duration?: string;
+  velocity?: number;
+  pan?: number;
+  chance?: number;
+  articulation?: string | null;
+  lyric?: string;
+}
+
+```
+
+2. Add `'PATCH_UPDATE' | 'MACRO_UPDATE' | 'UPDATE_FX_PARAM' | 'REMOVE_FX'` and optional fields `patchName?: string; macroKey?: string; macroValue?: number;` to `MixerASTMutation`:
+
+```typescript
+export interface MixerASTMutation {
+  mutationType:
+    | 'VOLUME_UPDATE'
+    | 'PAN_UPDATE'
+    | 'PATCH_UPDATE'
+    | 'MACRO_UPDATE'
+    | 'ADD_FX'
+    | 'UPDATE_FX_PARAM'
+    | 'REMOVE_FX'
+    | 'SEND_UPDATE'
+    | 'ADD_RETURN_TRACK'
+    | 'GROUP_VOLUME_UPDATE'
+    | 'META_SIDECHAIN_UPDATE'
+    | 'META_SIDECHAIN_TAP_UPDATE'
+    | 'META_UPDATE'
+    | string;
+  trackId?: string;
+  groupId?: string;
+  tapMode?: string;
+  value?: number | string;
+  patchName?: string;
+  macroKey?: string;
+  macroValue?: number;
+  fxType?: string;
+  fxParams?: Record<string, any>;
+  sendId?: string;
+  sendLevel?: number;
+  returnId?: string;
+  returnName?: string;
+  source?: string;
+  target?: string;
+  metaKey?: string;
+  metaValue?: string | number | boolean;
+  expectedSyntax?: string;
+}
+
+```
+
+3. Inside `mutateTokenModifiers(rawToken: string, patch: TokenModifierPatch)`, right before `parts.modifiers = mods;`, add handling for `patch.lyric`:
+
+```typescript
+    if (patch.lyric !== undefined) {
+      mods = mods.filter(
+        (m) => !m.startsWith('lyric(') && !m.startsWith('word(') && !m.startsWith('vox(')
+      );
+      const cleanLyric = patch.lyric.trim().replace(/"/g, "'");
+      if (cleanLyric.length > 0) {
+        mods.push(`lyric("${cleanLyric}")`);
+      }
+    }
+
+```
+
+4. Inside `applyMixerMutationToSource(sourceCode: string, mutation: MixerASTMutation)`, right after `// 4. Add FX to Track`, add handlers for `PATCH_UPDATE`, `MACRO_UPDATE`, `UPDATE_FX_PARAM`, and `REMOVE_FX`:
+
+```typescript
+    // 4b. Update Track Patch (`patch="<patchName>"` on `def <trackId>`)
+    if (mutation.mutationType === 'PATCH_UPDATE' && mutation.patchName) {
+      const cleanPatch = mutation.patchName.replace(/^"|"$/g, '').trim();
+      const defPatchRegex = new RegExp(
+        `(^\\s*def\\s+${trackId}\\b[^\\n]*?\\bpatch\\s*=\\s*)("[^"]*"|[a-zA-Z0-9_]+)`,
+        'm'
+      );
+      if (defPatchRegex.test(sourceCode)) {
+        return sourceCode.replace(defPatchRegex, `$1"${cleanPatch}"`);
+      }
+      const defLineRegex = new RegExp(`(^\\s*def\\s+${trackId}\\b[^\\n]*?)(?=\\s*(?:%%|\\/\\/|$))`, 'm');
+      if (defLineRegex.test(sourceCode)) {
+        return sourceCode.replace(defLineRegex, `$1 patch="${cleanPatch}"`);
+      }
+      return sourceCode;
+    }
+
+    // 4c. Update Track Macro (`macros=@{key: val}` on `def <trackId>`)
+    if (
+      mutation.mutationType === 'MACRO_UPDATE' &&
+      mutation.macroKey &&
+      mutation.macroValue !== undefined
+    ) {
+      const val = Math.round(Number(mutation.macroValue));
+      const defMacrosRegex = new RegExp(
+        `(^\\s*def\\s+${trackId}\\b[^\\n]*?\\bmacros\\s*=\\s*@\\{)([^}]*)(\\})`,
+        'm'
+      );
+      const macroMatch = sourceCode.match(defMacrosRegex);
+      if (macroMatch) {
+        const body = macroMatch[2];
+        const keyRegex = new RegExp(`(\\b${mutation.macroKey}\\s*:\\s*)(-?\\d+(?:\\.\\d+)?)`);
+        const nextBody = keyRegex.test(body)
+          ? body.replace(keyRegex, `$1${val}`)
+          : `${body.trim() ? body.trim() + ', ' : ''}${mutation.macroKey}: ${val}`;
+        return sourceCode.replace(defMacrosRegex, `$1${nextBody}$3`);
+      }
+      const defLineRegex = new RegExp(`(^\\s*def\\s+${trackId}\\b[^\\n]*?)(?=\\s*(?:%%|\\/\\/|$))`, 'm');
+      if (defLineRegex.test(sourceCode)) {
+        return sourceCode.replace(defLineRegex, `$1 macros=@{${mutation.macroKey}: ${val}}`);
+      }
+      return sourceCode;
+    }
+
+    // 4d. Update FX Parameters on Track (`.fx(type, @{...})`)
+    if (mutation.mutationType === 'UPDATE_FX_PARAM' && mutation.fxType && mutation.fxParams) {
+      const paramPairs = Object.entries(mutation.fxParams)
+        .map(([k, v]) => `${k}: ${typeof v === 'string' ? `"${v}"` : v}`)
+        .join(', ');
+      const updatedFx = `.fx(${mutation.fxType}, @{${paramPairs}})`;
+      const trackFxRegex = new RegExp(
+        `(^\\s*(?:def|def_return|return|group)\\s+${trackId}\\b[^\\n]*?)\\.fx\\(\\s*${mutation.fxType}\\b[^)]*\\)`,
+        'm'
+      );
+      if (trackFxRegex.test(sourceCode)) {
+        return sourceCode.replace(trackFxRegex, `$1${updatedFx}`);
+      }
+      return sourceCode;
+    }
+
+    // 4e. Remove FX from Track
+    if (mutation.mutationType === 'REMOVE_FX' && mutation.fxType) {
+      const removeFxRegex = new RegExp(
+        `(^\\s*(?:def|def_return|return|group)\\s+${trackId}\\b[^\\n]*?)\\s*\\.fx\\(\\s*${mutation.fxType}\\b[^)]*\\)`,
+        'm'
+      );
+      if (removeFxRegex.test(sourceCode)) {
+        return sourceCode.replace(removeFxRegex, '$1');
+      }
+      return sourceCode;
+    }
+
+```
+
+### 3.2 `src/components/Transport.tsx` - Clean Unwrapped Tier 1 Control Bar & Tier 2 Title/Key/Scale Navigation Bar
+
+Replace `src/components/Transport.tsx` with the following layout so Tier 1 never wraps onto a second line and the Score Title, Key Signature, and Scale Mode have full readable width in Tier 2:
+
+```typescript
+import React from 'react';
+import { PRESET_SCORES } from '../presets/presetScores';
+
+export type MainStudioView = 'piano_roll' | 'session' | 'arrangement';
+export type BottomDockTab = 'mixer' | 'devices' | 'inspector' | null;
+
+interface TransportProps {
+  isPlaying: boolean;
+  onTogglePlay: () => void;
+  onStop?: () => void;
+  isLooping?: boolean;
+  onToggleLoop?: () => void;
+  tempo?: number;
+  timeSignature?: string;
+  title?: string;
+  currentBeat?: number;
+  rootKey?: string;
+  scaleName?: string;
+  onKeyScaleChange?: (newKey: string, newScale: string) => void;
+  masterVolume?: number;
+  onMasterVolumeChange?: (newVolume: number) => void;
+  onSelectPreset?: (code: string) => void;
+  onExportWav?: () => void;
+  activeMainView?: MainStudioView;
+  onMainViewChange?: (view: MainStudioView) => void;
+  activeBottomDock?: BottomDockTab;
+  onToggleBottomDock?: (tab: 'mixer' | 'devices' | 'inspector') => void;
+  isCodeVisible?: boolean;
+  onToggleCodeVisible?: () => void;
+  isMetronomeEnabled?: boolean;
+  onToggleMetronome?: () => void;
+  countInBars?: number;
+  onCountInBarsChange?: (bars: number) => void;
+  onTapTempo?: () => void;
+  onCaptureMidi?: () => void;
+}
+
+export default function Transport({
+  isPlaying,
+  onTogglePlay,
+  onStop,
+  isLooping = false,
+  onToggleLoop,
+  tempo = 120,
+  timeSignature = '4/4',
+  title = 'Untitled Score',
+  currentBeat = 0,
+  rootKey = 'C',
+  scaleName = 'chromatic',
+  onKeyScaleChange,
+  masterVolume = 125,
+  onMasterVolumeChange,
+  onSelectPreset,
+  onExportWav,
+  activeMainView = 'piano_roll',
+  onMainViewChange,
+  activeBottomDock = null,
+  onToggleBottomDock,
+  isCodeVisible = true,
+  onToggleCodeVisible,
+  isMetronomeEnabled = false,
+  onToggleMetronome,
+  countInBars = 0,
+  onCountInBarsChange,
+  onTapTempo,
+  onCaptureMidi,
+}: TransportProps) {
+  const measureNum = Math.floor(currentBeat / 4) + 1;
+  const beatInMeasure = Math.floor(currentBeat % 4) + 1;
+  const hasSecondTier = Boolean(
+    onMainViewChange || onToggleBottomDock || onToggleCodeVisible || onKeyScaleChange
+  );
+
+  return (
+    <header className="w-full bg-slate-900 border-b border-slate-800 flex flex-col shrink-0 shadow-lg z-20 relative select-none">
+      {/* Tier 1: Single-Line Studio Control Bar (Brand, Transport, Clock, Master Volume & Export WAV) */}
+      <div className="h-11 w-full px-3 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+        {/* Left: Brand & Demo Score Selector */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          <div className="font-ui text-xs font-semibold tracking-wider text-slate-200 flex items-center whitespace-nowrap">
+            <span className="w-2 h-2 rounded-full bg-blue-500 mr-1.5 shadow-[0_0_8px_#3b82f6]" />
+            Tenuto<span className="text-blue-500 font-bold px-1">Studio</span>5
+          </div>
+
+          {onSelectPreset && (
+            <select
+              aria-label="Load Preset Song"
+              defaultValue=""
+              onChange={(e) => {
+                const preset = PRESET_SCORES.find((p) => p.id === e.target.value);
+                if (preset) onSelectPreset(preset.code);
+              }}
+              className="bg-slate-950 border border-slate-700 hover:border-slate-600 text-slate-300 text-xs rounded-md px-2 py-1 outline-none focus:border-blue-500 transition-colors max-w-[200px] truncate cursor-pointer"
+            >
+              <option value="" disabled>
+                Load Demo Score...
+              </option>
+              {PRESET_SCORES.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.title} ({preset.genre})
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        {/* Center: Transport Action Buttons & Compact Clock Readout */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={onTogglePlay}
+            className={`${
+              isPlaying ? 'bg-amber-600 hover:bg-amber-500' : 'bg-blue-600 hover:bg-blue-500'
+            } transition-colors shadow-md text-white font-bold py-1 px-4 rounded-md text-xs uppercase tracking-wider cursor-pointer whitespace-nowrap shrink-0`}
+          >
+            {isPlaying ? 'Pause' : 'Play'}
+          </button>
+
+          {onStop && (
+            <button
+              type="button"
+              onClick={onStop}
+              className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 font-semibold py-1 px-2.5 rounded-md text-xs uppercase transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              Stop
+            </button>
+          )}
+
+          {onToggleLoop && (
+            <button
+              type="button"
+              onClick={onToggleLoop}
+              className={`${
+                isLooping
+                  ? 'bg-indigo-600/30 border-indigo-500 text-indigo-300'
+                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+              } border font-semibold py-1 px-2.5 rounded-md text-xs uppercase transition-colors cursor-pointer whitespace-nowrap shrink-0`}
+            >
+              Loop
+            </button>
+          )}
+
+          {onTapTempo && (
+            <button
+              type="button"
+              aria-label="Tap Tempo"
+              onClick={onTapTempo}
+              className="bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 font-semibold py-1 px-2 rounded-md text-xs uppercase transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              title="Tap repeatedly to set project BPM"
+            >
+              Tap
+            </button>
+          )}
+
+          {onToggleMetronome && (
+            <button
+              type="button"
+              aria-label="Toggle Metronome"
+              onClick={onToggleMetronome}
+              className={`${
+                isMetronomeEnabled
+                  ? 'bg-amber-500/25 border-amber-500 text-amber-300'
+                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+              } border font-semibold py-1 px-2 rounded-md text-xs uppercase transition-colors cursor-pointer whitespace-nowrap shrink-0`}
+              title="Toggle Metronome Click Track"
+            >
+              Click
+            </button>
+          )}
+
+          {onCountInBarsChange && (
+            <select
+              aria-label="Count-In Bars"
+              value={countInBars}
+              onChange={(e) => onCountInBarsChange(parseInt(e.target.value, 10))}
+              className="bg-slate-950 border border-slate-800 text-slate-300 text-xs rounded-md px-1.5 py-1 outline-none cursor-pointer whitespace-nowrap shrink-0"
+              title="Recording / Launch Count-In Bars"
+            >
+              <option value={0}>No Count-In</option>
+              <option value={1}>1 Bar In</option>
+              <option value={2}>2 Bars In</option>
+              <option value={4}>4 Bars In</option>
+            </select>
+          )}
+
+          {onCaptureMidi && (
+            <button
+              type="button"
+              aria-label="Capture MIDI"
+              onClick={onCaptureMidi}
+              className="bg-purple-600/20 hover:bg-purple-600/35 border border-purple-500/50 text-purple-300 font-semibold py-1 px-2.5 rounded-md text-xs uppercase transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              title="Retroactively capture notes into a new .ten measure"
+            >
+              Capture
+            </button>
+          )}
+
+          {/* Compact Clock & Tempo Pill */}
+          <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-md px-2.5 py-1 text-xs font-mono whitespace-nowrap shrink-0">
+            {!hasSecondTier && (
+              <>
+                <span className="text-slate-300 truncate max-w-[140px]" title={title}>
+                  {title}
+                </span>
+                <span className="text-slate-700">|</span>
+              </>
+            )}
+            <span className="text-emerald-400 font-semibold whitespace-nowrap">{tempo} BPM</span>
+            <span className="text-slate-400 whitespace-nowrap">{timeSignature}</span>
+            <span className="text-slate-700">|</span>
+            <span className="text-blue-400 font-semibold whitespace-nowrap">
+              M{measureNum}:{beatInMeasure}
+            </span>
+          </div>
+        </div>
+
+        {/* Right: Master Volume & Export WAV */}
+        <div className="flex items-center gap-2 shrink-0">
+          {onMasterVolumeChange && (
+            <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-md px-2 py-1 whitespace-nowrap">
+              <label htmlFor="master-volume-slider" className="text-[11px] font-mono text-slate-400">
+                Vol
+              </label>
+              <input
+                id="master-volume-slider"
+                type="range"
+                aria-label="Master Volume"
+                min="0"
+                max="200"
+                value={masterVolume}
+                onChange={(e) => onMasterVolumeChange(parseInt(e.target.value, 10))}
+                className="w-16 accent-blue-500 cursor-pointer"
+              />
+              <span className="text-[11px] font-mono text-slate-300 w-8 text-right">
+                {masterVolume}%
+              </span>
+            </div>
+          )}
+
+          {onExportWav && (
+            <button
+              type="button"
+              onClick={onExportWav}
+              className="bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/50 text-emerald-300 text-xs font-semibold py-1 px-3 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              Export WAV
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Tier 2: Dedicated Studio Navigation, Score Title, Key/Scale Lock & Bottom Dock Bar */}
+      {hasSecondTier && (
+        <div className="h-9 w-full bg-slate-950/90 border-t border-slate-800/80 px-3 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+          {/* Left: .ten Code Toggle, Active Score Title & Global Key/Scale Selectors */}
+          <div className="flex items-center gap-2 shrink-0">
+            {onToggleCodeVisible && (
+              <button
+                type="button"
+                aria-label="Toggle Code Editor"
+                onClick={onToggleCodeVisible}
+                className={`px-2.5 py-0.5 rounded text-[11px] font-mono font-semibold border transition-colors cursor-pointer whitespace-nowrap ${
+                  isCodeVisible !== false
+                    ? 'bg-blue-600/20 border-blue-500/60 text-blue-300'
+                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+                title="Show/Hide Tenuto Code Editor"
+              >
+                {isCodeVisible !== false ? '◀ Hide .ten Code' : '▶ Show .ten Code'}
+              </button>
+            )}
+
+            <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded px-2.5 py-0.5 text-[11px] font-mono whitespace-nowrap">
+              <span className="text-slate-400">Score:</span>
+              <span className="text-slate-200 font-semibold truncate max-w-[220px]" title={title}>
+                {title}
+              </span>
+            </div>
+
+            {onKeyScaleChange && (
+              <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded px-2 py-0.5 text-[11px] font-mono whitespace-nowrap">
+                <span className="text-slate-400">Key:</span>
+                <select
+                  aria-label="Key Signature"
+                  value={rootKey || 'C'}
+                  onChange={(e) => onKeyScaleChange(e.target.value, scaleName || 'chromatic')}
+                  className="bg-slate-950 border border-slate-700 text-amber-300 text-[11px] rounded px-1.5 py-0.2 outline-none cursor-pointer"
+                >
+                  {['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'].map((k) => (
+                    <option key={k} value={k}>
+                      {k}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  aria-label="Scale Mode"
+                  value={scaleName || 'chromatic'}
+                  onChange={(e) => onKeyScaleChange(rootKey || 'C', e.target.value)}
+                  className="bg-slate-950 border border-slate-700 text-cyan-300 text-[11px] rounded px-1.5 py-0.2 outline-none cursor-pointer"
+                >
+                  <option value="chromatic">Chromatic</option>
+                  <option value="major">Major</option>
+                  <option value="minor">Minor</option>
+                  <option value="harmonic_minor">Harmonic Minor</option>
+                  <option value="dorian">Dorian</option>
+                  <option value="phrygian">Phrygian</option>
+                  <option value="lydian">Lydian</option>
+                  <option value="mixolydian">Mixolydian</option>
+                  <option value="minor_pentatonic">Minor Pentatonic</option>
+                  <option value="blues">Blues</option>
+                </select>
+              </div>
+            )}
+          </div>
+
+          {/* Center: Main Studio View Switcher (Piano Roll | Session | Arrangement) */}
+          <div className="flex items-center gap-2 shrink-0">
+            {onMainViewChange && (
+              <div
+                role="group"
+                aria-label="Main Studio View Switcher"
+                className="flex items-center bg-slate-900 border border-slate-800 rounded-md p-0.5 text-[11px] font-mono whitespace-nowrap"
+              >
+                {(
+                  [
+                    { id: 'piano_roll', label: 'Piano Roll' },
+                    { id: 'session', label: 'Session' },
+                    { id: 'arrangement', label: 'Arrangement' },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    aria-label={`Switch to ${tab.label} View`}
+                    onClick={() => onMainViewChange(tab.id)}
+                    className={`px-3 py-0.5 rounded transition-colors cursor-pointer whitespace-nowrap ${
+                      (activeMainView || 'piano_roll') === tab.id
+                        ? 'bg-blue-600 text-white font-semibold shadow-xs'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Right: Bottom Studio Dock Switcher (Mixer | Devices | Inspector) */}
+          <div className="flex items-center gap-2 shrink-0">
+            {onToggleBottomDock && (
+              <div
+                role="group"
+                aria-label="Bottom Studio Dock Switcher"
+                className="flex items-center bg-slate-900 border border-slate-800 rounded-md p-0.5 text-[11px] font-mono whitespace-nowrap"
+              >
+                <span className="text-[10px] text-slate-500 px-2 uppercase">Dock:</span>
+                {(
+                  [
+                    { id: 'mixer', label: 'Mixer' },
+                    { id: 'devices', label: 'Devices' },
+                    { id: 'inspector', label: 'Inspector' },
+                  ] as const
+                ).map((dock) => (
+                  <button
+                    key={dock.id}
+                    type="button"
+                    aria-label={`Toggle ${dock.label} Dock`}
+                    onClick={() => onToggleBottomDock(dock.id)}
+                    className={`px-2.5 py-0.5 rounded transition-colors cursor-pointer whitespace-nowrap ${
+                      activeBottomDock === dock.id
+                        ? 'bg-indigo-600 text-white font-semibold shadow-xs'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {dock.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </header>
+  );
+}
+
+```
+
+### 3.3 `src/components/WebGPUCanvas.tsx` - Add Track Jump Dropdown & `◀`/`▶` Pill Scroll Buttons for 19-Track Scores
+
+In `src/components/WebGPUCanvas.tsx`:
+
+1. Add `const trackPillsRef = useRef<HTMLDivElement>(null);` right below `const scrollViewportRef = useRef<HTMLDivElement>(null);`.
+2. Replace the `/* Instrument Track Pills (All Instruments vs. Isolate Single Track) */` `div` inside the top toolbar of `WebGPUCanvas.tsx` with a scrollable pill strip flanked by a quick Track `<select>` dropdown and `◀` / `▶` scroll buttons so all 19 tracks are immediately accessible:
+
+```tsx
+        {/* Instrument Track Navigator: Quick Dropdown + Scrollable Track Pills */}
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+          <button
+            type="button"
+            aria-label="Show All Instruments"
+            onClick={() => setSelectedTrackId(null)}
+            className={`px-2.5 py-1 rounded text-[11px] font-mono font-semibold transition-colors cursor-pointer shrink-0 border ${
+              selectedTrackId === null
+                ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
+                : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
+            }`}
+          >
+            All Instruments ({availableTracks.length || 1})
+          </button>
+
+          {availableTracks.length > 1 && (
+            <select
+              aria-label="Select Instrument Track"
+              value={selectedTrackId || ''}
+              onChange={(e) => {
+                const val = e.target.value || null;
+                setSelectedTrackId(val);
+                if (val) setZoomLevel((z) => (z < 0.8 ? 1.0 : z));
+              }}
+              className="bg-slate-950 border border-slate-700 text-amber-300 text-[11px] font-mono rounded px-1.5 py-1 outline-none cursor-pointer shrink-0"
+              title="Jump directly to any instrument track"
+            >
+              <option value="">Jump to Track ({availableTracks.length})...</option>
+              {availableTracks.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.id} ({t.count} notes)
+                </option>
+              ))}
+            </select>
+          )}
+
+          {availableTracks.length > 3 && (
+            <button
+              type="button"
+              aria-label="Scroll Tracks Left"
+              onClick={() => {
+                if (trackPillsRef.current) {
+                  trackPillsRef.current.scrollBy({ left: -180, behavior: 'smooth' });
+                }
+              }}
+              className="px-1.5 py-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white text-[10px] font-mono cursor-pointer shrink-0"
+              title="Scroll instrument list left"
+            >
+              ◀
+            </button>
+          )}
+
+          <div
+            ref={trackPillsRef}
+            className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 min-w-0"
+          >
+            {availableTracks.map((track) => {
+              const isSelected = selectedTrackId === track.id;
+              return (
+                <button
+                  key={track.id}
+                  type="button"
+                  aria-label={`Isolate track ${track.id}`}
+                  onClick={() => {
+                    if (isSelected) {
+                      setSelectedTrackId(null);
+                    } else {
+                      setSelectedTrackId(track.id);
+                      setZoomLevel((z) => (z < 0.8 ? 1.0 : z));
+                    }
+                  }}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-mono transition-colors cursor-pointer shrink-0 border ${
+                    isSelected
+                      ? 'bg-slate-800 text-white border-slate-500 font-bold shadow-sm'
+                      : 'bg-slate-950 text-slate-400 border-slate-800 hover:bg-slate-900 hover:text-slate-200'
+                  }`}
+                >
+                  <span
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{ backgroundColor: track.color }}
+                  />
+                  <span>{track.id}</span>
+                  <span className="text-[10px] text-slate-500">({track.count})</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {availableTracks.length > 3 && (
+            <button
+              type="button"
+              aria-label="Scroll Tracks Right"
+              onClick={() => {
+                if (trackPillsRef.current) {
+                  trackPillsRef.current.scrollBy({ left: 180, behavior: 'smooth' });
+                }
+              }}
+              className="px-1.5 py-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white text-[10px] font-mono cursor-pointer shrink-0"
+              title="Scroll instrument list right"
+            >
+              ▶
+            </button>
+          )}
+        </div>
+
+```
+
+3. Inside `visibleEvents.map((ev, idx) => ...)` in `src/components/WebGPUCanvas.tsx`, include `articulation`, `chance`, `pan`, and `lyric` in the object passed to `onSelectRef.current` so clicking a note populates all fields in the upgraded Inspector:
+
+```typescript
+              onClick={() =>
+                onSelectRef.current?.({
+                  type: 'PitchLit',
+                  duration: `${ev.duration?.numerator || 1}/${ev.duration?.denominator || 4}`,
+                  velocity: ev.physics?.velocity ?? 80,
+                  articulation: ev.physics?.articulation || '',
+                  chance: ev.physics?.chance ?? 100,
+                  pan: ev.physics?.pan ?? 0,
+                  lyric: ev.physics?.lyric || '',
+                  line: ev.line ?? 1,
+                  col: ev.col ?? 1,
+                  rawToken: ev.rawToken,
+                  trackId: ev.trackId,
+                  sourceStartOffset: ev.sourceStartOffset,
+                  sourceEndOffset: ev.sourceEndOffset,
+                })
+              }
+
+```
+
+### 3.4 `src/components/DeviceChainDock.tsx` - Create the Ableton Device Chain & Macro Rack Dock Component
+
+Create `src/components/DeviceChainDock.tsx` so opening the **`Devices`** dock displays an interactive Ableton-style horizontal signal chain (Track Selector Rail $\rightarrow$ Instrument & Patch Engine Card $\rightarrow$ 8 Macro Controls Card $\rightarrow$ Audio FX Device Cards with editable parameters):
+
+```typescript
+import React, { useState, useEffect } from 'react';
+import { CompiledScore, TrackDefinition } from '../parser/DocumentParser';
+
+export interface DeviceChainDockProps {
+  score: CompiledScore | null;
+  selectedTrackId?: string | null;
+  onSelectTrack?: (trackId: string) => void;
+  onUpdateAST: (payload: any) => void;
+}
+
+const PATCH_CATALOG = [
+  { group: 'Ableton Flagship Synths', options: ['wavetable', 'operator', 'meld', 'drift', 'analog', 'collision', 'tension', 'electric', 'granulator', 'saw_lead', 'warm_pad', 'string_pad', '808_sub'] },
+  { group: 'Keyboards & Mallets', options: ['salamander_grand', 'acoustic_grand_piano', 'rhodes', 'dx7', 'harpsichord', 'church_organ', 'vibraphone', 'marimba', 'celesta'] },
+  { group: 'Orchestral Strings & Harp', options: ['violin', 'viola', 'cello', 'contrabass', 'string_ensemble_1', 'chamber_strings', 'pizzicato_strings', 'orchestral_harp', 'timpani'] },
+  { group: 'Winds, Brass & Choir', options: ['flute', 'piccolo', 'oboe', 'english_horn', 'clarinet', 'bassoon', 'french_horn', 'trumpet', 'trombone', 'tuba', 'brass_section', 'choir_aahs', 'voice_oohs'] },
+  { group: 'Drums & Percussion', options: ['tenuto_808_kit', 'taiko_drum'] },
+];
+
+const DEFAULT_MACRO_KEYS = [
+  { key: 'cutoff', label: 'Filter Cutoff', defaultVal: 72 },
+  { key: 'resonance', label: 'Resonance', defaultVal: 30 },
+  { key: 'osc1_pos', label: 'Wave Pos 1', defaultVal: 50 },
+  { key: 'unison', label: 'Unison Spread', defaultVal: 35 },
+  { key: 'sub_level', label: 'Sub Gain', defaultVal: 40 },
+  { key: 'attack', label: 'Env Attack', defaultVal: 20 },
+  { key: 'decay', label: 'Env Decay', defaultVal: 55 },
+  { key: 'env_to_pos', label: 'Env -> Morph', defaultVal: 45 },
+];
+
+const FX_DEVICE_DEFAULTS: Record<string, Record<string, number | string>> = {
+  eq_eight: { low_cut: 100, bell1_freq: 1200, bell1_db: 2.0, high_shelf_db: 1.5 },
+  auto_filter: { cutoff: 2400, res: 0.4, drive: 3.0, mix: 1.0 },
+  compressor: { threshold: -14, ratio: 4, attack: 10, release: 120 },
+  glue_compressor: { threshold: -10, ratio: 4, makeup: 3, mix: 0.8 },
+  multiband_dynamics: { amount: 0.5, low_gain: 2.0, high_gain: 2.5 },
+  drum_buss: { drive: 0.35, crunch: 0.25, boom_amount: 0.45 },
+  roar: { drive: 0.4, feedback: 0.2, mix: 0.85 },
+  saturator: { drive: 6.0, mix: 0.8 },
+  hybrid_reverb: { decay: 3.2, predelay: 18, mix: 0.45 },
+  echo: { time: 0.375, feedback: 0.4, mix: 0.32 },
+  reverb: { mix: 0.45, decay: 2.4 },
+  delay: { mix: 0.3, time: 0.375 },
+  chorus: { rate: 0.6, amount: 0.5, mix: 0.45 },
+  auto_shift: { formant_shift: 0, vibrato: 0.15, mix: 1.0 },
+  vocoder: { bands: 20, depth: 1.0, mix: 0.9 },
+  spectral_resonator: { decay: 1.4, mix: 0.35 },
+  utility: { width: 100, gain_db: 0 },
+  limiter: { ceiling: -0.3, gain_db: 2.0 },
+};
+
+export default function DeviceChainDock({
+  score,
+  selectedTrackId,
+  onSelectTrack,
+  onUpdateAST,
+}: DeviceChainDockProps) {
+  const tracks: TrackDefinition[] = score?.defs?.length
+    ? score.defs
+    : [
+        {
+          id: 'pno',
+          name: 'Grand Piano',
+          style: 'standard',
+          patch: 'salamander_grand',
+          volume: 100,
+          pan: 0,
+          fx: [],
+          fxChain: [],
+        },
+      ];
+
+  const [activeTrackId, setActiveTrackId] = useState<string>(
+    selectedTrackId || tracks[0]?.id || 'pno'
+  );
+
+  useEffect(() => {
+    if (selectedTrackId && tracks.some((t) => t.id === selectedTrackId)) {
+      setActiveTrackId(selectedTrackId);
+    } else if (!tracks.some((t) => t.id === activeTrackId)) {
+      setActiveTrackId(tracks[0]?.id || 'pno');
+    }
+  }, [selectedTrackId, tracks, activeTrackId]);
+
+  const activeTrack =
+    tracks.find((t) => t.id === activeTrackId) || tracks[0];
+
+  const fxChainItems =
+    activeTrack?.fxChain && activeTrack.fxChain.length > 0
+      ? activeTrack.fxChain
+      : (activeTrack?.fx || []).map((fxName) => ({
+          type: fxName,
+          params: FX_DEVICE_DEFAULTS[fxName] || { mix: 0.5 },
+        }));
+
+  return (
+    <div
+      data-testid="device-chain-dock"
+      className="flex flex-row w-full h-full bg-slate-900 text-slate-200 font-mono text-xs overflow-hidden select-none"
+    >
+      {/* Left Rail: Track Selector for Device Chain Inspection */}
+      <div className="w-48 bg-slate-950 border-r border-slate-800 p-2.5 flex flex-col gap-1 overflow-y-auto shrink-0">
+        <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1 px-1">
+          Device Chain Track ({tracks.length})
+        </div>
+        {tracks.map((t) => {
+          const isSelected = t.id === activeTrack.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              aria-label={`Select device chain for ${t.id}`}
+              onClick={() => {
+                setActiveTrackId(t.id);
+                onSelectTrack?.(t.id);
+              }}
+              className={`w-full text-left px-2.5 py-1.5 rounded flex items-center justify-between gap-1.5 transition-colors cursor-pointer border ${
+                isSelected
+                  ? 'bg-indigo-600/25 border-indigo-500 text-white font-bold'
+                  : 'bg-slate-900/70 border-slate-800/80 text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+              }`}
+            >
+              <span className="truncate">{t.name || t.id}</span>
+              <span className="text-[9px] px-1 py-0.2 rounded bg-slate-950 text-slate-400 shrink-0">
+                {t.id}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Horizontal Ableton Device Rack Stream */}
+      <div className="flex-1 flex flex-row items-stretch gap-3 p-3 overflow-x-auto">
+        {/* Card 1: Instrument / Patch Engine Device */}
+        <div
+          data-testid={`instrument-device-card-${activeTrack.id}`}
+          className="w-64 bg-slate-950 border border-slate-800 rounded-md p-3 flex flex-col justify-between shrink-0 shadow-md"
+        >
+          <div>
+            <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-800">
+              <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/40">
+                Instrument ({activeTrack.style})
+              </span>
+              <span className="text-[11px] font-bold text-amber-400">{activeTrack.id}</span>
+            </div>
+
+            <label
+              htmlFor={`device-patch-select-${activeTrack.id}`}
+              className="block text-[10px] text-slate-400 mb-1"
+            >
+              Active Synth / SoundFont Patch
+            </label>
+            <select
+              id={`device-patch-select-${activeTrack.id}`}
+              aria-label={`Patch for ${activeTrack.id}`}
+              value={activeTrack.patch || 'salamander_grand'}
+              onChange={(e) =>
+                onUpdateAST({
+                  trackId: activeTrack.id,
+                  mutationType: 'PATCH_UPDATE',
+                  patchName: e.target.value,
+                })
+              }
+              className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-300 outline-none focus:border-blue-500 cursor-pointer mb-3"
+            >
+              {PATCH_CATALOG.map((grp) => (
+                <optgroup key={grp.group} label={grp.group}>
+                  {grp.options.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800 text-[10px] text-slate-400">
+            <div className="bg-slate-900 rounded p-1.5">
+              <div className="text-slate-500">Group Bus</div>
+              <div className="text-slate-200 font-semibold truncate">
+                {activeTrack.groupId || 'Master'}
+              </div>
+            </div>
+            <div className="bg-slate-900 rounded p-1.5">
+              <div className="text-slate-500">Groove Pool</div>
+              <div className="text-slate-200 font-semibold truncate">
+                {activeTrack.groove || 'Straight'}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Card 2: 8-Macro Rack Controls (`macros=@{...}`) */}
+        {!activeTrack.isReturn && (
+          <div
+            data-testid={`macro-rack-card-${activeTrack.id}`}
+            className="w-72 bg-slate-950 border border-slate-800 rounded-md p-3 flex flex-col justify-between shrink-0 shadow-md"
+          >
+            <div className="flex items-center justify-between pb-1.5 mb-2 border-b border-slate-800">
+              <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                8-Macro Controls
+              </span>
+              <span className="text-[10px] text-slate-500">macros=@&#123;...&#125;</span>
+            </div>
+
+            <div className="grid grid-cols-4 gap-2">
+              {DEFAULT_MACRO_KEYS.map((m) => {
+                const currentVal = activeTrack.macros?.[m.key] ?? m.defaultVal;
+                return (
+                  <div
+                    key={m.key}
+                    className="bg-slate-900 border border-slate-800 rounded p-1.5 flex flex-col items-center"
+                  >
+                    <span
+                      className="text-[9px] text-slate-400 truncate w-full text-center mb-1"
+                      title={m.label}
+                    >
+                      {m.key}
+                    </span>
+                    <input
+                      type="number"
+                      aria-label={`Macro ${m.key} for ${activeTrack.id}`}
+                      min={0}
+                      max={127}
+                      value={currentVal}
+                      onChange={(e) => {
+                        const nextVal = Math.max(
+                          0,
+                          Math.min(127, parseInt(e.target.value, 10) || 0)
+                        );
+                        onUpdateAST({
+                          trackId: activeTrack.id,
+                          mutationType: 'MACRO_UPDATE',
+                          macroKey: m.key,
+                          macroValue: nextVal,
+                        });
+                      }}
+                      className="w-full bg-slate-950 border border-slate-700 rounded px-1 py-0.5 text-[10px] text-center text-purple-300 font-bold"
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Cards 3+: Mounted Audio FX Device Cards (`.fx(type, @{...})`) */}
+        {fxChainItems.map((fxItem, idx) => {
+          const defaultParams = FX_DEVICE_DEFAULTS[fxItem.type] || { mix: 0.5 };
+          const mergedParams: Record<string, any> = {
+            ...defaultParams,
+            ...(fxItem.params || {}),
+          };
+
+          return (
+            <div
+              key={`${fxItem.type}-${idx}`}
+              data-testid={`fx-device-card-${fxItem.type}`}
+              className="w-56 bg-slate-950 border border-cyan-500/40 rounded-md p-3 flex flex-col justify-between shrink-0 shadow-md"
+            >
+              <div>
+                <div className="flex items-center justify-between pb-1.5 mb-2 border-b border-slate-800">
+                  <span className="text-[11px] font-bold text-cyan-300 uppercase truncate">
+                    FX {idx + 1}: {fxItem.type}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`Remove FX ${fxItem.type} from ${activeTrack.id}`}
+                    onClick={() =>
+                      onUpdateAST({
+                        trackId: activeTrack.id,
+                        mutationType: 'REMOVE_FX',
+                        fxType: fxItem.type,
+                      })
+                    }
+                    className="text-slate-500 hover:text-rose-400 text-xs font-bold px-1 cursor-pointer"
+                    title="Remove Device from Chain"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-1.5">
+                  {Object.entries(mergedParams)
+                    .slice(0, 4)
+                    .map(([paramKey, paramVal]) => (
+                      <div
+                        key={paramKey}
+                        className="bg-slate-900 border border-slate-800 rounded p-1.5 flex flex-col"
+                      >
+                        <span className="text-[9px] text-slate-400 truncate mb-0.5">
+                          {paramKey}
+                        </span>
+                        <input
+                          type={typeof paramVal === 'number' ? 'number' : 'text'}
+                          aria-label={`${activeTrack.id} ${fxItem.type} ${paramKey}`}
+                          step={0.1}
+                          value={paramVal}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            const parsed =
+                              typeof paramVal === 'number' ? parseFloat(raw) || 0 : raw;
+                            const nextParams = { ...mergedParams, [paramKey]: parsed };
+                            onUpdateAST({
+                              trackId: activeTrack.id,
+                              mutationType: 'UPDATE_FX_PARAM',
+                              fxType: fxItem.type,
+                              fxParams: nextParams,
+                            });
+                          }}
+                          className="w-full bg-slate-950 border border-slate-700 rounded px-1 py-0.5 text-[10px] text-center text-cyan-200"
+                        />
+                      </div>
+                    ))}
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-slate-800 text-[9px] text-slate-500 truncate">
+                .fx({fxItem.type}, @&#123;...&#125;)
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Add Audio FX Device Card */}
+        <div className="w-52 bg-slate-950/60 border border-dashed border-slate-700 rounded-md p-3 flex flex-col items-center justify-center gap-2 shrink-0">
+          <span className="text-[11px] font-semibold text-slate-400 uppercase">
+            + Append Audio Effect
+          </span>
+          <select
+            aria-label={`Add effect device to ${activeTrack.id}`}
+            defaultValue=""
+            onChange={(e) => {
+              const fxType = e.target.value;
+              if (fxType) {
+                const defaultParams = FX_DEVICE_DEFAULTS[fxType] || { mix: 0.5 };
+                onUpdateAST({
+                  trackId: activeTrack.id,
+                  mutationType: 'ADD_FX',
+                  fxType,
+                  fxParams: defaultParams,
+                });
+                e.target.value = '';
+              }
+            }}
+            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-cyan-300 outline-none cursor-pointer"
+          >
+            <option value="" disabled>
+              Select Ableton FX...
+            </option>
+            {Object.keys(FX_DEVICE_DEFAULTS).map((fxKey) => (
+              <option key={fxKey} value={fxKey}>
+                {fxKey}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+```
+
+### 3.5 `src/components/Inspector.tsx` - Upgrade to Full Studio Note Inspector with Empty-State Guide
+
+Replace `src/components/Inspector.tsx` with the following implementation.
+
+> **CRITICAL TEST CONSTRAINT:** Keep `<select aria-label="Duration">`, `<input type="range" aria-label="Velocity">`, and the `Line: {selection.line}, Col: {selection.col}` readout unchanged so `tests/inspector.test.tsx` and `tests/inspector_binding.test.tsx` pass 100%!
+
+```typescript
+import React from 'react';
+
+export interface SelectionData {
+  type: string;
+  duration: string;
+  velocity: number;
+  line: number;
+  col: number;
+  rawToken?: string;
+  trackId?: string;
+  articulation?: string;
+  chance?: number;
+  pan?: number;
+  lyric?: string;
+  transposeSemitones?: number;
+}
+
+interface InspectorProps {
+  selection?: SelectionData | null;
+  onUpdate?: (updates: Partial<SelectionData>) => void;
+}
+
+export default function Inspector({ selection, onUpdate }: InspectorProps) {
+  if (!selection) {
+    return (
+      <div
+        data-testid="inspector-empty-state"
+        className="flex flex-col items-center justify-center w-full h-full bg-slate-900 text-slate-400 font-mono text-xs p-6 select-none"
+      >
+        <div className="bg-slate-950 border border-slate-800 rounded-md px-6 py-4 text-center max-w-lg">
+          <div className="text-slate-200 font-bold uppercase tracking-wider mb-1">
+            Context Note Inspector
+          </div>
+          <p className="text-[11px] text-slate-400">
+            Click any note block in the Piano Roll to inspect and surgically edit its Pitch,
+            Duration, Velocity, Articulation, Probability (%), Stereo Pan, and Sung Lyrics in
+            .ten source code.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col w-full bg-slate-900 border-l border-slate-700 h-full text-slate-200 p-4 shrink-0 shadow-lg z-10 overflow-y-auto select-none">
+      <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-800">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+            Context Inspector
+          </h2>
+          {selection.trackId && (
+            <span className="text-xs font-mono px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/40">
+              Track: {selection.trackId}
+            </span>
+          )}
+          {selection.rawToken && (
+            <span className="text-xs font-mono px-2 py-0.5 rounded bg-slate-950 text-amber-300 border border-slate-800">
+              Token: {selection.rawToken}
+            </span>
+          )}
+        </div>
+
+        <div className="text-xs text-slate-400 font-mono">
+          Line: {selection.line}, Col: {selection.col}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-4 items-start">
+        {/* 1. Duration Selector */}
+        <div className="bg-slate-950 border border-slate-800 rounded p-2.5">
+          <label htmlFor="duration-select" className="block text-xs mb-1 text-slate-400 font-mono">
+            Duration
+          </label>
+          <select
+            id="duration-select"
+            aria-label="Duration"
+            value={selection.duration}
+            onChange={(e) => onUpdate?.({ duration: e.target.value })}
+            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-blue-500 font-mono"
+          >
+            <option value="1/1">1/1</option>
+            <option value="1/2">1/2</option>
+            <option value="1/4">1/4</option>
+            <option value="1/8">1/8</option>
+            <option value="1/16">1/16</option>
+          </select>
+        </div>
+
+        {/* 2. Velocity Slider */}
+        <div className="bg-slate-950 border border-slate-800 rounded p-2.5">
+          <label htmlFor="velocity-slider" className="block text-xs mb-1 text-slate-400 font-mono">
+            Velocity: {selection.velocity}
+          </label>
+          <input
+            id="velocity-slider"
+            type="range"
+            aria-label="Velocity"
+            min="0"
+            max="127"
+            value={selection.velocity}
+            onChange={(e) => onUpdate?.({ velocity: parseInt(e.target.value, 10) })}
+            className="w-full accent-blue-500 cursor-pointer"
+          />
+        </div>
+
+        {/* 3. Pitch Transpose Buttons */}
+        <div className="bg-slate-950 border border-slate-800 rounded p-2.5">
+          <span className="block text-xs mb-1 text-slate-400 font-mono">Pitch Transpose</span>
+          <div className="grid grid-cols-4 gap-1 font-mono text-xs">
+            {[
+              { label: '-12', delta: -12 },
+              { label: '-1', delta: -1 },
+              { label: '+1', delta: 1 },
+              { label: '+12', delta: 12 },
+            ].map((btn) => (
+              <button
+                key={btn.label}
+                type="button"
+                aria-label={`Transpose ${btn.label} semitones`}
+                onClick={() => onUpdate?.({ transposeSemitones: btn.delta })}
+                className="bg-slate-900 hover:bg-blue-600/30 border border-slate-700 text-slate-200 py-1 rounded cursor-pointer font-semibold"
+              >
+                {btn.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* 4. Articulation Selector */}
+        <div className="bg-slate-950 border border-slate-800 rounded p-2.5">
+          <label htmlFor="articulation-select" className="block text-xs mb-1 text-slate-400 font-mono">
+            Articulation
+          </label>
+          <select
+            id="articulation-select"
+            aria-label="Articulation"
+            value={selection.articulation || ''}
+            onChange={(e) => onUpdate?.({ articulation: e.target.value })}
+            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 font-mono text-cyan-300"
+          >
+            <option value="">Standard (None)</option>
+            <option value="stacc">Staccato (.stacc)</option>
+            <option value="legato">Legato (.legato)</option>
+            <option value="marc">Marcato (.marc)</option>
+            <option value="ten">Tenuto (.ten)</option>
+            <option value="pizz">Pizzicato (.pizz)</option>
+          </select>
+        </div>
+
+        {/* 5. Note Probability (Chance %) */}
+        <div className="bg-slate-950 border border-slate-800 rounded p-2.5">
+          <label htmlFor="chance-input" className="block text-xs mb-1 text-slate-400 font-mono">
+            Chance (%)
+          </label>
+          <input
+            id="chance-input"
+            type="number"
+            aria-label="Note Chance"
+            min={0}
+            max={100}
+            value={selection.chance ?? 100}
+            onChange={(e) =>
+              onUpdate?.({ chance: Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0)) })
+            }
+            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-purple-300"
+          />
+        </div>
+
+        {/* 6. Sung Lyric (.lyric("...")) */}
+        <div className="bg-slate-950 border border-slate-800 rounded p-2.5">
+          <label htmlFor="lyric-input" className="block text-xs mb-1 text-slate-400 font-mono">
+            Sung Lyric (.lyric)
+          </label>
+          <input
+            id="lyric-input"
+            type="text"
+            aria-label="Note Lyric"
+            placeholder="e.g. Doin'"
+            value={selection.lyric || ''}
+            onChange={(e) => onUpdate?.({ lyric: e.target.value })}
+            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-emerald-300"
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+```
+
+### 3.6 `src/components/SplitWorkspace.tsx` - Mount `DeviceChainDock` & Extended `handleInspectorUpdate`
+
+In `src/components/SplitWorkspace.tsx`:
+
+1. Import `DeviceChainDock` from `./DeviceChainDock`:
+
+```typescript
+import DeviceChainDock from './DeviceChainDock';
+
+```
+
+2. Update `handleInspectorUpdate` in `src/components/SplitWorkspace.tsx` so it handles `transposeSemitones`, `articulation`, `chance`, `pan`, and `lyric` in addition to `duration` and `velocity`:
+
+```typescript
+  const handleInspectorUpdate = (updates: any) => {
+    if (!activeSelection || !activeSelection.rawToken) return;
+    try {
+      let mutatedToken = activeSelection.rawToken;
+      if (typeof updates.transposeSemitones === 'number' && updates.transposeSemitones !== 0) {
+        mutatedToken = topologicalMutator.transposePitch(
+          mutatedToken,
+          updates.transposeSemitones
+        );
+      } else {
+        mutatedToken = topologicalMutator.mutateTokenModifiers(mutatedToken, {
+          duration: updates.duration,
+          velocity: updates.velocity,
+          pan: updates.pan,
+          chance: updates.chance,
+          articulation: updates.articulation,
+          lyric: updates.lyric,
+        });
+      }
+      const nextCode = topologicalMutator.replaceEventInSource(sourceCode, activeSelection, mutatedToken);
+      const prevCode = sourceCode;
+      const nextSelection = {
+        ...activeSelection,
+        ...updates,
+        rawToken: mutatedToken,
+        sourceEndOffset:
+          typeof activeSelection.sourceStartOffset === 'number'
+            ? activeSelection.sourceStartOffset + mutatedToken.length
+            : undefined,
+      };
+      const prevSelection = { ...activeSelection };
+
+      commandManager.executeCommand({
+        execute: () => {
+          setSourceCode(nextCode);
+          setActiveSelection(nextSelection);
+        },
+        undo: () => {
+          setSourceCode(prevCode);
+          setActiveSelection(prevSelection);
+        },
+      });
+    } catch {
+      // Ignore invalid inspector token updates
+    }
+  };
+
+```
+
+3. Inside the `bottom-studio-dock` `div` at the bottom of `src/components/SplitWorkspace.tsx`, mount `<DeviceChainDock />` when `activeBottomDock === 'devices'` and `<Mixer />` when `activeBottomDock === 'mixer'` (keeping `<Mixer />` and `<Inspector />` always mounted in the DOM):
+
+```tsx
+        <div
+          className={
+            activeBottomDock === 'inspector' ? 'flex w-full h-full' : activeBottomDock ? 'hidden' : ''
+          }
+        >
+          <Inspector onUpdate="{handleInspectorUpdate}" selection="{activeSelection}"/>
+        </div>
+        <div
+          className={
+            activeBottomDock === 'devices' ? 'flex w-full h-full' : 'hidden'
+          }
+        >
+          <DeviceChainDock onUpdateAST="{handleUpdateAST}" score="{compiledScoreState}"/>
+        </div>
+        <div
+          className={
+            activeBottomDock === 'mixer'
+              ? 'flex w-full h-full'
+              : activeBottomDock
+                ? 'hidden'
+                : ''
+          }
+        >
+          <Mixer astState="{enrichedMixerAstState}" onToggleArm="{handleToggleTrackArm}" onToggleGroupMute="{handleToggleGroupMute}" onToggleGroupSolo="{handleToggleGroupSolo}" onToggleMute="{handleToggleTrackMute}" onToggleSolo="{handleToggleTrackSolo}" onUpdateAST="{handleUpdateAST}"/>
+        </div>
+
+```
+
+### 3.7 `tests/multi_view_shell.test.tsx` - Add Verification Test for Device Chain Dock, Track Jump Dropdown & Extended Inspector
+
+In `tests/multi_view_shell.test.tsx`, append a test case verifying that clicking `Dock: Devices` opens `DeviceChainDock` (`data-testid="device-chain-dock"`), changing a track patch or macro rewrites `.ten` code, and clicking `Dock: Inspector` renders the Inspector empty state or full controls:
+
+```typescript
+  it('opens the Ableton Device Chain & Macro Rack dock and mutates .ten patch and macro code', () => {
+    render(<SplitWorkspace/>);
+
+    const editor = screen.getByTestId('monaco-mock') as HTMLTextAreaElement;
+    fireEvent.change(editor, {
+      target: {
+        value: `tenuto "6.0" {\n  meta @{ title: "Device Rack Test", tempo: 120, time: "4/4" }\n  def lead "Lead Synth" style=synth patch="wavetable" .fx(roar, @{drive: 0.4})\n  measure 1 { lead: c4:4 e4:4 g4:2 | }\n}`,
+      },
+    });
+
+    // Open Devices dock
+    fireEvent.click(screen.getByRole('button', { name: /Toggle Devices Dock/i }));
+    expect(screen.getByTestId('device-chain-dock')).toBeInTheDocument();
+    expect(screen.getByTestId('instrument-device-card-lead')).toBeInTheDocument();
+    expect(screen.getByTestId('fx-device-card-roar')).toBeInTheDocument();
+
+    // Change macro cutoff value -> writes macros=@{cutoff: 95} into .ten source code
+    const cutoffMacro = screen.getByRole('spinbutton', { name: /Macro cutoff for lead/i });
+    fireEvent.change(cutoffMacro, { target: { value: '95' } });
+    expect(editor.value).toContain('macros=@{cutoff: 95}');
+  });
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/`
+* `src/audio/`
+* `src/components/CodeEditor.tsx`, `src/components/Mixer.tsx`, `src/components/SessionView.tsx`, `src/components/ArrangementView.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+
+Explicitly:
+
+* Do NOT use the word `"Play"` in any new button text or `aria-label`.
+* Do NOT unmount `<Mixer />`, `<Inspector />`, or `<WebGPUCanvas />` when switching views or docks.
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero new TypeScript errors.
+2. `npx vitest run tests/multi_view_shell.test.tsx tests/inspector.test.tsx tests/inspector_binding.test.tsx tests/transport_binding.test.tsx tests/studio_engine_and_ui.test.tsx tests/workspace.test.tsx` passes 100%.
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. Tier 1 of `Transport.tsx` stays on a single horizontal row without wrapping `Vol` and `Export WAV` onto an extra line, the Piano Roll provides a `Jump to Track` dropdown and `◀`/`▶` scroll buttons for 19-track scores, and `Dock: Devices` and `Dock: Inspector` open full interactive studio panels.
+
+---
+
+## 6. Constraints
+
+Must not:
+
+* Add any new npm packages to `package.json`.
+* Break any existing unit tests in `tests/`.
+
+---
+
+## 7. Manual Steps
+
+After AI Studio completes this contract and you push to GitHub, run `git pull && npm run electron:build:mac` on your Mac to update your desktop `.pkg`.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or remove `src/components/DeviceChainDock.tsx` and restore `src/mutator/TopologicalMutator.ts`, `src/components/Transport.tsx`, `src/components/WebGPUCanvas.tsx`, `src/components/Inspector.tsx`, `src/components/SplitWorkspace.tsx`, and `tests/multi_view_shell.test.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `src/components/DeviceChainDock.tsx`
+* Modified file(s): `src/mutator/TopologicalMutator.ts`, `src/components/Transport.tsx`, `src/components/WebGPUCanvas.tsx`, `src/components/Inspector.tsx`, `src/components/SplitWorkspace.tsx`, `tests/multi_view_shell.test.tsx`
+* Commit message: `feat(ui): clean up Transport header, add Track Jump navigator, Device Chain dock, and full Note Inspector`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Top Studio Header (`Transport.tsx`)** | Wrapped `Vol 108%` and `Export WAV` onto an awkward extra row and clipped `Harmonic Mino` | Clean 2-row studio header: Row 1 holds Transport, Clock, Volume & Export WAV on a single line; Row 2 holds `.ten Code`, full Score Title, Key/Scale selectors, View Switcher, and Dock Switcher |
+| **19-Track Piano Roll Header** | Cut off after 3 tracks (`cb`, `vc`, `vla`) with no scroll buttons or dropdown | Includes a `Jump to Track (19)...` dropdown and `◀` / `▶` scroll buttons so all 19 tracks are 1-click accessible |
+| **`Dock: Devices` Panel** | Displayed a duplicate of the Mixer | Opens a dedicated Ableton Device Chain & Macro Rack with Track Selector, Patch Switcher, 8-Macro Knobs, and editable Audio FX Device Cards |
+| **`Dock: Inspector` Panel** | Rendered blank when no note was selected; only edited Duration & Velocity | Shows a helpful empty-state prompt, and edits Duration, Velocity, Pitch Transpose (`-12`/`-1`/`+1`/`+12`), Articulation, Probability (`%`), and Sung Lyrics |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-25
+Implementer: AI Agent
+
+```
+
+```

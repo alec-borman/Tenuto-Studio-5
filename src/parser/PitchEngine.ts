@@ -5,6 +5,7 @@ export interface PitchResult {
   isRest?: boolean;
   isSpacer?: boolean;
   gridKey?: string;
+  sliceKey?: string;
   microtoneCents?: number;
 }
 
@@ -317,6 +318,19 @@ export class PitchEngine {
       const mappedMidi = DRUM_GRID_MIDI[clean] ?? 36;
       const frequency = 440.0 * Math.pow(2, (mappedMidi - 69) / 12);
       return { midi: mappedMidi, frequency, noteName: clean, gridKey: clean };
+    }
+
+    if (style === 'simpler' || style === 'concrete') {
+      const stdCheck = clean.match(/^([a-g])((?:tqs|tqf|qs|qf|x|#|b|n)*)([0-9]+)(?:([+-]\d+(?:\.\d+)?)c?)?$/);
+      if (!stdCheck && /^[a-z0-9_]+$/.test(clean)) {
+        let hash = 0;
+        for (let i = 0; i < clean.length; i++) {
+          hash = (hash * 31 + clean.charCodeAt(i)) % 24;
+        }
+        const mappedMidi = 60 + hash;
+        const frequency = this.computeFrequencyForMidi(mappedMidi, 0);
+        return { midi: mappedMidi, frequency, noteName: clean, sliceKey: clean };
+      }
     }
 
     // Support SPEC.md 2.2 PitchLit: [a-g](tqs|tqf|qs|qf|x|#|b|n)*[0-9]*([+-][0-9]+c?)?

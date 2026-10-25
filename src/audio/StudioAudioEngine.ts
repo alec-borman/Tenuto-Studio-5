@@ -20,6 +20,9 @@ import { FollowActionEngine } from './FollowActionEngine';
 import { MetronomeAndCaptureEngine } from './MetronomeAndCaptureEngine';
 import { SpatialAudioMatrix, SendTapMode } from './SpatialAudioMatrix';
 import { WavetableEngine } from './synths/WavetableEngine';
+import { AbletonSynthSuite } from './synths/AbletonSynthSuite';
+import { SamplerAndDrumRackEngine } from './synths/SamplerAndDrumRackEngine';
+import { AbletonAudioFxEngine } from './fx/AbletonAudioFxEngine';
 
 export interface PlaybackProgress {
   isPlaying: boolean;
@@ -70,6 +73,7 @@ export class StudioAudioEngine {
   private reverbWetGain: GainNode | null = null;
   private compressorNode: DynamicsCompressorNode | null = null;
   private activeVoices: Set<ActiveVoiceCleanup> = new Set();
+  private activeChokeGroups: Map<string, ActiveVoiceCleanup> = new Map();
   private rafId: number | null = null;
   private schedulerIntervalId: number | null = null;
   private startContextTime: number = 0;
@@ -697,6 +701,40 @@ export class StudioAudioEngine {
     };
   }
 
+  /**
+   * Evaluates a note's MPE (MIDI Polyphonic Expression) `bend` (semitones), `slide` (0..127),
+   * and `pressure` (0..127) breakpoint arrays at normalized note progress `u` in `[0, 1]`.
+   */
+  public static evaluateMpeAtNormalizedTime(
+    mpe: { bend?: number[]; slide?: number[]; pressure?: number[] } | undefined,
+    u: number
+  ): { bendSemitones: number; slideNorm: number; pressureScalar: number } {
+    if (!mpe) {
+      return { bendSemitones: 0, slideNorm: 0.5, pressureScalar: 1.0 };
+    }
+
+    const interpArray = (arr: number[] | undefined, fallback: number): number => {
+      if (!arr || arr.length === 0) return fallback;
+      if (arr.length === 1) return arr[0];
+      const clampedU = Math.max(0, Math.min(1, u));
+      const scaled = clampedU * (arr.length - 1);
+      const idx0 = Math.floor(scaled);
+      const idx1 = Math.min(arr.length - 1, idx0 + 1);
+      const frac = scaled - idx0;
+      return arr[idx0] + (arr[idx1] - arr[idx0]) * frac;
+    };
+
+    const bendSemitones = Math.max(-24, Math.min(24, interpArray(mpe.bend, 0)));
+    const slideRaw = Math.max(0, Math.min(127, interpArray(mpe.slide, 64)));
+    const pressureRaw = Math.max(0, Math.min(127, interpArray(mpe.pressure, 90)));
+
+    return {
+      bendSemitones,
+      slideNorm: slideRaw / 127,
+      pressureScalar: 0.5 + 0.65 * (pressureRaw / 127),
+    };
+  }
+
   private buildScheduledTimeline(score: CompiledScore): ScheduledNoteEvent[] {
     const tempo = Number(score.meta?.tempo) || 120;
     const tempoMap = score.meta?.tempoMap;
@@ -941,10 +979,12 @@ export class StudioAudioEngine {
           : phoneme.primaryVowel.f2;
       }
 
-      const freq =
+      const baseFreq =
         Number.isFinite(ev.pitch.frequency) && ev.pitch.frequency >= 20 && ev.pitch.frequency <= 10000
           ? ev.pitch.frequency
           : 440;
+      const pitchShiftSt = ev.physics?.pitchShiftSt ?? 0;
+      const freq = pitchShiftSt !== 0 ? baseFreq * Math.pow(2, pitchShiftSt / 12) : baseFreq;
 
       const sfInstrument = resolveSoundfontInstrument(
         trackId,
@@ -964,31 +1004,54 @@ export class StudioAudioEngine {
         );
       }
 
+      const activeFxChain = AbletonAudioFxEngine.resolveActiveFxChain(def, ev);
+      const fxModulated =
+        activeFxChain.length > 0
+          ? AbletonAudioFxEngine.computeRealtimeChainModulation(
+              activeFxChain,
+              {
+                amp,
+                pan,
+                freq,
+                cutoffHz: cutoffHzOverride,
+                reverbSendGain,
+              },
+              ev.physics?.lyric
+            )
+          : {
+              amp,
+              pan,
+              freq,
+              cutoffHz: cutoffHzOverride,
+              reverbSendGain,
+            };
+
       list.push({
         event: ev,
         def,
         startSec,
         durSec,
-        freq,
+        freq: fxModulated.freq,
         midi: ev.pitch.midi || 60,
         gridKey: ev.pitch.gridKey,
         style,
         patch,
         sfInstrument,
-        amp,
+        amp: fxModulated.amp,
         startAmp,
         endAmp,
         swell,
-        pan,
+        pan: fxModulated.pan,
         isEnsembleSection,
         normalizedVelocity,
-        cutoffHzOverride,
-        reverbSendGain,
+        cutoffHzOverride: fxModulated.cutoffHz,
+        reverbSendGain: fxModulated.reverbSendGain,
       });
     }
 
     this.humanizeTimelinePhrasing(list);
     list.sort((a, b) => a.startSec - b.startSec);
+    SamplerAndDrumRackEngine.applyDrumRackChokeGroups(list);
     return list;
   }
 
@@ -1236,7 +1299,42 @@ export class StudioAudioEngine {
         }
       }
 
-      this.scheduleDrumHit(ctx, voiceOut, pannerNode, item.gridKey || 'k', item.midi, safeStart, item.amp);
+      const chokeGroup = SamplerAndDrumRackEngine.getChokeGroupForDrumKey(key, item.midi);
+      const chokeMapKey = chokeGroup > 0 ? `${item.event.trackId || 'drums'}::cg${chokeGroup}` : undefined;
+      if (chokeMapKey) {
+        const prevChokeVoice = this.activeChokeGroups.get(chokeMapKey);
+        if (prevChokeVoice) {
+          prevChokeVoice.fadeOutAndStop(safeStart);
+          this.activeChokeGroups.delete(chokeMapKey);
+        }
+      }
+
+      const drumCleanup = this.scheduleDrumHit(ctx, voiceOut, pannerNode, item.gridKey || 'k', item.midi, safeStart, item.amp);
+      if (chokeMapKey && drumCleanup) {
+        this.activeChokeGroups.set(chokeMapKey, drumCleanup);
+      }
+      return;
+    }
+
+    if (
+      SamplerAndDrumRackEngine.isGranulatorPatch(item.patch) ||
+      SamplerAndDrumRackEngine.isSimplerTrack(item.style, item.patch, item.def)
+    ) {
+      const cleanup = SamplerAndDrumRackEngine.scheduleRealtimeGranulatorOrSimplerVoice(
+        ctx,
+        voiceOut,
+        pannerNode,
+        item.freq,
+        safeStart,
+        durSec,
+        item.amp,
+        item.def,
+        item.event,
+        item.swell,
+        item.startAmp,
+        item.endAmp
+      );
+      this.activeVoices.add(cleanup);
       return;
     }
 
@@ -1355,6 +1453,30 @@ export class StudioAudioEngine {
         durSec,
         item.amp,
         wtParams,
+        item.swell,
+        item.startAmp,
+        item.endAmp
+      );
+      this.activeVoices.add(cleanup);
+      return;
+    }
+
+    if (AbletonSynthSuite.isSupportedPatch(item.patch)) {
+      const synthParams = AbletonSynthSuite.resolveParams(
+        item.patch,
+        item.def,
+        item.event.physics,
+        item.cutoffHzOverride
+      );
+      const cleanup = AbletonSynthSuite.scheduleRealtimeVoice(
+        ctx,
+        voiceOut,
+        pannerNode,
+        item.freq,
+        safeStart,
+        durSec,
+        item.amp,
+        synthParams,
         item.swell,
         item.startAmp,
         item.endAmp
@@ -1565,6 +1687,25 @@ export class StudioAudioEngine {
       const steps = Math.min(48, Math.floor(durSec / stepSec));
       for (let s = 0; s < steps; s++) {
         osc.frequency.setValueAtTime(s % 2 === 0 ? baseFreq : upperFreq, startSec + s * stepSec);
+      }
+    }
+
+    if (physics?.mpe?.bend && physics.mpe.bend.length > 0 && durSec >= 0.05) {
+      const bendArr = physics.mpe.bend;
+      if (bendArr.length === 1) {
+        const bentFreq = baseFreq * Math.pow(2, bendArr[0] / 12);
+        osc.frequency.setValueAtTime(bentFreq, startSec);
+      } else {
+        const segDur = durSec / (bendArr.length - 1);
+        for (let bIdx = 0; bIdx < bendArr.length; bIdx++) {
+          const bentFreq = Math.max(20, Math.min(14000, baseFreq * Math.pow(2, bendArr[bIdx] / 12)));
+          const tPoint = startSec + bIdx * segDur;
+          if (bIdx === 0) {
+            osc.frequency.setValueAtTime(bentFreq, tPoint);
+          } else {
+            osc.frequency.linearRampToValueAtTime(bentFreq, tPoint);
+          }
+        }
       }
     }
 
@@ -1872,7 +2013,7 @@ export class StudioAudioEngine {
     midi: number,
     startSec: number,
     amp: number
-  ): void {
+  ): ActiveVoiceCleanup | void {
     const key = gridKey.toLowerCase();
     const sr = ctx.sampleRate || 44100;
 
@@ -2288,6 +2429,7 @@ export class StudioAudioEngine {
     };
     this.activeVoices.add(cleanup);
     src.onended = () => cleanup.stopAndDisconnect();
+    return cleanup;
   }
 
   public getActiveClipsByTrack(): Record<string, string> {
@@ -2544,6 +2686,7 @@ export class StudioAudioEngine {
       voice.stopAndDisconnect();
     }
     this.activeVoices.clear();
+    this.activeChokeGroups.clear();
 
     if (notify) {
       this.onProgress?.({
@@ -2613,6 +2756,39 @@ export class StudioAudioEngine {
       const gainL = Math.cos(panAngle);
       const gainR = Math.sin(panAngle);
 
+      const activeFxChain = AbletonAudioFxEngine.resolveActiveFxChain(item.def, item.event);
+      const fxSliceFrames = Math.min(totalFrames - startFrame, Math.max(noteFrames, Math.floor(0.85 * sampleRate)));
+      const preFxL = activeFxChain.length > 0 ? left.slice(startFrame, startFrame + fxSliceFrames) : null;
+      const preFxR = activeFxChain.length > 0 ? right.slice(startFrame, startFrame + fxSliceFrames) : null;
+
+      const applyItemFx = (framesToProcess: number) => {
+        if (!preFxL || !preFxR || activeFxChain.length === 0) return;
+        const count = Math.min(framesToProcess, preFxL.length);
+        if (count <= 0) return;
+        const deltaL = new Float32Array(count);
+        const deltaR = new Float32Array(count);
+        for (let k = 0; k < count; k++) {
+          deltaL[k] = left[startFrame + k] - preFxL[k];
+          deltaR[k] = right[startFrame + k] - preFxR[k];
+        }
+        AbletonAudioFxEngine.applyFxChainToSlice(
+          deltaL,
+          deltaR,
+          0,
+          count,
+          sampleRate,
+          activeFxChain,
+          {
+            lyric: item.event.physics?.lyric,
+            carrierFreqHz: item.freq,
+          }
+        );
+        for (let k = 0; k < count; k++) {
+          left[startFrame + k] = preFxL[k] + deltaL[k];
+          right[startFrame + k] = preFxR[k] + deltaR[k];
+        }
+      };
+
       if (isDrum) {
         const key = (item.gridKey || 'k').toLowerCase();
         const isHammerBlow =
@@ -2643,6 +2819,7 @@ export class StudioAudioEngine {
             left[startFrame + i] += sample * gainL;
             right[startFrame + i] += sample * gainR;
           }
+          applyItemFx(hammerFrames);
           continue;
         }
 
@@ -2671,6 +2848,7 @@ export class StudioAudioEngine {
               right[startFrame + i] += s1 * env * item.amp * 2.2 * gainR;
               rPos += rateRatio;
             }
+            applyItemFx(maxFrames);
             continue;
           }
         }
@@ -2681,7 +2859,7 @@ export class StudioAudioEngine {
         const isTom = key === 'lt' || key === 'mt' || key === 'ht' || item.midi === 45 || item.midi === 47 || item.midi === 50;
         const isOpenHat = key === 'oh' || key === 'cr' || key === 'rd' || item.midi === 46 || item.midi === 49;
 
-        const durSec = isKick ? 0.32 : isClap ? 0.24 : isSnare ? 0.21 : isTom ? 0.28 : isOpenHat ? 0.28 : 0.058;
+        const durSec = isKick ? 0.32 : isClap ? 0.24 : isSnare ? 0.21 : isTom ? 0.28 : isOpenHat ? Math.min(0.28, item.durSec) : 0.058;
         const drumFrames = Math.min(totalFrames - startFrame, Math.floor(durSec * sampleRate));
 
         let phase1 = 0;
@@ -2760,6 +2938,7 @@ export class StudioAudioEngine {
           left[startFrame + i] += sample * gainL;
           right[startFrame + i] += sample * gainR;
         }
+        applyItemFx(drumFrames);
         continue;
       }
 
@@ -2903,6 +3082,7 @@ export class StudioAudioEngine {
           left[startFrame + i] += lpState0 * gain * gainL;
           right[startFrame + i] += lpState1 * gain * gainR;
         }
+        applyItemFx(noteFrames);
         continue;
       }
 
@@ -2927,6 +3107,57 @@ export class StudioAudioEngine {
           item.startAmp,
           item.endAmp
         );
+        applyItemFx(noteFrames);
+        continue;
+      }
+
+      if (AbletonSynthSuite.isSupportedPatch(item.patch)) {
+        const synthParams = AbletonSynthSuite.resolveParams(
+          item.patch,
+          item.def,
+          item.event.physics,
+          item.cutoffHzOverride
+        );
+        AbletonSynthSuite.renderNoteToStereoBuffer(
+          left,
+          right,
+          startFrame,
+          noteFrames,
+          sampleRate,
+          item.freq,
+          item.durSec,
+          item.amp,
+          item.pan,
+          synthParams,
+          item.swell,
+          item.startAmp,
+          item.endAmp
+        );
+        applyItemFx(noteFrames);
+        continue;
+      }
+
+      if (
+        SamplerAndDrumRackEngine.isGranulatorPatch(item.patch) ||
+        SamplerAndDrumRackEngine.isSimplerTrack(item.style, item.patch, item.def)
+      ) {
+        SamplerAndDrumRackEngine.renderGranularOrSimplerNoteToStereo(
+          left,
+          right,
+          startFrame,
+          noteFrames,
+          sampleRate,
+          item.freq,
+          item.durSec,
+          item.amp,
+          item.pan,
+          item.def,
+          item.event,
+          item.swell,
+          item.startAmp,
+          item.endAmp
+        );
+        applyItemFx(noteFrames);
         continue;
       }
 
@@ -3040,6 +3271,17 @@ export class StudioAudioEngine {
           const vibDepth = phys?.vibrato ? 0.0065 : 0.0028;
           instFreq *= 1 + Math.sin(2 * Math.PI * 5.4 * t) * vibDepth;
         }
+        if (phys?.mpe) {
+          const mpeEval = StudioAudioEngine.evaluateMpeAtNormalizedTime(
+            phys.mpe,
+            Math.min(1, t / Math.max(0.01, item.durSec))
+          );
+          if (mpeEval.bendSemitones !== 0) {
+            instFreq *= Math.pow(2, mpeEval.bendSemitones / 12);
+          }
+          env *= mpeEval.pressureScalar;
+          swellBrightness *= 0.6 + 0.8 * mpeEval.slideNorm;
+        }
 
         ph1 += instFreq * twoPiOverSr;
         ph2 += instFreq * detuneRatio2 * twoPiOverSr;
@@ -3075,6 +3317,7 @@ export class StudioAudioEngine {
         left[startFrame + i] += sample * gainL;
         right[startFrame + i] += sample * gainR;
       }
+      applyItemFx(noteFrames);
     }
 
     // Apply rich 2.4-second Concertgebouw Hall Diffuser (6 parallel lowpass-damped combs + 2 series all-pass filters)

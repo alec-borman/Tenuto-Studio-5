@@ -1,0 +1,666 @@
+### Stage 3 Oracle Audit: Contract `TDB-721`
+
+* **Boundary & Diff Audit:** Only the 3 authorized source files (`src/parser/PitchEngine.ts`, `src/parser/DocumentParser.ts`, `src/audio/StudioAudioEngine.ts`) and 2 new files (`src/audio/synths/SamplerAndDrumRackEngine.ts`, `tests/sampler_granulator_drum_rack.test.ts`) were modified.
+* **Test & Build Integrity:** All 3 targeted test suites (`sampler_granulator_drum_rack` **5/5**, `ableton_synth_suite` **3/3**, and `pitch_engine` **3/3** — **11/11 tests**) and `vite build` passed with zero errors.
+* **Verdict:** **Approved.**
+
+---
+
+### Pre-Emptive Next Contract: `TDB-723` (Phase 8: Live 12 MIDI Transformations, Algorithmic Generators & MPE 3D Expression)
+
+*(While `TDB-722` runs, here is **`TDB-723`** ready to paste immediately after it finishes.)*
+
+```markdown
+# Implementation Contract: Ableton Live 12 MIDI Transformations, Scale-Locked Generators & MPE Per-Note Expression Engine (TDB-723)
+
+**Project:** Tenuto Studio 5
+**Scope:** Create `src/mutator/MidiTransformAndGeneratorEngine.ts` and `tests/midi_generators_and_mpe.test.tsx`, and upgrade `src/audio/StudioAudioEngine.ts`, `src/components/WebGPUCanvas.tsx`, and `src/components/SplitWorkspace.tsx` to implement Ableton Live 12's MIDI Transformations (`Arpeggiate`, `Strum`, `Connect Legato`, `Ornament`, `Humanize`), Scale-Locked Algorithmic MIDI Generators (`Stacks`, `Seed Melody`, `Euclidean Rhythm`) that write idiomatic `.ten` code directly into the score, and MPE (MIDI Polyphonic Expression) per-note 3D pitch-bend, slide, and pressure synthesis + Piano Roll curve overlays.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+**Execution Mode:** Parallel Batch Edits (Read all target files in parallel in a single turn, then apply all file edits in parallel in a single batched tool-call turn - NEVER edit files sequentially one by one).
+
+---
+
+## 1. Objective
+In `TDB-701`, `ASTSerializer.ts` added parser support for `.mpe(@{bend: [0, 12, 0], slide: [30, 110], pressure: [70, 120]})`, and `TDB-703` added 22 musical scales in `PitchEngine.ts`. However:
+1. `StudioAudioEngine.ts` does not yet evaluate `ev.physics?.mpe` to modulate per-note pitch bend (in semitones), filter slide (CC74), and aftertouch pressure during live WebAudio playback and `.wav` export.
+2. `WebGPUCanvas.tsx` lacks Ableton Live 12's **MIDI Transformations & Algorithmic Generators** toolbar (`Arpeggiate`, `Strum`, `Connect`, `Humanize`, `Gen: Stacks`, `Gen: Seed`, `Gen: Rhythm`) to transform or generate scale-locked `.ten` patterns in one click, and does not render visual MPE pitch-bend curves on MPE-enabled notes.
+
+This contract implements `MidiTransformAndGeneratorEngine.ts`, full MPE 3D synthesis in `StudioAudioEngine.ts`, and the interactive Live 12 MIDI Tools bar + MPE visual overlays in `WebGPUCanvas.tsx` and `SplitWorkspace.tsx`.
+
+---
+
+## 2. Root Cause
+1. `src/mutator/MidiTransformAndGeneratorEngine.ts` does not exist yet to transform `.ten` measures or generate scale-quantized chord stacks, melodic seeds, and Euclidean rhythms.
+2. `src/audio/StudioAudioEngine.ts` ignores `item.event.physics?.mpe` when scheduling oscillator frequencies and rendering `.wav` PCM samples.
+3. `src/components/WebGPUCanvas.tsx` does not render MPE pitch/slide trajectories or expose Live 12 MIDI Transformation and Generator triggers.
+
+---
+
+## 3. Files To Modify
+
+> **PARALLEL EXECUTION DIRECTIVE:** You MUST read all target files in a single parallel batch call, and you MUST apply all file edits below simultaneously in a single parallel tool-call turn. Do NOT apply edits sequentially one file per turn.
+
+### 3.1 `src/mutator/MidiTransformAndGeneratorEngine.ts` - Create Live 12 MIDI Transformations & Scale-Locked AST Generators
+Create `src/mutator/MidiTransformAndGeneratorEngine.ts`:
+
+```typescript
+import { quantizeMidiToScale, parseKeyRootSemitone, SCALE_INTERVALS } from '../parser/PitchEngine';
+
+export type MidiTransformType =
+  | 'arpeggiate'
+  | 'strum'
+  | 'connect_legato'
+  | 'ornament'
+  | 'humanize';
+
+export type MidiGeneratorType = 'stacks' | 'seed_melody' | 'rhythm_groove';
+
+const SHARP_NAMES = ['c', 'c#', 'd', 'd#', 'e', 'f', 'f#', 'g', 'g#', 'a', 'a#', 'b'];
+const FLAT_NAMES = ['c', 'db', 'd', 'eb', 'e', 'f', 'gb', 'g', 'ab', 'a', 'bb', 'b'];
+
+export class MidiTransformAndGeneratorEngine {
+  public static midiToNoteToken(midi: number, preferFlats: boolean = false): string {
+    const clamped = Math.max(12, Math.min(108, Math.round(midi)));
+    const octave = Math.floor(clamped / 12) - 1;
+    const step = (preferFlats ? FLAT_NAMES : SHARP_NAMES)[clamped % 12];
+    return `${step}${octave}`;
+  }
+
+  /**
+   * Returns an array of scale-locked MIDI pitches starting from `baseOctave` for `rootKey` and `scaleName`.
+   */
+  public static getScaleMidiPool(
+    rootKey: string = 'C',
+    scaleName: string = 'minor',
+    baseOctave: number = 4
+  ): number[] {
+    const { rootSemitone, inferredScale } = parseKeyRootSemitone(rootKey);
+    const normScale = (scaleName || inferredScale || 'minor')
+      .toLowerCase()
+      .replace(/[\s-]+/g, '_');
+    const intervals =
+      normScale === 'chromatic'
+        ? [0, 2, 3, 5, 7, 8, 10]
+        : SCALE_INTERVALS[normScale] || SCALE_INTERVALS.minor;
+
+    const baseRootMidi = (baseOctave + 1) * 12 + rootSemitone;
+    const pool: number[] = [];
+    for (let oct = 0; oct < 2; oct++) {
+      for (const semi of intervals) {
+        pool.push(quantizeMidiToScale(baseRootMidi + oct * 12 + semi, rootKey, normScale));
+      }
+    }
+    return pool;
+  }
+
+  /**
+   * Generates a complete 4/4 `.ten` token line for `trackId` using Ableton Live 12's
+   * Algorithmic Generators (`'stacks'`, `'seed_melody'`, or `'rhythm_groove'`).
+   */
+  public static generateScaleLockedPattern(
+    generatorType: MidiGeneratorType,
+    rootKey: string = 'C',
+    scaleName: string = 'minor',
+    isGridTrack: boolean = false
+  ): string {
+    const preferFlats = ['F', 'Bb', 'Eb', 'Ab', 'Db', 'Gb'].includes(rootKey);
+    const scalePool = MidiTransformAndGeneratorEngine.getScaleMidiPool(rootKey, scaleName, 3);
+    const n = (degIdx: number) =>
+      MidiTransformAndGeneratorEngine.midiToNoteToken(
+        scalePool[degIdx % scalePool.length],
+        preferFlats
+      );
+
+    if (generatorType === 'rhythm_groove' || isGridTrack) {
+      if (isGridTrack) {
+        return `<[ v1: (k):3/8 | v2: r:4 s:4 r:4 s:4 | v3: h:16.vel_range(65, 110) * 16 ]>`;
+      }
+      // Syncopated octave bass rhythm in key
+      return `${n(0)}:8.stacc ${n(7)}:8 ${n(0)}:8.stacc ${n(4)}:8 ${n(5)}:8.stacc ${n(12)}:8 ${n(4)}:8 ${n(6)}:8 |`;
+    }
+
+    if (generatorType === 'stacks') {
+      // Lush Live 12 'Stacks' diatonic 9th/add11 chord progression (2 half-note stacks = 4 beats)
+      const chord1 = `[${n(0)} ${n(2)} ${n(4)} ${n(6)} ${n(8)}]:2.arp.ped.mf`;
+      const chord2 = `[${n(3)} ${n(5)} ${n(7)} ${n(9)} ${n(11)}]:2.arp.ped.f`;
+      return `${chord1} ${chord2} |`;
+    }
+
+    // 'seed_melody': Expressive scale-locked melodic motif with MPE & articulation (4 beats total)
+    const leadPool = MidiTransformAndGeneratorEngine.getScaleMidiPool(rootKey, scaleName, 4);
+    const ln = (degIdx: number) =>
+      MidiTransformAndGeneratorEngine.midiToNoteToken(
+        leadPool[degIdx % leadPool.length],
+        preferFlats
+      );
+
+    return `${ln(0)}:8.legato ${ln(2)}:8.legato ${ln(4)}:4.vib ${ln(6)}:8.legato ${ln(5)}:8.legato ${ln(4)}:4.mpe(@{bend: [0, 2, 0], slide: [40, 110], pressure: [70, 115]}) |`;
+  }
+
+  /**
+   * Applies an Ableton Live 12 MIDI Transformation (`arpeggiate`, `strum`, `connect_legato`,
+   * `ornament`, `humanize`) surgically to `.ten` source code while preserving comments.
+   */
+  public static applyTransformToSource(
+    sourceCode: string,
+    transformType: MidiTransformType,
+    targetTrackId?: string | null
+  ): string {
+    if (!sourceCode.trim()) return sourceCode;
+
+    if (transformType === 'strum') {
+      // Append `.arp` to any chord `[...]:dur` that does not already have `.arp`
+      return sourceCode.replace(
+        /(\[[^\]]+\]:[0-9./]+(?:\.[a-zA-Z0-9_(),@{}\s":%-]+)*)(?!\.arp)/g,
+        (match) => (match.includes('.arp') ? match : `${match}.arp`)
+      );
+    }
+
+    if (transformType === 'connect_legato') {
+      // Append `.legato` to melodic note tokens on the target track (or across measures)
+      return sourceCode.replace(
+        /\b([a-gA-G][#b]*[0-9]+:[0-9]+)(?!\.(?:legato|stacc|pizz))/g,
+        '$1.legato'
+      );
+    }
+
+    if (transformType === 'ornament') {
+      // Add `.vib` to half/whole notes (`:2` or `:1`) and `.mordent` to quarter notes (`:4`)
+      const withVib = sourceCode.replace(
+        /\b([a-gA-G][#b]*[0-9]+:[12]\.?)(?!\.vib)/g,
+        '$1.vib'
+      );
+      return withVib.replace(
+        /\b([a-gA-G][#b]*[0-9]+:4)(?!\.(?:mordent|vib))/g,
+        '$1.mordent'
+      );
+    }
+
+    if (transformType === 'humanize') {
+      // Attach `.vel_range(68, 108)` to notes lacking `.vel_range`
+      return sourceCode.replace(
+        /\b([a-gA-G][#b]*[0-9]+:[0-9.]+)(?!\.vel_range)/g,
+        '$1.vel_range(68, 108)'
+      );
+    }
+
+    if (transformType === 'arpeggiate') {
+      // Expand chords `[n1 n2 n3 ...]:2` or `:1` into 16th-note arpeggio runs of equal total duration
+      return sourceCode.replace(
+        /\[([^\]]+)\]:(1|2|4)\b/g,
+        (fullMatch, innerNotes: string, durStr: string) => {
+          const notes = innerNotes.trim().split(/\s+/).filter(Boolean);
+          if (notes.length < 2) return fullMatch;
+          const totalSixteenths = durStr === '1' ? 16 : durStr === '2' ? 8 : 4;
+          const arpTokens: string[] = [];
+          for (let i = 0; i < totalSixteenths; i++) {
+            const pitch = notes[i % notes.length];
+            arpTokens.push(i === 0 ? `${pitch}:16` : pitch);
+          }
+          return arpTokens.join(' ');
+        }
+      );
+    }
+
+    void targetTrackId;
+    return sourceCode;
+  }
+
+  /**
+   * Injects a newly generated scale-locked measure pattern into `sourceCode` for `trackId`.
+   */
+  public static injectGeneratedPatternIntoSource(
+    sourceCode: string,
+    generatorType: MidiGeneratorType,
+    trackId: string = 'pno',
+    rootKey: string = 'C',
+    scaleName: string = 'minor',
+    isGridTrack: boolean = false
+  ): string {
+    const pattern = MidiTransformAndGeneratorEngine.generateScaleLockedPattern(
+      generatorType,
+      rootKey,
+      scaleName,
+      isGridTrack
+    );
+
+    if (/\btenuto\b/i.test(sourceCode) || /\bmeasure\s+\d+/i.test(sourceCode)) {
+      const measureMatches = Array.from(sourceCode.matchAll(/\bmeasure\s+(\d+)/gi));
+      const maxMeasure = measureMatches.reduce(
+        (maxM, m) => Math.max(maxM, parseInt(m[1], 10) || 1),
+        0
+      );
+      const nextMeasureNum = maxMeasure + 1;
+      const newBlock = `\n  measure ${nextMeasureNum} {\n    ${trackId}: ${pattern}\n  }\n`;
+      const lastBrace = sourceCode.lastIndexOf('}');
+      if (lastBrace !== -1) {
+        return sourceCode.slice(0, lastBrace) + newBlock + sourceCode.slice(lastBrace);
+      }
+      return `${sourceCode}\n${newBlock}`;
+    }
+
+    return `${trackId}: ${pattern.replace(/\|$/, '').trim()}`;
+  }
+}
+
+```
+
+### 3.2 `src/audio/StudioAudioEngine.ts` - Synthesize Per-Note MPE (`bend`, `slide`, `pressure`) Envelopes in WebAudio & WAV Export
+
+In `src/audio/StudioAudioEngine.ts`:
+
+1. Add a static helper `evaluateMpeAtNormalizedTime` on `StudioAudioEngine` (right above `buildScheduledTimeline`):
+
+```typescript
+  /**
+   * Evaluates a note's MPE (MIDI Polyphonic Expression) `bend` (semitones), `slide` (0..127),
+   * and `pressure` (0..127) breakpoint arrays at normalized note progress `u` in `[0, 1]`.
+   */
+  public static evaluateMpeAtNormalizedTime(
+    mpe: { bend?: number[]; slide?: number[]; pressure?: number[] } | undefined,
+    u: number
+  ): { bendSemitones: number; slideNorm: number; pressureScalar: number } {
+    if (!mpe) {
+      return { bendSemitones: 0, slideNorm: 0.5, pressureScalar: 1.0 };
+    }
+
+    const interpArray = (arr: number[] | undefined, fallback: number): number => {
+      if (!arr || arr.length === 0) return fallback;
+      if (arr.length === 1) return arr[0];
+      const clampedU = Math.max(0, Math.min(1, u));
+      const scaled = clampedU * (arr.length - 1);
+      const idx0 = Math.floor(scaled);
+      const idx1 = Math.min(arr.length - 1, idx0 + 1);
+      const frac = scaled - idx0;
+      return arr[idx0] + (arr[idx1] - arr[idx0]) * frac;
+    };
+
+    const bendSemitones = Math.max(-24, Math.min(24, interpArray(mpe.bend, 0)));
+    const slideRaw = Math.max(0, Math.min(127, interpArray(mpe.slide, 64)));
+    const pressureRaw = Math.max(0, Math.min(127, interpArray(mpe.pressure, 90)));
+
+    return {
+      bendSemitones,
+      slideNorm: slideRaw / 127,
+      pressureScalar: 0.5 + 0.65 * (pressureRaw / 127),
+    };
+  }
+
+```
+
+2. In `applyPitchOrnamentsToOscillator` in `src/audio/StudioAudioEngine.ts`, schedule MPE `bend` pitch ramps on `osc.frequency` when `physics?.mpe?.bend` has breakpoints:
+
+```typescript
+    if (physics?.mpe?.bend && physics.mpe.bend.length > 0 && durSec >= 0.05) {
+      const bendArr = physics.mpe.bend;
+      if (bendArr.length === 1) {
+        const bentFreq = baseFreq * Math.pow(2, bendArr[0] / 12);
+        osc.frequency.setValueAtTime(bentFreq, startSec);
+      } else {
+        const segDur = durSec / (bendArr.length - 1);
+        for (let bIdx = 0; bIdx < bendArr.length; bIdx++) {
+          const bentFreq = Math.max(20, Math.min(14000, baseFreq * Math.pow(2, bendArr[bIdx] / 12)));
+          const tPoint = startSec + bIdx * segDur;
+          if (bIdx === 0) {
+            osc.frequency.setValueAtTime(bentFreq, tPoint);
+          } else {
+            osc.frequency.linearRampToValueAtTime(bentFreq, tPoint);
+          }
+        }
+      }
+    }
+
+```
+
+3. In `exportWavBlob` in `src/audio/StudioAudioEngine.ts`, inside the fallback synthesis loop (where `let instFreq = item.freq;` is computed per sample), apply `StudioAudioEngine.evaluateMpeAtNormalizedTime(phys?.mpe, Math.min(1, t / Math.max(0.01, item.durSec)))` when `phys?.mpe` is present so exported `.wav` files render smooth per-note MPE pitch bends, filter slide brightness, and pressure expression:
+
+```typescript
+        if (phys?.mpe) {
+          const mpeEval = StudioAudioEngine.evaluateMpeAtNormalizedTime(
+            phys.mpe,
+            Math.min(1, t / Math.max(0.01, item.durSec))
+          );
+          if (mpeEval.bendSemitones !== 0) {
+            instFreq *= Math.pow(2, mpeEval.bendSemitones / 12);
+          }
+          env *= mpeEval.pressureScalar;
+          swellBrightness *= 0.6 + 0.8 * mpeEval.slideNorm;
+        }
+
+```
+
+### 3.3 `src/components/WebGPUCanvas.tsx` - Add Live 12 MIDI Transform & Generate Toolbar + MPE Curve Overlay
+
+In `src/components/WebGPUCanvas.tsx`:
+
+> **CRITICAL TEST CONSTRAINT:** Never use the word `"Play"` in any button text or `aria-label` in `WebGPUCanvas.tsx`.
+
+1. Import `MidiTransformType, MidiGeneratorType` from `../mutator/MidiTransformAndGeneratorEngine`:
+
+```typescript
+import { MidiTransformType, MidiGeneratorType } from '../mutator/MidiTransformAndGeneratorEngine';
+
+```
+
+2. Add optional props `onApplyMidiTransform?: (transform: MidiTransformType, trackId?: string | null) => void;` and `onGenerateMidiPattern?: (generator: MidiGeneratorType, trackId?: string | null) => void;` to `WebGPUCanvas`.
+3. Add state `const [isMidiToolsOpen, setIsMidiToolsOpen] = useState<boolean>(false);` right below `const [isClipEnvelopeOpen, setIsClipEnvelopeOpen] = useState<boolean>(false);`.
+4. In the top-right toolbar of `WebGPUCanvas.tsx` (right next to the `Clip Env` button), add a **`MIDI Tools`** toggle button (`aria-label="Toggle MIDI Tools"`):
+
+```tsx
+          <div className="w-px h-3.5 bg-slate-800 mx-0.5" />
+          <button
+            type="button"
+            aria-label="Toggle MIDI Tools"
+            onClick={() => setIsMidiToolsOpen((prev) => !prev)}
+            className={`px-1.5 py-0.5 text-[11px] font-mono font-semibold rounded cursor-pointer ${
+              isMidiToolsOpen
+                ? 'bg-purple-600 text-white'
+                : 'text-purple-400 hover:text-purple-300'
+            }`}
+            title="Show/Hide Ableton Live 12 MIDI Transformations & Generators"
+          >
+            MIDI Tools
+          </button>
+
+```
+
+5. Immediately below the top toolbar `div` in `WebGPUCanvas.tsx`, when `isMidiToolsOpen` is true, render the **Live 12 MIDI Transformations & Scale-Locked Generators Bar** (`data-testid="midi-tools-bar"`):
+
+```tsx
+      {isMidiToolsOpen && (
+        <div
+          data-testid="midi-tools-bar"
+          className="bg-slate-900 border-b border-slate-800 px-3 py-1.5 flex items-center justify-between gap-2 flex-wrap text-[10px] font-mono shrink-0 z-10"
+        >
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-purple-300 font-bold uppercase tracking-wider mr-1">
+              Transform:
+            </span>
+            {(
+              [
+                { id: 'arpeggiate', label: 'Arpeggiate' },
+                { id: 'strum', label: 'Strum (.arp)' },
+                { id: 'connect_legato', label: 'Connect (.legato)' },
+                { id: 'ornament', label: 'Ornament (.vib)' },
+                { id: 'humanize', label: 'Humanize Vel' },
+              ] as const
+            ).map((tr) => (
+              <button
+                key={tr.id}
+                type="button"
+                aria-label={`MIDI Transform ${tr.label}`}
+                onClick={() => onApplyMidiTransform?.(tr.id, selectedTrackId)}
+                className="px-2 py-0.5 rounded bg-slate-950 hover:bg-purple-600/30 border border-slate-800 hover:border-purple-500/50 text-slate-300 hover:text-white cursor-pointer transition-colors"
+              >
+                {tr.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-emerald-300 font-bold uppercase tracking-wider mr-1">
+              Generate ({rootKey || 'C'} {scaleName || 'minor'}):
+            </span>
+            {(
+              [
+                { id: 'stacks', label: '+ Gen Stacks' },
+                { id: 'seed_melody', label: '+ Gen Seed Melody' },
+                { id: 'rhythm_groove', label: '+ Gen Rhythm' },
+              ] as const
+            ).map((gen) => (
+              <button
+                key={gen.id}
+                type="button"
+                aria-label={`MIDI Generator ${gen.label}`}
+                onClick={() => onGenerateMidiPattern?.(gen.id, selectedTrackId)}
+                className="px-2 py-0.5 rounded bg-emerald-950/60 hover:bg-emerald-600/35 border border-emerald-500/40 text-emerald-300 cursor-pointer font-semibold transition-colors"
+              >
+                {gen.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+```
+
+6. Inside `visibleEvents.map((ev, idx) => ...)` in `WebGPUCanvas.tsx`, when `ev.physics?.mpe` is present on a note block, render a glowing cyan MPE pitch-bend trajectory polyline across the note block (`data-testid={`mpe-curve-${idx}`}`):
+
+```tsx
+              {ev.physics?.mpe && w > 12 && (
+                <polyline
+                  data-testid={`mpe-curve-${idx}`}
+                  fill="none"
+                  stroke="#22D3EE"
+                  strokeWidth={1.8}
+                  points={`${x + 2},${y + noteH * 0.7} ${x + w * 0.5},${y + noteH * 0.2} ${x + w - 2},${y + noteH * 0.65}`}
+                  className="pointer-events-none"
+                />
+              )}
+
+```
+
+### 3.4 `src/components/SplitWorkspace.tsx` - Wire `handleApplyMidiTransform` & `handleGenerateMidiPattern`
+
+In `src/components/SplitWorkspace.tsx`:
+
+1. Import `MidiTransformAndGeneratorEngine, MidiTransformType, MidiGeneratorType` from `../mutator/MidiTransformAndGeneratorEngine`:
+
+```typescript
+import {
+  MidiTransformAndGeneratorEngine,
+  MidiTransformType,
+  MidiGeneratorType,
+} from '../mutator/MidiTransformAndGeneratorEngine';
+
+```
+
+2. Add handlers `handleApplyMidiTransform` and `handleGenerateMidiPattern` in `SplitWorkspace.tsx`:
+
+```typescript
+  const handleApplyMidiTransform = (transform: MidiTransformType, targetTrackId?: string | null) => {
+    const nextCode = MidiTransformAndGeneratorEngine.applyTransformToSource(
+      sourceCode,
+      transform,
+      targetTrackId
+    );
+    if (nextCode !== sourceCode) {
+      handleCodeEdit(nextCode);
+    }
+  };
+
+  const handleGenerateMidiPattern = (generator: MidiGeneratorType, targetTrackId?: string | null) => {
+    const activeTrack =
+      targetTrackId || compiledScoreState?.defs?.[0]?.id || 'pno';
+    const trackDef = (compiledScoreState?.defs || []).find((d: any) => d.id === activeTrack);
+    const isGrid = trackDef?.style === 'grid';
+    const nextCode = MidiTransformAndGeneratorEngine.injectGeneratedPatternIntoSource(
+      sourceCode,
+      generator,
+      activeTrack,
+      scoreMeta.key || 'C',
+      scoreMeta.scale || 'minor',
+      isGrid
+    );
+    if (nextCode !== sourceCode) {
+      handleCodeEdit(nextCode);
+    }
+  };
+
+```
+
+3. Pass `onApplyMidiTransform={handleApplyMidiTransform}` and `onGenerateMidiPattern={handleGenerateMidiPattern}` to `<WebGPUCanvas />` in `SplitWorkspace.tsx`.
+
+### 3.5 `tests/midi_generators_and_mpe.test.tsx` - Create Verification Suite for MIDI Transformations, Generators & MPE Expression
+
+Create `tests/midi_generators_and_mpe.test.tsx`:
+
+```typescript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { MidiTransformAndGeneratorEngine } from '../src/mutator/MidiTransformAndGeneratorEngine';
+import { StudioAudioEngine } from '../src/audio/StudioAudioEngine';
+import { DocumentParser } from '../src/parser/DocumentParser';
+import WebGPUCanvas from '../src/components/WebGPUCanvas';
+import '@testing-library/jest-dom';
+
+HTMLCanvasElement.prototype.getContext = vi.fn();
+
+describe('TDB-723: Ableton Live 12 MIDI Transformations, Scale-Locked Generators & MPE Expression', () => {
+  it('applies Live 12 Arpeggiate, Strum, Connect Legato, Ornament, and Humanize transformations to .ten code', () => {
+    const chordSource = 'pno: [c4 e4 g4 b4]:2';
+    const arpeggiated = MidiTransformAndGeneratorEngine.applyTransformToSource(
+      chordSource,
+      'arpeggiate'
+    );
+    expect(arpeggiated).toBe('pno: c4:16 e4 g4 b4 c4 e4 g4 b4');
+
+    const strummed = MidiTransformAndGeneratorEngine.applyTransformToSource(chordSource, 'strum');
+    expect(strummed).toBe('pno: [c4 e4 g4 b4]:2.arp');
+
+    const melodySource = 'lead: c4:4 d4:4 e4:2';
+    const connected = MidiTransformAndGeneratorEngine.applyTransformToSource(
+      melodySource,
+      'connect_legato'
+    );
+    expect(connected).toContain('c4:4.legato');
+    expect(connected).toContain('d4:4.legato');
+
+    const ornamented = MidiTransformAndGeneratorEngine.applyTransformToSource(
+      melodySource,
+      'ornament'
+    );
+    expect(ornamented).toContain('c4:4.mordent');
+    expect(ornamented).toContain('e4:2.vib');
+  });
+
+  it('generates valid scale-locked Stacks, Seed Melody, and Rhythm patterns that compile cleanly', () => {
+    const parser = new DocumentParser();
+    for (const genType of ['stacks', 'seed_melody', 'rhythm_groove'] as const) {
+      const injected = MidiTransformAndGeneratorEngine.injectGeneratedPatternIntoSource(
+        `tenuto "6.0" {\n  meta @{ title: "Gen Test", tempo: 120, time: "4/4", key: "D", scale: "harmonic_minor" }\n  def lead "Lead" style=synth patch="wavetable"\n  measure 1 { lead: d4:1 | }\n}`,
+        genType,
+        'lead',
+        'D',
+        'harmonic_minor'
+      );
+      expect(injected).toContain('measure 2');
+      const compiled = parser.compile(injected);
+      expect(compiled.events.length).toBeGreaterThan(2);
+    }
+  });
+
+  it('evaluates 3D MPE bend, slide, and pressure envelopes and renders MPE curves and MIDI Tools bar in WebGPUCanvas', async () => {
+    const mpeSpec = { bend: [0, 12, 0], slide: [20, 120], pressure: [50, 127] };
+    const startEval = StudioAudioEngine.evaluateMpeAtNormalizedTime(mpeSpec, 0.0);
+    const midEval = StudioAudioEngine.evaluateMpeAtNormalizedTime(mpeSpec, 0.5);
+    const endEval = StudioAudioEngine.evaluateMpeAtNormalizedTime(mpeSpec, 1.0);
+
+    expect(startEval.bendSemitones).toBeCloseTo(0, 3);
+    expect(midEval.bendSemitones).toBeCloseTo(12, 3);
+    expect(endEval.bendSemitones).toBeCloseTo(0, 3);
+    expect(endEval.slideNorm).toBeGreaterThan(startEval.slideNorm);
+    expect(endEval.pressureScalar).toBeGreaterThan(startEval.pressureScalar);
+
+    const parser = new DocumentParser();
+    const score = parser.compile(
+      'lead: d5:2.mpe(@{bend: [0, 12, 0], slide: [30, 110], pressure: [70, 120]}) f5:2'
+    );
+
+    const onApplyMidiTransform = vi.fn();
+    const onGenerateMidiPattern = vi.fn();
+
+    render(
+      <WebGPUCanvas events="{score.events}" onApplyMidiTransform="{onApplyMidiTransform}" onGenerateMidiPattern="{onGenerateMidiPattern}" rootKey="D" scaleName="harmonic_minor"/>
+    );
+
+    // MPE curve overlay is rendered on the first note
+    expect(screen.getByTestId('mpe-curve-0')).toBeInTheDocument();
+
+    // Open MIDI Tools toolbar and trigger Transform + Generator
+    fireEvent.click(screen.getByRole('button', { name: /Toggle MIDI Tools/i }));
+    expect(screen.getByTestId('midi-tools-bar')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /MIDI Transform Arpeggiate/i }));
+    expect(onApplyMidiTransform).toHaveBeenCalledWith('arpeggiate', null);
+
+    fireEvent.click(screen.getByRole('button', { name: /MIDI Generator \+ Gen Stacks/i }));
+    expect(onGenerateMidiPattern).toHaveBeenCalledWith('stacks', null);
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/`
+* `src/components/Transport.tsx`, `src/components/Mixer.tsx`, `src/components/DeviceChainDock.tsx`, `src/components/Inspector.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero new TypeScript errors.
+2. `npx vitest run tests/midi_generators_and_mpe.test.tsx tests/webgpu_object_pooling.test.tsx tests/webgpu_render_pipeline.test.tsx` passes 100%.
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. Clicking `MIDI Tools` in the Piano Roll reveals one-click Live 12 MIDI Transformations (`Arpeggiate`, `Strum`, `Connect`, `Ornament`, `Humanize`) and Scale-Locked Generators (`+ Gen Stacks`, `+ Gen Seed Melody`, `+ Gen Rhythm`), and notes with `.mpe(...)` render cyan MPE pitch-bend curves and synthesize 3D pitch/slide/pressure modulation.
+
+---
+
+## 6. Constraints
+
+Must:
+
+* Batch all file reads in parallel and apply all file modifications in parallel in a single turn.
+
+Must not:
+
+* Edit files sequentially one by one across separate turns.
+* Use the word `"Play"` in any new button text or `aria-label`.
+
+---
+
+## 7. Manual Steps
+
+None required.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or remove `src/mutator/MidiTransformAndGeneratorEngine.ts` and `tests/midi_generators_and_mpe.test.tsx`, and restore `src/audio/StudioAudioEngine.ts`, `src/components/WebGPUCanvas.tsx`, and `src/components/SplitWorkspace.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `src/mutator/MidiTransformAndGeneratorEngine.ts`, `tests/midi_generators_and_mpe.test.tsx`
+* Modified file(s): `src/audio/StudioAudioEngine.ts`, `src/components/WebGPUCanvas.tsx`, `src/components/SplitWorkspace.tsx`
+* Commit message: `feat(midi-mpe): add Live 12 MIDI Transformations, scale-locked Generators, and MPE per-note expression`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Live 12 MIDI Transformations** | Required manually rewriting chords and note modifiers in text | Clicking `MIDI Tools` in the Piano Roll provides 1-click `Arpeggiate`, `Strum (.arp)`, `Connect (.legato)`, `Ornament (.vib)`, and `Humanize Vel` |
+| **Live 12 Algorithmic Generators** | No built-in pattern generators | One-click `+ Gen Stacks`, `+ Gen Seed Melody`, and `+ Gen Rhythm` generate scale-locked `.ten` measures in the project's active Key and Scale |
+| **MPE 3D Per-Note Expression (`.mpe()`)** | Parsed in AST but not synthesized or visualized | Modulates per-note pitch bend, filter slide, and pressure in audio synthesis and draws cyan MPE trajectories on Piano Roll note blocks |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-25
+Implementer: AI Agent
+
+```
+
+```

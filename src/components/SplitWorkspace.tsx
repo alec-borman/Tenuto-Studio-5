@@ -6,6 +6,7 @@ import CodeEditor from './CodeEditor';
 import Transport, { MainStudioView, BottomDockTab } from './Transport';
 import SessionView from './SessionView';
 import ArrangementView from './ArrangementView';
+import DeviceChainDock from './DeviceChainDock';
 import { CommandManager } from '../commands/CommandManager';
 import { ASTCommand } from '../commands/ASTCommand';
 import { AudioContextManager } from '../audio/AudioContextManager';
@@ -16,6 +17,11 @@ import { IncrementalCompiler } from '../parser/IncrementalCompiler';
 import { TopologicalMutator } from '../mutator/TopologicalMutator';
 import { StudioAudioEngine } from '../audio/StudioAudioEngine';
 import { MetronomeAndCaptureEngine } from '../audio/MetronomeAndCaptureEngine';
+import {
+  MidiTransformAndGeneratorEngine,
+  MidiTransformType,
+  MidiGeneratorType,
+} from '../mutator/MidiTransformAndGeneratorEngine';
 
 export default function SplitWorkspace() {
   const [sourceCode, setSourceCode] = useState<string>('pno: c4:4');
@@ -30,6 +36,7 @@ export default function SplitWorkspace() {
   const [compiledScoreState, setCompiledScoreState] = useState<any>(null);
   const [activeClipsByTrack, setActiveClipsByTrack] = useState<Record<string, string>>({});
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  const [deviceDockTrackId, setDeviceDockTrackId] = useState<string | null>(null);
   const [mutedTracks, setMutedTracks] = useState<string[]>([]);
   const [soloedTracks, setSoloedTracks] = useState<string[]>([]);
   const [armedTracks, setArmedTracks] = useState<string[]>([]);
@@ -518,10 +525,25 @@ export default function SplitWorkspace() {
   const handleInspectorUpdate = (updates: any) => {
     if (!activeSelection || !activeSelection.rawToken) return;
     try {
-      const mutatedToken = topologicalMutator.mutateTokenModifiers(activeSelection.rawToken, {
-        duration: updates.duration,
-        velocity: updates.velocity,
-      });
+      let mutatedToken = activeSelection.rawToken;
+      if (typeof updates.transposeSemitones === 'number' && updates.transposeSemitones !== 0) {
+        mutatedToken = topologicalMutator.transposePitch(
+          mutatedToken,
+          updates.transposeSemitones
+        );
+      } else {
+        mutatedToken = topologicalMutator.mutateTokenModifiers(mutatedToken, {
+          duration: updates.duration,
+          velocity: updates.velocity,
+          pan: updates.pan,
+          chance: updates.chance,
+          articulation: updates.articulation,
+          lyric: updates.lyric,
+          swell: updates.swell,
+          ornament: updates.ornament as any,
+          pullMs: updates.pullMs,
+        });
+      }
       const nextCode = topologicalMutator.replaceEventInSource(sourceCode, activeSelection, mutatedToken);
       const prevCode = sourceCode;
       const nextSelection = {
@@ -564,6 +586,35 @@ export default function SplitWorkspace() {
       param,
       values,
       curve
+    );
+    if (nextCode !== sourceCode) {
+      handleCodeEdit(nextCode);
+    }
+  };
+
+  const handleApplyMidiTransform = (transform: MidiTransformType, targetTrackId?: string | null) => {
+    const nextCode = MidiTransformAndGeneratorEngine.applyTransformToSource(
+      sourceCode,
+      transform,
+      targetTrackId
+    );
+    if (nextCode !== sourceCode) {
+      handleCodeEdit(nextCode);
+    }
+  };
+
+  const handleGenerateMidiPattern = (generator: MidiGeneratorType, targetTrackId?: string | null) => {
+    const activeTrack =
+      targetTrackId || compiledScoreState?.defs?.[0]?.id || 'pno';
+    const trackDef = (compiledScoreState?.defs || []).find((d: any) => d.id === activeTrack);
+    const isGrid = trackDef?.style === 'grid';
+    const nextCode = MidiTransformAndGeneratorEngine.injectGeneratedPatternIntoSource(
+      sourceCode,
+      generator,
+      activeTrack,
+      scoreMeta.key || 'C',
+      scoreMeta.scale || 'minor',
+      isGrid
     );
     if (nextCode !== sourceCode) {
       handleCodeEdit(nextCode);
@@ -706,6 +757,8 @@ export default function SplitWorkspace() {
                 scaleName={scoreMeta.scale}
                 automationLanes={compiledScoreState?.automationLanes || []}
                 onCommitAutomation={handleCommitAutomation}
+                onApplyMidiTransform={handleApplyMidiTransform}
+                onGenerateMidiPattern={handleGenerateMidiPattern}
               />
             </div>
 
@@ -770,11 +823,31 @@ export default function SplitWorkspace() {
             activeBottomDock === 'inspector' ? 'flex w-full h-full' : activeBottomDock ? 'hidden' : ''
           }
         >
-          <Inspector selection={activeSelection} onUpdate={handleInspectorUpdate} />
+          <Inspector
+            selection={activeSelection}
+            onUpdate={handleInspectorUpdate}
+            score={compiledScoreState}
+            onSelectEventFromInspector={setActiveSelection}
+            onUpdateScoreMeta={(key, val) =>
+              handleUpdateAST({ mutationType: 'META_UPDATE', metaKey: key, metaValue: val })
+            }
+          />
         </div>
         <div
           className={
-            activeBottomDock === 'mixer' || activeBottomDock === 'devices'
+            activeBottomDock === 'devices' ? 'flex w-full h-full' : 'hidden'
+          }
+        >
+          <DeviceChainDock
+            score={compiledScoreState}
+            selectedTrackId={deviceDockTrackId}
+            onSelectTrack={setDeviceDockTrackId}
+            onUpdateAST={handleUpdateAST}
+          />
+        </div>
+        <div
+          className={
+            activeBottomDock === 'mixer'
               ? 'flex w-full h-full'
               : activeBottomDock
                 ? 'hidden'
@@ -789,6 +862,10 @@ export default function SplitWorkspace() {
             onToggleArm={handleToggleTrackArm}
             onToggleGroupMute={handleToggleGroupMute}
             onToggleGroupSolo={handleToggleGroupSolo}
+            onInspectTrackDevices={(trackId) => {
+              setDeviceDockTrackId(trackId);
+              setActiveBottomDock('devices');
+            }}
           />
         </div>
       </div>

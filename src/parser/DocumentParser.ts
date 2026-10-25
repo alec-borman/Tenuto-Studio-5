@@ -253,6 +253,24 @@ export class DocumentParser {
     return { fxNames, fxChain };
   }
 
+  private parseSliceMapAttribute(attrStr: string): Record<string, [number, number]> | undefined {
+    const mapMatch = attrStr.match(/\bmap\s*=\s*@\{([^}]*)\}/i);
+    if (!mapMatch) return undefined;
+    const body = mapMatch[1];
+    const mapOut: Record<string, [number, number]> = {};
+    const entryRegex = /([a-zA-Z0-9_]+)\s*:\s*\[\s*([0-9.]+)(?:ms|s)?\s*,\s*([0-9.]+)(?:ms|s)?\s*\]/g;
+    let m: RegExpExecArray | null;
+    while ((m = entryRegex.exec(body)) !== null) {
+      const key = m[1].trim().toLowerCase();
+      const startVal = parseFloat(m[2]);
+      const endVal = parseFloat(m[3]);
+      if (Number.isFinite(startVal) && Number.isFinite(endVal)) {
+        mapOut[key] = [startVal, endVal];
+      }
+    }
+    return Object.keys(mapOut).length > 0 ? mapOut : undefined;
+  }
+
   private parseFollowActionDict(dict: Record<string, any>): FollowActionConfig {
     const bars = typeof dict.bars === 'number' ? dict.bars : typeof dict.after === 'number' ? dict.after : 4;
     const actionA = String(dict.actionA || dict.action || 'next').toLowerCase();
@@ -930,6 +948,8 @@ export class DocumentParser {
             ? (crossfadeRaw as 'A' | 'B' | 'OFF')
             : undefined;
 
+        const sliceMap = this.parseSliceMapAttribute(attrStr);
+
         defsMap.set(id, {
           id,
           name,
@@ -948,6 +968,7 @@ export class DocumentParser {
           macros: trackMacros,
           env,
           src: srcMatch ? srcMatch[1] : undefined,
+          map: sliceMap,
         });
       }
     }

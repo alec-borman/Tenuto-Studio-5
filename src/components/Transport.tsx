@@ -68,13 +68,13 @@ export default function Transport({
   const measureNum = Math.floor(currentBeat / 4) + 1;
   const beatInMeasure = Math.floor(currentBeat % 4) + 1;
   const hasSecondTier = Boolean(
-    onMainViewChange || onToggleBottomDock || onToggleCodeVisible
+    onMainViewChange || onToggleBottomDock || onToggleCodeVisible || onKeyScaleChange
   );
 
   return (
     <header className="w-full bg-slate-900 border-b border-slate-800 flex flex-col shrink-0 shadow-lg z-20 relative select-none">
-      {/* Tier 1: Primary Transport, Score Status Pill, Master Volume & WAV Export */}
-      <div className="min-h-12 w-full px-3 py-1.5 flex items-center justify-between gap-2 flex-wrap">
+      {/* Tier 1: Single-Line Studio Control Bar (Brand, Transport, Clock, Master Volume & Export WAV) */}
+      <div className="h-11 w-full px-3 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
         {/* Left: Brand & Demo Score Selector */}
         <div className="flex items-center gap-2.5 shrink-0">
           <div className="font-ui text-xs font-semibold tracking-wider text-slate-200 flex items-center whitespace-nowrap">
@@ -90,7 +90,7 @@ export default function Transport({
                 const preset = PRESET_SCORES.find((p) => p.id === e.target.value);
                 if (preset) onSelectPreset(preset.code);
               }}
-              className="bg-slate-950 border border-slate-700 hover:border-slate-600 text-slate-300 text-xs rounded-md px-2 py-1 outline-none focus:border-blue-500 transition-colors max-w-[210px] truncate cursor-pointer"
+              className="bg-slate-950 border border-slate-700 hover:border-slate-600 text-slate-300 text-xs rounded-md px-2 py-1 outline-none focus:border-blue-500 transition-colors max-w-[200px] truncate cursor-pointer"
             >
               <option value="" disabled>
                 Load Demo Score...
@@ -104,14 +104,14 @@ export default function Transport({
           )}
         </div>
 
-        {/* Center: Transport Action Buttons & Live Score Status Readout */}
-        <div className="flex items-center gap-1.5 flex-wrap">
+        {/* Center: Transport Action Buttons & Compact Clock Readout */}
+        <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
             onClick={onTogglePlay}
             className={`${
               isPlaying ? 'bg-amber-600 hover:bg-amber-500' : 'bg-blue-600 hover:bg-blue-500'
-            } transition-colors shadow-md text-white font-bold py-1 px-5 rounded-md text-xs uppercase tracking-wider cursor-pointer whitespace-nowrap shrink-0`}
+            } transition-colors shadow-md text-white font-bold py-1 px-4 rounded-md text-xs uppercase tracking-wider cursor-pointer whitespace-nowrap shrink-0`}
           >
             {isPlaying ? 'Pause' : 'Play'}
           </button>
@@ -195,48 +195,18 @@ export default function Transport({
             </button>
           )}
 
-          {/* Compact Score Status Readout Pill */}
+          {/* Compact Clock & Tempo Pill */}
           <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-md px-2.5 py-1 text-xs font-mono whitespace-nowrap shrink-0">
-            <span className="text-slate-300 truncate max-w-[110px]" title={title}>
-              {title}
-            </span>
-            <span className="text-slate-700">|</span>
-            <span className="text-emerald-400 font-semibold whitespace-nowrap">{tempo} BPM</span>
-            <span className="text-slate-400 whitespace-nowrap">{timeSignature}</span>
-            {onKeyScaleChange && (
+            {!hasSecondTier && (
               <>
+                <span className="text-slate-300 truncate max-w-[140px]" title={title}>
+                  {title}
+                </span>
                 <span className="text-slate-700">|</span>
-                <select
-                  aria-label="Key Signature"
-                  value={rootKey || 'C'}
-                  onChange={(e) => onKeyScaleChange(e.target.value, scaleName || 'chromatic')}
-                  className="bg-slate-900 border border-slate-700 text-amber-300 text-[11px] rounded px-1 py-0.5 outline-none cursor-pointer"
-                >
-                  {['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'].map((k) => (
-                    <option key={k} value={k}>
-                      {k}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  aria-label="Scale Mode"
-                  value={scaleName || 'chromatic'}
-                  onChange={(e) => onKeyScaleChange(rootKey || 'C', e.target.value)}
-                  className="bg-slate-900 border border-slate-700 text-cyan-300 text-[11px] rounded px-1 py-0.5 outline-none cursor-pointer max-w-[115px]"
-                >
-                  <option value="chromatic">Chromatic</option>
-                  <option value="major">Major</option>
-                  <option value="minor">Minor</option>
-                  <option value="harmonic_minor">Harmonic Minor</option>
-                  <option value="dorian">Dorian</option>
-                  <option value="phrygian">Phrygian</option>
-                  <option value="lydian">Lydian</option>
-                  <option value="mixolydian">Mixolydian</option>
-                  <option value="minor_pentatonic">Minor Pentatonic</option>
-                  <option value="blues">Blues</option>
-                </select>
               </>
             )}
+            <span className="text-emerald-400 font-semibold whitespace-nowrap">{tempo} BPM</span>
+            <span className="text-slate-400 whitespace-nowrap">{timeSignature}</span>
             <span className="text-slate-700">|</span>
             <span className="text-blue-400 font-semibold whitespace-nowrap">
               M{measureNum}:{beatInMeasure}
@@ -279,10 +249,10 @@ export default function Transport({
         </div>
       </div>
 
-      {/* Tier 2: Dedicated Studio Navigation Bar (Code Toggle, Main View Switcher & Bottom Dock Switcher) */}
+      {/* Tier 2: Dedicated Studio Navigation, Score Title, Key/Scale Lock & Bottom Dock Bar */}
       {hasSecondTier && (
-        <div className="h-9 w-full bg-slate-950/90 border-t border-slate-800/80 px-3 flex items-center justify-between gap-2">
-          {/* Left: .ten Code Editor Pane Toggle */}
+        <div className="h-9 w-full bg-slate-950/90 border-t border-slate-800/80 px-3 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+          {/* Left: .ten Code Toggle, Active Score Title & Global Key/Scale Selectors */}
           <div className="flex items-center gap-2 shrink-0">
             {onToggleCodeVisible && (
               <button
@@ -298,6 +268,48 @@ export default function Transport({
               >
                 {isCodeVisible !== false ? '◀ Hide .ten Code' : '▶ Show .ten Code'}
               </button>
+            )}
+
+            <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded px-2.5 py-0.5 text-[11px] font-mono whitespace-nowrap">
+              <span className="text-slate-400">Score:</span>
+              <span className="text-slate-200 font-semibold truncate max-w-[220px]" title={title}>
+                {title}
+              </span>
+            </div>
+
+            {onKeyScaleChange && (
+              <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded px-2 py-0.5 text-[11px] font-mono whitespace-nowrap">
+                <span className="text-slate-400">Key:</span>
+                <select
+                  aria-label="Key Signature"
+                  value={rootKey || 'C'}
+                  onChange={(e) => onKeyScaleChange(e.target.value, scaleName || 'chromatic')}
+                  className="bg-slate-950 border border-slate-700 text-amber-300 text-[11px] rounded px-1.5 py-0.2 outline-none cursor-pointer"
+                >
+                  {['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'].map((k) => (
+                    <option key={k} value={k}>
+                      {k}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  aria-label="Scale Mode"
+                  value={scaleName || 'chromatic'}
+                  onChange={(e) => onKeyScaleChange(rootKey || 'C', e.target.value)}
+                  className="bg-slate-950 border border-slate-700 text-cyan-300 text-[11px] rounded px-1.5 py-0.2 outline-none cursor-pointer"
+                >
+                  <option value="chromatic">Chromatic</option>
+                  <option value="major">Major</option>
+                  <option value="minor">Minor</option>
+                  <option value="harmonic_minor">Harmonic Minor</option>
+                  <option value="dorian">Dorian</option>
+                  <option value="phrygian">Phrygian</option>
+                  <option value="lydian">Lydian</option>
+                  <option value="mixolydian">Mixolydian</option>
+                  <option value="minor_pentatonic">Minor Pentatonic</option>
+                  <option value="blues">Blues</option>
+                </select>
+              </div>
             )}
           </div>
 

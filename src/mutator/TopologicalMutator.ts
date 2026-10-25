@@ -7,13 +7,21 @@ export interface TokenModifierPatch {
   pan?: number;
   chance?: number;
   articulation?: string | null;
+  lyric?: string;
+  swell?: 'crescendo' | 'diminuendo' | '' | null;
+  ornament?: 'vib' | 'trill' | 'mordent' | 'arp' | 'ped' | 'fermata' | 'trem' | '' | null;
+  pushMs?: number | null;
+  pullMs?: number | null;
 }
 
 export interface MixerASTMutation {
   mutationType:
     | 'VOLUME_UPDATE'
     | 'PAN_UPDATE'
+    | 'PATCH_UPDATE'
+    | 'MACRO_UPDATE'
     | 'ADD_FX'
+    | 'UPDATE_FX_PARAM'
     | 'REMOVE_FX'
     | 'SEND_UPDATE'
     | 'ADD_RETURN_TRACK'
@@ -26,6 +34,9 @@ export interface MixerASTMutation {
   groupId?: string;
   tapMode?: string;
   value?: number | string;
+  patchName?: string;
+  macroKey?: string;
+  macroValue?: number;
   fxType?: string;
   fxParams?: Record<string, any>;
   sendId?: string;
@@ -312,6 +323,74 @@ export class TopologicalMutator {
       }
     }
 
+    if (patch.lyric !== undefined) {
+      mods = mods.filter(
+        (m) => !m.startsWith('lyric(') && !m.startsWith('word(') && !m.startsWith('vox(')
+      );
+      const cleanLyric = patch.lyric.trim().replace(/"/g, "'");
+      if (cleanLyric.length > 0) {
+        mods.push(`lyric("${cleanLyric}")`);
+      }
+    }
+
+    if (patch.swell !== undefined) {
+      mods = mods.filter(
+        (m) =>
+          !['cresc', 'crescendo', 'dim', 'diminuendo', 'decresc', 'decrescendo'].includes(m) &&
+          !m.startsWith('cresc(') &&
+          !m.startsWith('crescendo(') &&
+          !m.startsWith('dim(') &&
+          !m.startsWith('diminuendo(')
+      );
+      if (patch.swell === 'crescendo') {
+        mods.push('cresc');
+      } else if (patch.swell === 'diminuendo') {
+        mods.push('dim');
+      }
+    }
+
+    if (patch.ornament !== undefined) {
+      mods = mods.filter(
+        (m) =>
+          ![
+            'vib',
+            'vibrato',
+            'tr',
+            'trill',
+            'mordent',
+            'turn',
+            'arp',
+            'strum',
+            'rolled',
+            'ped',
+            'pedal',
+            'fermata',
+            'hold',
+            'trem',
+            'tremolo',
+          ].includes(m) && !m.startsWith('roll(')
+      );
+      if (patch.ornament) {
+        mods.push(patch.ornament);
+      }
+    }
+
+    if (patch.pullMs !== undefined) {
+      mods = mods.filter((m) => !m.startsWith('pull(') && !m.startsWith('push('));
+      if (typeof patch.pullMs === 'number' && patch.pullMs > 0) {
+        mods.push(`pull(${Math.round(patch.pullMs)}ms)`);
+      } else if (typeof patch.pullMs === 'number' && patch.pullMs < 0) {
+        mods.push(`push(${Math.round(Math.abs(patch.pullMs))}ms)`);
+      }
+    }
+
+    if (patch.pushMs !== undefined && patch.pullMs === undefined) {
+      mods = mods.filter((m) => !m.startsWith('push('));
+      if (typeof patch.pushMs === 'number' && patch.pushMs > 0) {
+        mods.push(`push(${Math.round(patch.pushMs)}ms)`);
+      }
+    }
+
     parts.modifiers = mods;
     return this.recomposeToken(parts);
   }
@@ -525,6 +604,78 @@ export class TopologicalMutator {
       );
       if (defLineRegex.test(sourceCode)) {
         return sourceCode.replace(defLineRegex, `$1 ${fxString}`);
+      }
+      return sourceCode;
+    }
+
+    // 4b. Update Track Patch (`patch="<patchName>"` on `def <trackId>`)
+    if (mutation.mutationType === 'PATCH_UPDATE' && mutation.patchName) {
+      const cleanPatch = mutation.patchName.replace(/^"|"$/g, '').trim();
+      const defPatchRegex = new RegExp(
+        `(^\\s*def\\s+${trackId}\\b[^\\n]*?\\bpatch\\s*=\\s*)("[^"]*"|[a-zA-Z0-9_]+)`,
+        'm'
+      );
+      if (defPatchRegex.test(sourceCode)) {
+        return sourceCode.replace(defPatchRegex, `$1"${cleanPatch}"`);
+      }
+      const defLineRegex = new RegExp(`(^\\s*def\\s+${trackId}\\b[^\\n]*?)(?=\\s*(?:%%|\\/\\/|$))`, 'm');
+      if (defLineRegex.test(sourceCode)) {
+        return sourceCode.replace(defLineRegex, `$1 patch="${cleanPatch}"`);
+      }
+      return sourceCode;
+    }
+
+    // 4c. Update Track Macro (`macros=@{key: val}` on `def <trackId>`)
+    if (
+      mutation.mutationType === 'MACRO_UPDATE' &&
+      mutation.macroKey &&
+      mutation.macroValue !== undefined
+    ) {
+      const val = Math.round(Number(mutation.macroValue));
+      const defMacrosRegex = new RegExp(
+        `(^\\s*def\\s+${trackId}\\b[^\\n]*?\\bmacros\\s*=\\s*@\\{)([^}]*)(\\})`,
+        'm'
+      );
+      const macroMatch = sourceCode.match(defMacrosRegex);
+      if (macroMatch) {
+        const body = macroMatch[2];
+        const keyRegex = new RegExp(`(\\b${mutation.macroKey}\\s*:\\s*)(-?\\d+(?:\\.\\d+)?)`);
+        const nextBody = keyRegex.test(body)
+          ? body.replace(keyRegex, `$1${val}`)
+          : `${body.trim() ? body.trim() + ', ' : ''}${mutation.macroKey}: ${val}`;
+        return sourceCode.replace(defMacrosRegex, `$1${nextBody}$3`);
+      }
+      const defLineRegex = new RegExp(`(^\\s*def\\s+${trackId}\\b[^\\n]*?)(?=\\s*(?:%%|\\/\\/|$))`, 'm');
+      if (defLineRegex.test(sourceCode)) {
+        return sourceCode.replace(defLineRegex, `$1 macros=@{${mutation.macroKey}: ${val}}`);
+      }
+      return sourceCode;
+    }
+
+    // 4d. Update FX Parameters on Track (`.fx(type, @{...})`)
+    if (mutation.mutationType === 'UPDATE_FX_PARAM' && mutation.fxType && mutation.fxParams) {
+      const paramPairs = Object.entries(mutation.fxParams)
+        .map(([k, v]) => `${k}: ${typeof v === 'string' ? `"${v}"` : v}`)
+        .join(', ');
+      const updatedFx = `.fx(${mutation.fxType}, @{${paramPairs}})`;
+      const trackFxRegex = new RegExp(
+        `(^\\s*(?:def|def_return|return|group)\\s+${trackId}\\b[^\\n]*?)\\.fx\\(\\s*${mutation.fxType}\\b[^)]*\\)`,
+        'm'
+      );
+      if (trackFxRegex.test(sourceCode)) {
+        return sourceCode.replace(trackFxRegex, `$1${updatedFx}`);
+      }
+      return sourceCode;
+    }
+
+    // 4e. Remove FX from Track
+    if (mutation.mutationType === 'REMOVE_FX' && mutation.fxType) {
+      const removeFxRegex = new RegExp(
+        `(^\\s*(?:def|def_return|return|group)\\s+${trackId}\\b[^\\n]*?)\\s*\\.fx\\(\\s*${mutation.fxType}\\b[^)]*\\)`,
+        'm'
+      );
+      if (removeFxRegex.test(sourceCode)) {
+        return sourceCode.replace(removeFxRegex, '$1');
       }
       return sourceCode;
     }

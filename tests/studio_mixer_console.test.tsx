@@ -82,4 +82,36 @@ describe('TDB-711: Live Studio Mixer Console with Peak/RMS Metering & Split Ster
     expect(mutedLevels.lead.peakDb).toBe(-60);
     expect(mutedLevels.lead.peakNorm).toBe(0);
   });
+
+  it('filters Mixer channels by category (All/Groups/Tracks/Returns) and jumps from a Mixer FX badge to the Device Chain dock', () => {
+    const mockASTState: ASTState = {
+      tracks: [
+        { id: 'fl', volume: 96, fx: ['eq_eight'], isReturn: false },
+        { id: 'hall_bus', volume: 100, fx: ['hybrid_reverb'], isReturn: true },
+      ],
+      groups: [
+        { id: 'winds_bus', name: 'Woodwinds Bus', trackIds: ['fl'], volume: 100, fx: ['glue_compressor'] },
+      ],
+      meta: { sidechain: null },
+    };
+
+    const onInspectTrackDevices = vi.fn();
+    render(
+      <Mixer astState={mockASTState} onInspectTrackDevices={onInspectTrackDevices} onUpdateAST={vi.fn()} />
+    );
+
+    // Master Bus strip is rendered
+    expect(screen.getByTestId('mixer-master-strip')).toBeInTheDocument();
+
+    // Filter by Returns only -> hides 'fl' track and 'winds_bus' group, keeps 'hall_bus'
+    fireEvent.click(screen.getByRole('button', { name: /Filter mixer by returns/i }));
+    expect(screen.queryByTestId('mixer-strip-fl')).not.toBeInTheDocument();
+    expect(screen.getByTestId('mixer-strip-hall_bus')).toBeInTheDocument();
+
+    // Restore All channels and click 'FX ↗' on 'fl' -> opens 'fl' in Devices Dock
+    fireEvent.click(screen.getByRole('button', { name: /Filter mixer by all/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Open devices for fl/i }));
+    expect(onInspectTrackDevices).toHaveBeenCalledWith('fl');
+  });
 });
+

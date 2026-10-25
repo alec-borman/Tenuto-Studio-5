@@ -3,6 +3,7 @@ import * as PIXI from 'pixi.js';
 import { isMidiInScale, parseKeyRootSemitone } from '../parser/PitchEngine';
 import AutomationLaneEditor from './AutomationLaneEditor';
 import { AutomationLane, AutomationCurveType } from '../audio/AutomationEngine';
+import { MidiTransformType, MidiGeneratorType } from '../mutator/MidiTransformAndGeneratorEngine';
 
 export function calculateProjectionCoordinates(
   event: any,
@@ -85,6 +86,8 @@ export default function WebGPUCanvas({
   onMutation,
   onSelect,
   onCommitAutomation,
+  onApplyMidiTransform,
+  onGenerateMidiPattern,
 }: {
   events?: any[];
   playheadBeat?: number;
@@ -101,9 +104,12 @@ export default function WebGPUCanvas({
     values: number[],
     curve: AutomationCurveType
   ) => void;
+  onApplyMidiTransform?: (transform: MidiTransformType, trackId?: string | null) => void;
+  onGenerateMidiPattern?: (generator: MidiGeneratorType, trackId?: string | null) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollViewportRef = useRef<HTMLDivElement>(null);
+  const trackPillsRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<PIXI.Application | null>(null);
   const poolRef = useRef<PIXI.Graphics[]>([]);
   const gridRef = useRef<PIXI.Graphics | null>(null);
@@ -113,6 +119,7 @@ export default function WebGPUCanvas({
   const [zoomLevel, setZoomLevel] = useState<number>(1.0);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [isClipEnvelopeOpen, setIsClipEnvelopeOpen] = useState<boolean>(false);
+  const [isMidiToolsOpen, setIsMidiToolsOpen] = useState<boolean>(false);
 
   useEffect(() => {
     onMutationRef.current = onMutation;
@@ -558,6 +565,10 @@ export default function WebGPUCanvas({
                   type: 'PitchLit',
                   duration: `${ev.duration?.numerator || 1}/${ev.duration?.denominator || 4}`,
                   velocity: ev.physics?.velocity ?? 80,
+                  articulation: ev.physics?.articulation || '',
+                  chance: ev.physics?.chance ?? 100,
+                  pan: ev.physics?.pan ?? 0,
+                  lyric: ev.physics?.lyric || '',
                   line: ev.line ?? 1,
                   col: ev.col ?? 1,
                   rawToken: ev.rawToken,
@@ -592,6 +603,16 @@ export default function WebGPUCanvas({
                   points={`${x + 2},${y + 1.5} ${x + 2},${y + noteH - 1.5} ${x + w - 2},${y + noteH / 2}`}
                   fill="#F8FAFC"
                   fillOpacity={0.32}
+                  className="pointer-events-none"
+                />
+              )}
+              {ev.physics?.mpe && w > 12 && (
+                <polyline
+                  data-testid={`mpe-curve-${idx}`}
+                  fill="none"
+                  stroke="#22D3EE"
+                  strokeWidth={1.8}
+                  points={`${x + 2},${y + noteH * 0.7} ${x + w * 0.5},${y + noteH * 0.2} ${x + w - 2},${y + noteH * 0.65}`}
                   className="pointer-events-none"
                 />
               )}
@@ -643,8 +664,8 @@ export default function WebGPUCanvas({
     >
       {/* Top Instrument Filter & Zoom Control Bar */}
       <div className="bg-slate-900/95 border-b border-slate-800 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 z-10">
-        {/* Instrument Track Pills (All Instruments vs. Isolate Single Track) */}
-        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+        {/* Instrument Track Navigator: Quick Dropdown + Scrollable Track Pills */}
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
           <button
             type="button"
             aria-label="Show All Instruments"
@@ -658,36 +679,94 @@ export default function WebGPUCanvas({
             All Instruments ({availableTracks.length || 1})
           </button>
 
-          {availableTracks.map((track) => {
-            const isSelected = selectedTrackId === track.id;
-            return (
-              <button
-                key={track.id}
-                type="button"
-                aria-label={`Isolate track ${track.id}`}
-                onClick={() => {
-                  if (isSelected) {
-                    setSelectedTrackId(null);
-                  } else {
-                    setSelectedTrackId(track.id);
-                    setZoomLevel((z) => (z < 0.8 ? 1.0 : z));
-                  }
-                }}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-mono transition-colors cursor-pointer shrink-0 border ${
-                  isSelected
-                    ? 'bg-slate-800 text-white border-slate-500 font-bold shadow-sm'
-                    : 'bg-slate-950 text-slate-400 border-slate-800 hover:bg-slate-900 hover:text-slate-200'
-                }`}
-              >
-                <span
-                  className="w-2 h-2 rounded-full shrink-0"
-                  style={{ backgroundColor: track.color }}
-                />
-                <span>{track.id}</span>
-                <span className="text-[10px] text-slate-500">({track.count})</span>
-              </button>
-            );
-          })}
+          {availableTracks.length > 1 && (
+            <select
+              aria-label="Select Instrument Track"
+              value={selectedTrackId || ''}
+              onChange={(e) => {
+                const val = e.target.value || null;
+                setSelectedTrackId(val);
+                if (val) setZoomLevel((z) => (z < 0.8 ? 1.0 : z));
+              }}
+              className="bg-slate-950 border border-slate-700 text-amber-300 text-[11px] font-mono rounded px-1.5 py-1 outline-none cursor-pointer shrink-0"
+              title="Jump directly to any instrument track"
+            >
+              <option value="">Jump to Track ({availableTracks.length})...</option>
+              {availableTracks.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.id} ({t.count} notes)
+                </option>
+              ))}
+            </select>
+          )}
+
+          {availableTracks.length > 3 && (
+            <button
+              type="button"
+              aria-label="Scroll Tracks Left"
+              onClick={() => {
+                if (trackPillsRef.current) {
+                  trackPillsRef.current.scrollBy({ left: -180, behavior: 'smooth' });
+                }
+              }}
+              className="px-1.5 py-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white text-[10px] font-mono cursor-pointer shrink-0"
+              title="Scroll instrument list left"
+            >
+              ◀
+            </button>
+          )}
+
+          <div
+            ref={trackPillsRef}
+            className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 min-w-0"
+          >
+            {availableTracks.map((track) => {
+              const isSelected = selectedTrackId === track.id;
+              return (
+                <button
+                  key={track.id}
+                  type="button"
+                  aria-label={`Isolate track ${track.id}`}
+                  onClick={() => {
+                    if (isSelected) {
+                      setSelectedTrackId(null);
+                    } else {
+                      setSelectedTrackId(track.id);
+                      setZoomLevel((z) => (z < 0.8 ? 1.0 : z));
+                    }
+                  }}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-mono transition-colors cursor-pointer shrink-0 border ${
+                    isSelected
+                      ? 'bg-slate-800 text-white border-slate-500 font-bold shadow-sm'
+                      : 'bg-slate-950 text-slate-400 border-slate-800 hover:bg-slate-900 hover:text-slate-200'
+                  }`}
+                >
+                  <span
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{ backgroundColor: track.color }}
+                  />
+                  <span>{track.id}</span>
+                  <span className="text-[10px] text-slate-500">({track.count})</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {availableTracks.length > 3 && (
+            <button
+              type="button"
+              aria-label="Scroll Tracks Right"
+              onClick={() => {
+                if (trackPillsRef.current) {
+                  trackPillsRef.current.scrollBy({ left: 180, behavior: 'smooth' });
+                }
+              }}
+              className="px-1.5 py-1 rounded bg-slate-950 border border-slate-800 text-slate-400 hover:text-white text-[10px] font-mono cursor-pointer shrink-0"
+              title="Scroll instrument list right"
+            >
+              ▶
+            </button>
+          )}
         </div>
 
         {/* Pinch-to-Zoom & Fit-All Controls */}
@@ -743,8 +822,77 @@ export default function WebGPUCanvas({
           >
             Clip Env
           </button>
+          <div className="w-px h-3.5 bg-slate-800 mx-0.5" />
+          <button
+            type="button"
+            aria-label="Toggle MIDI Tools"
+            onClick={() => setIsMidiToolsOpen((prev) => !prev)}
+            className={`px-1.5 py-0.5 text-[11px] font-mono font-semibold rounded cursor-pointer ${
+              isMidiToolsOpen
+                ? 'bg-purple-600 text-white'
+                : 'text-purple-400 hover:text-purple-300'
+            }`}
+            title="Show/Hide Ableton Live 12 MIDI Transformations & Generators"
+          >
+            MIDI Tools
+          </button>
         </div>
       </div>
+
+      {isMidiToolsOpen && (
+        <div
+          data-testid="midi-tools-bar"
+          className="bg-slate-900 border-b border-slate-800 px-3 py-1.5 flex items-center justify-between gap-2 flex-wrap text-[10px] font-mono shrink-0 z-10"
+        >
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-purple-300 font-bold uppercase tracking-wider mr-1">
+              Transform:
+            </span>
+            {(
+              [
+                { id: 'arpeggiate', label: 'Arpeggiate' },
+                { id: 'strum', label: 'Strum (.arp)' },
+                { id: 'connect_legato', label: 'Connect (.legato)' },
+                { id: 'ornament', label: 'Ornament (.vib)' },
+                { id: 'humanize', label: 'Humanize Vel' },
+              ] as const
+            ).map((tr) => (
+              <button
+                key={tr.id}
+                type="button"
+                aria-label={`MIDI Transform ${tr.label}`}
+                onClick={() => onApplyMidiTransform?.(tr.id, selectedTrackId)}
+                className="px-2 py-0.5 rounded bg-slate-950 hover:bg-purple-600/30 border border-slate-800 hover:border-purple-500/50 text-slate-300 hover:text-white cursor-pointer transition-colors"
+              >
+                {tr.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-emerald-300 font-bold uppercase tracking-wider mr-1">
+              Generate ({rootKey || 'C'} {scaleName || 'minor'}):
+            </span>
+            {(
+              [
+                { id: 'stacks', label: '+ Gen Stacks' },
+                { id: 'seed_melody', label: '+ Gen Seed Melody' },
+                { id: 'rhythm_groove', label: '+ Gen Rhythm' },
+              ] as const
+            ).map((gen) => (
+              <button
+                key={gen.id}
+                type="button"
+                aria-label={`MIDI Generator ${gen.label}`}
+                onClick={() => onGenerateMidiPattern?.(gen.id, selectedTrackId)}
+                className="px-2 py-0.5 rounded bg-emerald-950/60 hover:bg-emerald-600/35 border border-emerald-500/40 text-emerald-300 cursor-pointer font-semibold transition-colors"
+              >
+                {gen.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Scrollable & Pinch-Zoomable Piano Roll Viewport */}
       <div

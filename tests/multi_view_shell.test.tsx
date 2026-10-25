@@ -62,4 +62,26 @@ describe('TDB-706: Multi-View Studio Shell & Tab View Switcher', () => {
     fireEvent.click(screen.getByRole('button', { name: /Toggle Code Editor/i }));
     expect(codePane).toHaveClass('hidden');
   });
+
+  it('opens the Ableton Device Chain & Macro Rack dock and mutates .ten patch and macro code', () => {
+    render(<SplitWorkspace />);
+
+    const editor = screen.getByTestId('monaco-mock') as HTMLTextAreaElement;
+    fireEvent.change(editor, {
+      target: {
+        value: `tenuto "6.0" {\n  meta @{ title: "Device Rack Test", tempo: 120, time: "4/4" }\n  def lead "Lead Synth" style=synth patch="wavetable" .fx(roar, @{drive: 0.4})\n  measure 1 { lead: c4:4 e4:4 g4:2 | }\n}`,
+      },
+    });
+
+    // Open Devices dock
+    fireEvent.click(screen.getByRole('button', { name: /Toggle Devices Dock/i }));
+    expect(screen.getByTestId('device-chain-dock')).toBeInTheDocument();
+    expect(screen.getByTestId('instrument-device-card-lead')).toBeInTheDocument();
+    expect(screen.getByTestId('fx-device-card-roar')).toBeInTheDocument();
+
+    // Change macro cutoff value -> writes macros=@{cutoff: 95} into .ten source code
+    const cutoffMacro = screen.getByRole('spinbutton', { name: /Macro cutoff for lead/i });
+    fireEvent.change(cutoffMacro, { target: { value: '95' } });
+    expect(editor.value).toContain('macros=@{cutoff: 95}');
+  });
 });
