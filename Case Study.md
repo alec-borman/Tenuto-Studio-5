@@ -1,4 +1,4 @@
-# Case Study: Multi-Model Iterative Refinement and Diff-Driven Composition in Tenuto Studio 6.0
+# Case Study: Multi-Model Iterative Refinement and Diff-Driven Composition in Tenuto Studio 5.0
 
 ## 1. Overview: Turning AI Music Creation into a Verifiable Code Workflow
 
