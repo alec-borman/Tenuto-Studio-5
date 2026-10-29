@@ -1,4 +1,4 @@
-# Case Study: Tonudo Studio 5.0 — “Git for Music” and the Move from Audio Black Boxes to Surgically Editable Text Scores
+# Case Study: Tenuto Studio 5.0 — “Git for Music” and the Move from Audio Black Boxes to Surgically Editable Text Scores
 
 **Source basis:** Case-study narrative derived from the provided transcript. Names, figures, and technical claims are presented as given in the source material and have not been independently verified.
 
@@ -8,9 +8,9 @@
 
 AI music generation is trapped between two bad extremes. Consumer AI music tools generate opaque audio waveforms that cannot be edited at the level of individual musical events. Traditional DAWs preserve precise musical logic, but store it in huge binary blobs or verbose XML files that overwhelm an LLM’s context window. The result is a creative workflow where changing one note can require regenerating an entire track — like throwing a marble statue into a volcano to fix the angle of its pinky finger.
 
-Tonudo Studio 5 and its evolution into Tonudo Studio 6.0 propose a different model: compress an entire orchestral score into a compact, human- and AI-readable domain-specific language (DSL), validate it deterministically, edit it with software-style diffs, render it through a physically aware acoustic engine, and expose it through a DAW-like visual interface backed by a bidirectional code mutator.
+Tenuto Studio 5 and its evolution into Tenuto Studio 6.0 propose a different model: compress an entire orchestral score into a compact, human- and AI-readable domain-specific language (DSL), validate it deterministically, edit it with software-style diffs, render it through a physically aware acoustic engine, and expose it through a DAW-like visual interface backed by a bidirectional code mutator.
 
-The flagship stress test is **Symphony Number Five in D minor/D major, “The Celestial Architecture”**: a 60-measure, four-movement orchestral work with six independent instrumental sections, 2,689 individual note events, and 3,193 distinct chords. As a 16-bit audio file it weighs about **23.8 MB**; as MusicXML it is about **580 KB**; in Tonudo it is a **29.5 KB** text file of roughly **617 lines**, representing a **94.7% reduction in token footprint** versus older text formats.
+The flagship stress test is **Symphony Number Five in D minor/D major, “The Celestial Architecture”**: a 60-measure, four-movement orchestral work with six independent instrumental sections, 2,689 individual note events, and 3,193 distinct chords. As a 16-bit audio file it weighs about **23.8 MB**; as MusicXML it is about **580 KB**; in Tenuto it is a **29.5 KB** text file of roughly **617 lines**, representing a **94.7% reduction in token footprint** versus older text formats.
 
 The second case, **Nocturne and Protocol of the Glass Leviathan**, exposes the editing problem: full-file rewrites cause “copy-induced syntax drift,” while unified diffs solve it by restricting the model’s output to only the changed measures.
 
@@ -31,7 +31,7 @@ Traditional DAWs such as Ableton or Logic preserve musical logic, but store proj
 
 ## 2. The Problem Statement
 
-Tonudo’s design premise rests on three failures of existing tools:
+Tenuto’s design premise rests on three failures of existing tools:
 
 1. **Opaque audio cannot be surgically edited.**  
    Latent audio diffusion models do not possess discrete musical logic. They do not know what a quarter note, a C minor chord, or a bar line is. They predict continuous spectral energy — “smearing sonic colors” over time. There are no individual objects to select and edit.
@@ -46,7 +46,7 @@ Tonudo’s design premise rests on three failures of existing tools:
 
 ## 3. Solution: A Domain-Specific Language for Music
 
-Tonudo’s answer is a **domain-specific language (DSL)** that shrinks an entire music studio into plain text.
+Tenuto’s answer is a **domain-specific language (DSL)** that shrinks an entire music studio into plain text.
 
 ### 3.1 Compression Evidence: “The Celestial Architecture”
 
@@ -54,7 +54,7 @@ Tonudo’s answer is a **domain-specific language (DSL)** that shrinks an entire
 |---|---:|---|
 | 16-bit audio | ~23.8 MB | Opaque waveform; not surgically editable |
 | MusicXML | ~580 KB | Readable but too verbose for LLM context |
-| Tonudo text | ~29.5 KB | ~617 lines; 94.7% token-footprint reduction |
+| Tenuto text | ~29.5 KB | ~617 lines; 94.7% token-footprint reduction |
 
 The symphony contains:
 
@@ -64,19 +64,19 @@ The symphony contains:
 - 2,689 individual note events
 - 3,193 distinct chords
 
-By fitting the entire architecture of the song into active memory, Tonudo bypasses catastrophic long-horizon amnesia.
+By fitting the entire architecture of the song into active memory, Tenuto bypasses catastrophic long-horizon amnesia.
 
 ### 3.2 Core Design Axiom: Inference over Redundancy
 
-Tonudo uses a **stateful cursor** with **sticky octaves** and **sticky durations**.
+Tenuto uses a **stateful cursor** with **sticky octaves** and **sticky durations**.
 
-In XML, every note must explicitly declare its pitch, octave, and duration. In Tonudo, if the model writes `C4` as an eighth note and then writes `D E F`, the compiler infers that the following notes inherit the same fourth octave and eighth-note duration until told otherwise. The analogy is turning on bold in a word processor: you do not retype the bold command before every letter.
+In XML, every note must explicitly declare its pitch, octave, and duration. In Tenuto, if the model writes `C4` as an eighth note and then writes `D E F`, the compiler infers that the following notes inherit the same fourth octave and eighth-note duration until told otherwise. The analogy is turning on bold in a word processor: you do not retype the bold command before every letter.
 
 This drastically reduces cognitive load and output-token waste.
 
-### 3.3 Deterministic Gatekeeper: `validate_tonudo.py`
+### 3.3 Deterministic Gatekeeper: `validate_Tenuto.py`
 
-Sticky inference creates a risk: one tiny mistake in measure 2 could poison the next 58 measures. Tonudo addresses this with a rigid, non-AI gatekeeper: a Python script called `validate_tonudo.py`.
+Sticky inference creates a risk: one tiny mistake in measure 2 could poison the next 58 measures. Tenuto addresses this with a rigid, non-AI gatekeeper: a Python script called `validate_Tenuto.py`.
 
 - It is deterministic, not stochastic.
 - It scans the text in under **40 milliseconds**.
@@ -114,7 +114,7 @@ This treats music like a collaborative GitHub project: you do not rewrite the wh
 
 ## 5. Acoustic Engine: Translating Text into Physical Sound
 
-A perfect text file is silent. Tonudo’s **Tenuto core acoustic library** bridges symbolic code and acoustic reality. Early builds exposed several physics bugs.
+A perfect text file is silent. Tenuto’s **Tenuto core acoustic library** bridges symbolic code and acoustic reality. Early builds exposed several physics bugs.
 
 ### 5.1 Timpani Side-Chain Pumping
 
@@ -122,7 +122,7 @@ When the timpani hit, the entire orchestra — strings, brass, everything — vi
 
 ### 5.2 The 82% Cutoff Bug
 
-Tonudo streams real instrument samples from an open-source library called **Musing Kite**. These are standard MP3 files. A violin recording might be 2.5 seconds long, but the active sustained bow tone may decay after about 1 second, leaving 1.5 seconds of quiet room noise.
+Tenuto streams real instrument samples from an open-source library called **Musing Kite**. These are standard MP3 files. A violin recording might be 2.5 seconds long, but the active sustained bow tone may decay after about 1 second, leaving 1.5 seconds of quiet room noise.
 
 The old engine assumed the first **82%** of every file contained active audio. When sustaining a note, it looped the sample at the 82% mark — walking off the edge of the active tone into the silent tail. Notes dropped dead mid-phrase.
 
@@ -161,7 +161,7 @@ The old engine re-triggered that 6 ms transient on every note event, making the 
 
 Most musicians do not want to type `C4:8` in a text file. They want piano rolls, colorful note blocks, mixer faders, and EQ knobs.
 
-Tonudo Studio 6.0 provides a full visual interface: piano roll, vibrant tracks, mixer faders, visual EQ knobs — similar in feel to Ableton or FL Studio. But there are **no hidden binary project files**. Every visual action is instantly translated back into the same ~30 KB text file.
+Tenuto Studio 6.0 provides a full visual interface: piano roll, vibrant tracks, mixer faders, visual EQ knobs — similar in feel to Ableton or FL Studio. But there are **no hidden binary project files**. Every visual action is instantly translated back into the same ~30 KB text file.
 
 ### 6.1 Surgical Bidirectional Code Mutator and AST
 
@@ -180,7 +180,7 @@ The result: visual producers and AI text editors work on perfectly synced repres
 
 ## 7. Results and Industry Impact
 
-Tonudo moves music from:
+Tenuto moves music from:
 
 - **150 MB binary black boxes** → **30 KB plain-text scores**
 - **Opaque waveforms** → **surgically editable lines of code**
@@ -188,7 +188,7 @@ Tonudo moves music from:
 
 ### 7.1 Interactive Media and Games
 
-Modern games dedicate gigabytes to static wave files that crossfade into each other. With Tonudo 5.0, a game engine could store **1,000 distinct symphonic tracks in less than 30 MB of text**.
+Modern games dedicate gigabytes to static wave files that crossfade into each other. With Tenuto 5.0, a game engine could store **1,000 distinct symphonic tracks in less than 30 MB of text**.
 
 Because the engine compiles and renders audio in milliseconds, the game can mutate the text code dynamically:
 
@@ -209,7 +209,7 @@ This changes the concept of a finished song. The “X-ray machine of music” is
 ## 8. Lessons Learned / Design Principles
 
 1. **Inference over redundancy.** Sticky octaves and durations cut token waste and cognitive load.
-2. **Box stochastic AI with deterministic math.** `validate_tonudo.py` catches arithmetic slips in under 40 ms.
+2. **Box stochastic AI with deterministic math.** `validate_Tenuto.py` catches arithmetic slips in under 40 ms.
 3. **Edit diffs, not full files.** Unified diffs prevent copy-induced syntax drift and preserve untouched measures.
 4. **Physical realism matters.** RMS plateau scanning, MIDI-register correction, and instrument-aware envelopes turn symbolic text into believable acoustics.
 5. **Visual and textual views must be bidirectional.** The AST-backed mutator keeps DAW-style editing and raw text in perfect sync.
@@ -229,4 +229,4 @@ This changes the concept of a finished song. The “X-ray machine of music” is
 
 ## 10. Bottom Line
 
-Tonudo Studio 6.0 is best understood as a **compiler and version-control layer for music**. It replaces opaque audio and bloated project files with a compact DSL, deterministic validation, diff-based editing, physically aware rendering, and a DAW-like visual front end. The result is a workflow where humans and AI can co-create orchestral music line by line — and where music itself becomes forkable, reactive, and editable at the speed of text.
+Tenuto Studio 6.0 is best understood as a **compiler and version-control layer for music**. It replaces opaque audio and bloated project files with a compact DSL, deterministic validation, diff-based editing, physically aware rendering, and a DAW-like visual front end. The result is a workflow where humans and AI can co-create orchestral music line by line — and where music itself becomes forkable, reactive, and editable at the speed of text.
