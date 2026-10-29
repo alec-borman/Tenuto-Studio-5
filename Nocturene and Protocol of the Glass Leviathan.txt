@@ -1,0 +1,690 @@
+tenuto "6.0" {
+  %% Revision notes: cellos/basses moved into playable range; timpani retuned per
+  %% harmony and split from the kit; sidechain ducking removed; dynamics written on
+  %% every note (the engine does not carry them forward); harmony and voice-leading
+  %% fixes in mm. 2-3, 19, 23, 32-33, 36-38, 45; dynamic valley at mm. 50-52.
+  meta @{
+    title: "Nocturne and Protocol of the Glass Leviathan",
+    tempo: 84,
+    time: "4/4",
+    key: "C",
+    scale: "harmonic_minor",
+    tuning: "12tet",
+    quantize_launch: "1/1"
+  }
+
+  groove mpc_swing "Subtle 16th Pocket" @{
+    base: "1/16",
+    quantize: 90%,
+    timing: 20%,
+    random: 4%,
+    velocity: 35%
+  }
+
+  return rev_bus "Concertgebouw Shimmer Hall" .fx(hybrid_reverb, @{decay: 2.8, predelay: 18, mix: 1.0})
+  return dly_bus "Ping Pong Tape Echo" .fx(echo, @{time: 0.375, feedback: 0.38, mix: 1.0})
+
+  def pno "Steinway Concert Grand" style=standard patch="acoustic_grand_piano" group="synth_core" vol=96 pan=-0.15 sends=@{rev_bus: 0.35}
+  def harp "Concertgebouw Harp" style=standard patch="orchestral_harp" group="synth_core" vol=92 pan=0.25 sends=@{rev_bus: 0.55, dly_bus: 0.25}
+  def wt_lead "Wavetable Morph Lead" style=synth patch="wavetable" group="synth_core" groove="mpc_swing" vol=94 pan=0.10 sends=@{rev_bus: 0.40, dly_bus: 0.35} macros=@{osc1_pos: 64, unison: 45, sub_level: 35, cutoff: 3400} .fx(auto_filter, @{cutoff: 3200, res: 0.35, drive: 2.5})
+  def fm_bell "Operator 4-Op Glass Bell" style=synth patch="operator" group="synth_core" vol=84 pan=-0.30 sends=@{rev_bus: 0.60, dly_bus: 0.45} env=@{algorithm: "4", ratioA: "1.0", ratioB: "3.5", ratioC: "7.0"}
+
+  def fl "Principal Flute" style=standard patch="flute" group="orch_winds_brass" vol=92 pan=-0.20 sends=@{rev_bus: 0.45}
+  def ob "Principal Oboe" style=standard patch="oboe" group="orch_winds_brass" vol=94 pan=0.15 sends=@{rev_bus: 0.45}
+  def hn "6 French Horns Section" style=standard patch="french_horn" group="orch_winds_brass" vol=98 pan=-0.25 sends=@{rev_bus: 0.50}
+  def tpt "3 Trumpets Section" style=standard patch="trumpet" group="orch_winds_brass" vol=98 pan=0.20 sends=@{rev_bus: 0.45}
+  def choir "Celestial Vocoder Choir" style=standard patch="choir_aahs" group="orch_winds_brass" vol=95 pan=0.0 sends=@{rev_bus: 0.65} .fx(vocoder, @{bands: 20, depth: 1.0, mix: 0.85})
+
+  def vln1 "16 First Violins Section" style=standard patch="violin" group="orch_strings" vol=100 pan=-0.35 sends=@{rev_bus: 0.48}
+  def vln2 "14 Second Violins Section" style=standard patch="string_ensemble_1" group="orch_strings" vol=94 pan=-0.10 sends=@{rev_bus: 0.48}
+  def vc "10 Violoncellos Section" style=standard patch="cello" group="orch_strings" vol=98 pan=0.20 sends=@{rev_bus: 0.42}
+  def cb "8 Contrabasses Section" style=standard patch="contrabass" group="orch_strings" vol=102 pan=0.35 sends=@{rev_bus: 0.25}
+  def timp "Orchestral Timpani" style=standard patch="timpani" vol=104 pan=0.0 sends=@{rev_bus: 0.22}
+  def perc "Hybrid Percussion Kit" style=grid patch="tenuto_808_kit" groove="mpc_swing" vol=96 pan=0.0 sends=@{rev_bus: 0.18} .fx(drum_buss, @{drive: 0.30, crunch: 0.20, boom_amount: 0.45})
+
+  group orch_strings "Orchestral Strings Bus" tracks=[vln1, vln2, vc, cb] .fx(glue_compressor, @{threshold: -10, ratio: 4, makeup: 2.0, mix: 0.75})
+  group orch_winds_brass "Winds Brass & Choir Bus" tracks=[fl, ob, hn, tpt, choir] .fx(eq_eight, @{low_cut: 90, high_shelf_db: 1.5})
+  group synth_core "Keyboards & Synths Bus" tracks=[pno, harp, wt_lead, fm_bell] .fx(multiband_dynamics, @{amount: 0.35, low_gain: 1.5, high_gain: 2.0})
+
+  locator "I. Lento Misterioso" at measure 1
+  locator "Allegro Agitato" at measure 5
+  locator "II. Andante Luminescente" at measure 17
+  locator "III. Scherzo Fugato" at measure 31
+  locator "IV. Apotheosis in C Major" at measure 46
+  locator "Grand Maestoso Coda" at measure 57
+
+  %% =========================================================================
+  %% MOVEMENT I (Measures 1-16): Lento Misterioso -> Allegro Agitato (C Minor)
+  %% =========================================================================
+
+  measure 1 {
+    meta @{ tempo: 84 }
+    harp: c3:8.p.ped g3:8.ped.p c4:8.ped.p eb4:8.ped.p g4:8.ped.p eb4:8.ped.p c4:8.ped.p g3:8.ped.p |
+    fm_bell: g5:2.p r:4 f#5:4.pp |
+    vln2: [c4 eb4 g4]:1.pp.cresc(30, 65)~ |
+    vc: c3:1.p.cresc(35, 75)~ |
+    cb: c2:1.p~ |
+  }
+
+  measure 2 {
+    harp: c3:8.p.ped g3:8.ped.p c4:8.ped.p eb4:8.ped.p c4:8.ped.p ab3:8.ped.p eb3:8.ped.p ab2:8.ped.p |
+    ob: c5:4.mp.legato d5:8.mp.legato eb5:8.mp.legato g5:4.mf.vib f#5:4.mf.legato |
+    vln2: [c4 eb4 g4]:2.mp [ab3 c4 eb4]:2.mp |
+    vc: c3:2.mp ab2:2.mp.legato |
+    cb: c2:2.p ab1:2.mp |
+  }
+
+  measure 3 {
+    harp: f2:8.mp.ped c3:8.ped.mp f3:8.ped.mp ab3:8.ped.mp g2:8.ped.mp d3:8.ped.mp f3:8.ped.mp b3:8.ped.mp |
+    ob: g5:2.f.vib ab5:8.f.legato g5:8.f.legato f5:8.f.legato eb5:8.f.legato |
+    fl: r:2 c6:4.mp.vib b5:4.mp.legato |
+    hn: [f3 ab3 d4]:2.mp.cresc(50, 90) [g3 b3 d4]:2.f |
+    vc: f2:2.mf.legato g2:2.f.legato |
+    cb: f1:2.mf g1:2.f |
+  }
+
+  measure 4 {
+    harp: [g2 d3 g3 b3 d4 g4]:1.arp.ped.f |
+    ob: d5:2.f.vib r:2 |
+    hn: [g3 b3 d4 f4]:1.f.cresc(75, 118) |
+    vln1: g4:8.mf.cresc b4:8.cresc d5:8.cresc f5:8.cresc g5:8.cresc b5:8.cresc d6:8.cresc f6:8.cresc |
+    vc: g2:2.f.roll(16) g2:2.ff.roll(16) |
+    cb: g1:1.f.cresc(75, 118) |
+    timp: r:2 g2:2.mf.roll(16).cresc(70, 115) |
+  }
+
+  measure 5 {
+    meta @{ tempo: 118 }
+    pno: <[ v1: c4:16.f eb4:16.f g4:16.f c5:16.f eb5:16.f c5:16.f g4:16.f eb4:16.f c4:16.f eb4:16.f g4:16.f c5:16.f eb5:16.f c5:16.f g4:16.f eb4:16.f | v2: [c2 g2 c3]:2.ff [c2 g2 eb3]:2.f ]>
+    vln1: c6:4.ff.marc g5:8.ff.stacc eb5:8.ff.stacc c5:4.f.legato d5:8.f.legato eb5:8.f.legato |
+    vln2: [c4 eb4 g4]:2.f.marc [c4 eb4 g4]:2.mf |
+    hn: [c3 g3 c4 eb4]:2.ff r:2 |
+    vc: c3:4.ff.marc g3:4.ff.stacc c3:4.f eb3:4.f.stacc |
+    cb: c2:4.ff.stacc r:4 c2:4.f.stacc r:4 |
+    timp: c3:4.ff r:4 c3:4.f r:4 |
+    perc: cr:2.f r:4 s:4.f.marc |
+  }
+
+  measure 6 {
+    pno: <[ v1: f4:16.f ab4:16.f c5:16.f f5:16.f ab5:16.f f5:16.f c5:16.f ab4:16.f d4:16.f f4:16.f ab4:16.f b4:16.f d5:16.f b4:16.f ab4:16.f f4:16.f | v2: [f1 c2 f2]:2.f [g1 d2 g2]:2.f ]>
+    vln1: f5:4.f.vib ab5:8.f.legato g5:8.f.legato f5:4.f.marc d5:4.f.legato |
+    vln2: [f4 ab4 c5]:2.mf [f4 ab4 b4]:2.f |
+    wt_lead: r:2 g5:4.mf.mpe(@{bend: [0, 2, 0], slide: [40, 110], pressure: [70, 115]}) f5:4.mf |
+    vc: f3:2.f.legato g2:2.f.legato |
+    cb: f2:2.f g1:2.f |
+    timp: f2:4.f r:8 f2:8.f r:2 |
+    perc: r:2 r:4 s:4.mf |
+  }
+
+  measure 7 {
+    pno: <[ v1: eb4:16.f g4:16.f bb4:16.f eb5:16.f g5:16.f eb5:16.f bb4:16.f g4:16.f c4:16.f eb4:16.f ab4:16.f c5:16.f eb5:16.f c5:16.f ab4:16.f eb4:16.f | v2: [eb2 bb2 eb3]:2.f [ab1 eb2 ab2]:2.f ]>
+    vln1: eb5:4.f.legato g5:8.f.legato bb5:8.f.legato c6:2.ff.vib |
+    fl: r:4 g5:8.f.legato bb5:8.f.legato c6:2.ff.vib |
+    hn: [eb3 bb3 eb4]:2.mf [ab2 eb3 c4]:2.f |
+    vc: eb3:2.f.legato ab2:2.f.legato |
+    cb: eb2:2.f ab1:2.f |
+    timp: eb3:4.mf r:4 ab2:4.f r:4 |
+    perc: r:2 r:4 s:4.f |
+  }
+
+  measure 8 {
+    pno: <[ v1: d4:16.f f#4:16.f a4:16.f c5:16.f d5:16.f f#5:16.f a5:16.f c6:16.f b5:8.ff g5:8.ff d5:8.ff b4:8.ff | v2: [d2 a2 d3]:2.f [g1 d2 g2]:2.ff ]>
+    vln1: a5:4.f.legato f#5:4.f.legato g5:2.ff.vib |
+    tpt: r:2 g5:4.ff.marc d5:4.ff.marc |
+    hn: [d3 a3 c4 f#4]:2.f [g3 b3 d4 g4]:2.ff |
+    vc: d3:2.f.legato g2:2.ff.marc |
+    cb: d2:2.f g1:2.ff |
+    timp: d3:2.f g2:2.ff.roll(12) |
+  }
+
+  measure 9 {
+    pno: <[ v1: c4:8.mp g4:8.mp eb5:8.mp g4:8.mp bb3:8.mp g4:8.mp d5:8.mp g4:8.mp | v2: c2:2.mp bb1:2.mp ]>
+    wt_lead: <[ v1: c5:4.mf.legato d5:8.mf.legato eb5:8.mf.legato f5:4.mf.vib d5:4.mf.legato | v2: s:1.automate("cutoff", [600, 4200], "s_curve") ]>
+    vln1: c5:2.mp.legato bb4:2.mp.legato |
+    vc: c3:2.mp.legato bb2:2.mp.legato |
+    cb: c2:2.mp bb1:2.mp |
+    timp: (c3):3/8.mp |
+  }
+
+  measure 10 {
+    pno: <[ v1: ab3:8.mp eb4:8.mp c5:8.mp eb4:8.mp g3:8.mp d4:8.mp b4:8.mp d4:8.mp | v2: ab1:2.mp g1:2.mp ]>
+    wt_lead: <[ v1: eb5:4.mf.legato c5:4.mf.legato d5:2.f.vib | v2: s:1.automate("cutoff", [4200, 1100], "s_curve") ]>
+    ob: r:2 g5:4.mf.legato f5:4.mf.legato |
+    vln1: ab4:2.mp.legato g4:2.mf.legato |
+    vc: ab2:2.mp.legato g2:2.mf.legato |
+    cb: ab1:2.mp g1:2.mf |
+    timp: ab2:4.mp r:4 g2:4.mp r:4 |
+    perc: h:8.p h:8.p h:8.p h:8.p h:8.p h:8.p h:8.p oh:8.p |
+  }
+
+  measure 11 {
+    pno: <[ v1: f3:16.mf c4:16.mf f4:16.mf ab4:16.mf c5:16.mf ab4:16.mf f4:16.mf c4:16.mf bb3:16.mf f4:16.mf bb4:16.mf d5:16.mf f5:16.mf d5:16.mf bb4:16.mf f4:16.mf | v2: [f1 c2]:2.mf [bb1 f2]:2.f ]>
+    fl: ab5:4.f.vib g5:8.f.legato f5:8.f.legato d6:2.f.vib |
+    vln1: c5:4.mf.legato f5:4.mf.legato bb5:2.f.vib |
+    vln2: [f4 ab4 c5]:2.mf [f4 bb4 d5]:2.f |
+    vc: f3:2.mf.legato bb2:2.f.legato |
+    cb: f2:2.mf bb1:2.f |
+  }
+
+  measure 12 {
+    pno: <[ v1: eb4:16.f bb4:16.f eb5:16.f g5:16.f bb5:16.f g5:16.f eb5:16.f bb4:16.f ab3:16.f eb4:16.f ab4:16.f c5:16.f eb5:16.f c5:16.f ab4:16.f eb4:16.f | v2: [eb2 bb2]:2.f [ab1 eb2]:2.f ]>
+    fl: bb5:4.f.legato g5:4.f.legato ab5:2.f.vib |
+    vln1: g5:4.f.legato eb5:4.f.legato c6:2.f.vib |
+    hn: [eb3 bb3 g4]:2.f [ab3 c4 eb4]:2.f |
+    vc: eb3:2.f.legato ab2:2.f.legato |
+    cb: eb2:2.f ab1:2.f |
+  }
+
+  measure 13 {
+    pno: <[ v1: c#4:16.ff e4:16.ff g4:16.ff bb4:16.ff c#5:16.ff e5:16.ff g5:16.ff bb5:16.ff d4:16.ff f4:16.ff ab4:16.ff c5:16.ff d5:16.ff f5:16.ff ab5:16.ff c6:16.ff | v2: [c#2 g2 c#3]:2.ff [d2 ab2 d3]:2.ff ]>
+    vln1: bb5:2.ff.roll(16) c6:2.ff.roll(16) |
+    vln2: [e4 g4 bb4]:2.ff [f4 ab4 c5]:2.ff |
+    hn: [c#3 g3 bb3 e4]:2.ff [d3 ab3 c4 f4]:2.ff |
+    vc: c#3:2.ff.roll(16) d3:2.ff.roll(16) |
+    cb: c#2:2.ff d2:2.ff |
+    timp: c#3:2.ff.roll(12) d3:2.ff.roll(12) |
+  }
+
+  measure 14 {
+    pno: <[ v1: eb4:16.ff g4:16.ff c5:16.ff eb5:16.ff g5:16.ff c6:16.ff g5:16.ff eb5:16.ff f#4:16.ff a4:16.ff c5:16.ff eb5:16.ff f#5:16.ff a5:16.ff c6:16.ff eb6:16.ff | v2: [eb2 c3]:2.ff [f#1 c2 f#2]:2.ff ]>
+    vln1: eb6:2.ff.vib f#6:2.ff.roll(16) |
+    tpt: c5:2.ff.marc eb5:2.ff.marc |
+    hn: [eb3 g3 c4]:2.ff [f#3 a3 c4 eb4]:2.ff |
+    vc: eb3:2.ff.legato f#2:2.ff.roll(16) |
+    cb: eb2:2.ff f#1:2.ff |
+    timp: eb3:4.ff r:4 f#2:2.ff.roll(12) |
+    perc: r:4 s:4.ff r:2 |
+  }
+
+  measure 15 {
+    pno: <[ v1: g4:16.ff b4:16.ff d5:16.ff f5:16.ff g5:16.ff b5:16.ff d6:16.ff f6:16.ff g6:8.ff f6:8.ff d6:8.ff b5:8.ff | v2: [g1 d2 g2]:1.ff ]>
+    vln1: g6:4.ff.marc d6:4.ff.marc b5:4.ff.marc g5:4.ff.marc |
+    vln2: [g4 b4 d5 f5]:1.ff |
+    tpt: g5:4.ff.marc d5:4.ff.marc b4:2.ff.vib |
+    hn: [g3 b3 d4 f4]:1.ff |
+    vc: g2:8.ff.stacc g3:8.ff g2:8.ff g3:8.ff g2:8.ff g3:8.ff g2:8.ff g3:8.ff |
+    cb: g1:2.ff.marc g1:2.ff.marc |
+    timp: g2:4.ff g2:4.ff g2:2.ff.roll(12) |
+    perc: cr:2.ff s:4.ff s:4.ff |
+  }
+
+  measure 16 {
+    pno: [c2 g2 c3 eb3 g3 c4]:4.ff.marc r:4 [g1 d2 g2 b2 d3 g3]:4.ff.marc r:4 |
+    vln1: c6:4.ff.marc r:4 b5:4.ff.marc r:4 |
+    vln2: [c4 eb4 g4]:4.ff.marc r:4 [b3 d4 g4]:4.ff.marc r:4 |
+    tpt: c5:4.ff.marc r:4 g4:4.ff.marc r:4 |
+    hn: [c3 g3 c4 eb4]:4.ff.marc r:4 [g2 d3 g3 b3]:4.ff.marc r:4 |
+    vc: c3:4.ff.marc r:4 g2:4.ff.marc r:4 |
+    cb: c2:4.ff.marc r:4 g1:4.ff.marc r:4 |
+    timp: c3:4.ff.marc r:4 g2:4.ff.marc r:4 |
+  }
+
+  %% =========================================================================
+  %% MOVEMENT II (Measures 17-30): Andante Luminescente (Eb Major / Vocal Choir)
+  %% =========================================================================
+
+  measure 17 {
+    meta @{ tempo: 76 }
+    harp: eb3:8.p.ped bb3:8.ped.p eb4:8.ped.p g4:8.ped.p bb4:8.ped.p g4:8.ped.p eb4:8.ped.p bb3:8.ped.p |
+    pno: [eb2 bb2 g3]:1.p.ped |
+    fl: g5:2.p.vib bb5:4.mp.legato g5:4.mp.legato |
+    vln1: [eb4 g4 bb4]:1.pp.cresc(30, 70)~ |
+    vc: eb3:1.p.legato |
+    cb: eb2:1.pp |
+  }
+
+  measure 18 {
+    harp: c3:8.p.ped g3:8.ped.p c4:8.ped.p eb4:8.ped.p g4:8.ped.p eb4:8.ped.p c4:8.ped.p g3:8.ped.p |
+    pno: [c2 g2 eb3]:1.p.ped |
+    fl: f5:4.mp.legato eb5:4.mp.legato c5:2.p.vib |
+    ob: r:2 g5:4.mp.legato f5:4.mp.legato |
+    vln1: [eb4 g4 bb4]:2.mp [c4 eb4 g4]:2.mp |
+    vc: c3:1.p.legato |
+    cb: c2:1.pp |
+  }
+
+  measure 19 {
+    harp: ab2:8.mp.ped eb3:8.ped.mp ab3:8.ped.mp c4:8.ped.mp d4:8.ped.mp bb3:8.ped.mp f3:8.ped.mp bb2:8.ped.mp |
+    pno: [ab1 eb2 c3]:2.mp.ped [bb1 f2 d3]:2.mp.ped |
+    ob: eb5:4.mf.vib d5:8.mf.legato c5:8.mf.legato d5:2.mf.vib |
+    vln1: c5:2.mp.legato d5:2.mf.legato |
+    hn: [ab3 c4 eb4]:2.p [bb3 d4 f4]:2.mp |
+    vc: ab2:2.mp.legato bb2:2.mp.legato |
+    cb: ab1:2.p bb1:2.mp |
+  }
+
+  measure 20 {
+    harp: [eb2 bb2 eb3 g3 bb3 eb4]:1.arp.ped.mp |
+    fm_bell: bb5:4.mp g5:4.mp eb5:2.p |
+    vln1: eb5:4.mf.legato g5:4.mf.legato bb5:2.f.vib |
+    vln2: [eb4 g4 bb4]:1.mp |
+    vc: eb3:2.mp.legato d3:2.mp.legato |
+    cb: eb2:1.mp |
+  }
+
+  measure 21 {
+    pno: <[ v1: c4:16.mp g4:16.mp c5:16.mp d5:16.mp eb5:16.mp d5:16.mp c5:16.mp g4:16.mp ab3:16.mp eb4:16.mp ab4:16.mp bb4:16.mp c5:16.mp bb4:16.mp ab4:16.mp eb4:16.mp | v2: [c2 g2]:2.mp [ab1 eb2]:2.mp ]>
+    vln1: g5:4.f.vib f5:8.f.legato eb5:8.f.legato c6:2.f.vib |
+    fl: c6:4.mf.legato bb5:8.mf.legato g5:8.mf.legato ab5:2.f.vib |
+    vc: c3:2.mf.legato ab2:2.mf.legato |
+    cb: c2:2.mp ab1:2.mp |
+  }
+
+  measure 22 {
+    pno: <[ v1: f3:16.mf c4:16.mf f4:16.mf g4:16.mf ab4:16.mf g4:16.mf f4:16.mf c4:16.mf g3:16.mf d4:16.mf g4:16.mf a4:16.mf b4:16.mf a4:16.mf g4:16.mf d4:16.mf | v2: [f1 c2]:2.mf [g1 d2]:2.f ]>
+    vln1: ab5:4.f.legato f5:4.f.legato g5:2.f.vib |
+    ob: f5:4.mf.legato d5:4.mf.legato b4:2.f.vib |
+    hn: [f3 ab3 c4]:2.mf [g3 b3 d4]:2.f |
+    vc: f2:2.mf.legato g2:2.f.legato |
+    cb: f1:2.mf g1:2.f |
+  }
+
+  measure 23 {
+    harp: ab2:8.f.ped eb3:8.ped.f ab3:8.ped.f c4:8.ped.f eb4:8.ped.f g4:8.ped.f bb4:8.ped.f eb5:8.ped.f |
+    vln1: c6:4.ff.vib bb5:8.ff.legato ab5:8.ff.legato g5:4.f.legato eb5:4.f.legato |
+    vln2: [ab4 c5 eb5]:2.f [g4 bb4 eb5]:2.f |
+    hn: [ab3 c4 eb4 g4]:2.f [eb3 bb3 eb4 g4]:2.f |
+    vc: ab2:2.f.legato eb3:2.f.legato |
+    cb: ab1:2.f eb2:2.f |
+  }
+
+  measure 24 {
+    harp: [f2 c3 f3 ab3 c4 f4]:2.arp.ped.mf [bb1 f2 bb2 d3 f3 bb3]:2.arp.ped.f |
+    vln1: f5:4.f.vib g5:8.f.legato ab5:8.f.legato bb5:2.f.vib |
+    fl: c6:2.f.vib bb5:2.f.legato |
+    vc: f2:2.f.legato bb2:2.f.legato |
+    cb: f1:2.mf bb1:2.f |
+  }
+
+  measure 25 {
+    choir: [eb4 g4 bb4]:2.mp.lyric("Rise") [c4 eb4 ab4]:2.mf.lyric("through") |
+    harp: eb3:8.mp.ped bb3:8.ped.mp eb4:8.ped.mp g4:8.ped.mp c3:8.ped.mp ab3:8.ped.mp c4:8.ped.mp eb4:8.ped.mp |
+    vln1: g5:2.mp.vib ab5:2.mf.vib |
+    vc: eb3:2.mp.legato ab2:2.mf.legato |
+    cb: eb2:2.mp ab1:2.mf |
+  }
+
+  measure 26 {
+    choir: [f4 ab4 d5]:2.f.lyric("the") [g4 bb4 eb5]:2.f.lyric("deep") |
+    harp: f2:8.mf.ped c3:8.ped.mf f3:8.ped.mf ab3:8.ped.mf eb2:8.ped.mf bb2:8.ped.mf eb3:8.ped.mf g3:8.ped.mf |
+    vln1: bb5:2.f.vib eb6:2.f.vib |
+    hn: [f3 ab3 d4]:2.mf [eb3 g3 bb3]:2.f |
+    vc: f2:2.mf.legato eb3:2.f.legato |
+    cb: f1:2.mf eb2:2.f |
+  }
+
+  measure 27 {
+    choir: [ab4 c5 eb5 g5]:1.ff.cresc(85, 124).lyric("light") |
+    pno: [ab1 eb2 ab2 c3 eb3 ab3]:2.arp.ped.f [f1 c2 f2 ab2 c3 f3]:2.arp.ped.ff |
+    vln1: c6:4.ff.legato d6:4.ff.legato eb6:2.ff.vib |
+    vln2: [ab4 c5 eb5]:2.f [ab4 c5 f5]:2.ff |
+    hn: [ab3 c4 eb4]:1.ff.cresc(85, 122) |
+    vc: ab2:2.f.legato f2:2.ff.legato |
+    cb: ab1:2.f f1:2.ff |
+    timp: r:2 f2:2.f.roll(16) |
+  }
+
+  measure 28 {
+    choir: [g4 c5 eb5]:2.ff.lyric("shine") [g4 b4 d5]:2.f.dim(110, 50).lyric("on") |
+    pno: [g1 d2 g2 c3 eb3]:2.arp.ped.ff [g1 d2 g2 b2 d3]:2.arp.ped.f |
+    vln1: eb6:2.ff.vib d6:2.f.dim(110, 55) |
+    tpt: g5:2.ff.vib d5:2.f.legato |
+    hn: [g3 c4 eb4]:2.ff [g3 b3 d4]:2.f |
+    vc: g2:1.ff.dim(110, 55) |
+    cb: g1:1.ff.dim(110, 55) |
+    timp: c3:4.ff r:4 r:2 |
+  }
+
+  measure 29 {
+    harp: d3:8.mp.ped g3:8.ped.mp b3:8.ped.mp d4:8.ped.mp f4:8.ped.mp d4:8.ped.mp b3:8.ped.mp g3:8.ped.mp |
+    ob: d5:2.mp.vib c5:4.p.legato b4:4.p.legato |
+    vln2: [g3 b3 f4]:1.p.dim(65, 35) |
+    vc: g2:1.p |
+    cb: g1:1.p |
+  }
+
+  measure 30 {
+    pno: g2:8.mp.cresc b2:8.cresc d3:8.cresc f3:8.cresc g3:8.cresc b3:8.cresc d4:8.cresc f4:8.cresc |
+    vln1: g4:8.mp.cresc b4:8.cresc d5:8.cresc f5:8.cresc g5:8.cresc b5:8.cresc d6:8.cresc f6:8.cresc |
+    hn: [g3 b3 d4 f4]:1.mp.cresc(50, 118) |
+    vc: g2:2.mp.roll(16).cresc(50, 118) g2:2.roll(16).cresc |
+    cb: g1:1.mp.cresc(50, 118) |
+    timp: g2:2.mp.roll(16).cresc(45, 120) g2:2.roll(16).cresc |
+  }
+
+  %% =========================================================================
+  %% MOVEMENT III (Measures 31-45): Scherzo Polimetrico & Fugato (128 BPM)
+  %% =========================================================================
+
+  measure 31 {
+    meta @{ tempo: 128 }
+    vln1: c5:8.f.stacc g4:8.f.stacc eb5:8.f.stacc c5:8.f.stacc g5:4.ff.marc f#5:8.ff.legato g5:8.ff.legato |
+    pno: c3:8.f.stacc g2:8.f.stacc eb3:8.f.stacc c3:8.f.stacc g3:4.f.marc f#3:8.f.stacc g3:8.f.stacc |
+    vc: c3:4.f.stacc r:4 eb3:4.f.stacc r:4 |
+    cb: c2:4.f.stacc r:4 eb2:4.f.stacc r:4 |
+    timp: (c3):3/8.f |
+  }
+
+  measure 32 {
+    wt_lead: g5:8.f.stacc d5:8.f.stacc bb5:8.f.stacc g5:8.f.stacc d6:4.ff.marc c#6:8.ff.legato d6:8.ff.legato |
+    vln1: bb5:8.f.legato g5:8.f.legato f5:8.f.legato eb5:8.f.legato d5:4.f.marc g4:4.f.stacc |
+    pno: <[ v1: bb4:8.mf g4:8.mf f4:8.mf eb4:8.mf d4:4.mf g4:4.mf | v2: g2:4.f.stacc eb2:4.f.stacc d2:4.f.stacc g1:4.f.stacc ]>
+    vc: g3:4.mf.stacc eb3:4.mf.stacc d3:4.f.stacc g2:4.f.stacc |
+    cb: g2:4.mf.stacc eb2:4.mf.stacc d2:4.f.stacc g1:4.f.stacc |
+    timp: (g2):3/8.f |
+    perc: r:4 s:4.f r:4 s:4.f |
+  }
+
+  measure 33 {
+    vln1: (c5:8.f d5:8.f eb5:8.f):3/2 (f5:8.f g5:8.f ab5:8.f):3/2 g5:4.ff.marc c6:4.ff.marc |
+    fl: (c6:8.f d6:8.f eb6:8.f):3/2 (f6:8.f g6:8.f ab6:8.f):3/2 g6:4.ff.marc c6:4.ff.marc |
+    wt_lead: <[ v1: eb5:4.f.marc d5:4.f.marc c5:2.ff.mpe(@{bend: [0, 3, 0], slide: [50, 120], pressure: [80, 120]}) | v2: s:1.automate("cutoff", [500, 5200], "exp") ]>
+    vc: c3:8.f.stacc g2:8.f.stacc eb3:8.f.stacc c3:8.f.stacc g3:4.ff.marc f#3:8.ff.legato g3:8.ff.legato |
+    cb: c2:4.f.marc eb2:4.f.marc g1:4.ff.marc c2:4.ff.marc |
+    timp: c3:4.ff r:4 g2:4.ff r:4 |
+    perc: r:4 s:4.f r:4 s:8.f s:8.f |
+  }
+
+  measure 34 {
+    pno: <[ v1: f4:16.f ab4:16.f c5:16.f eb5:16.f f5:16.f eb5:16.f c5:16.f ab4:16.f bb3:16.f d4:16.f f4:16.f ab4:16.f bb4:16.f ab4:16.f f4:16.f d4:16.f | v2: [f2 c3]:2.f [bb1 f2]:2.f ]>
+    vln1: c6:4.f.marc ab5:8.f.legato f5:8.f.legato d6:4.f.marc bb5:8.f.legato f5:8.f.legato |
+    ob: ab5:2.f.vib f5:2.f.legato |
+    hn: [f3 ab3 c4 eb4]:2.f [bb2 d3 f3 ab3]:2.f |
+    vc: f3:2.f.legato bb2:2.f.legato |
+    cb: f2:2.f bb1:2.f |
+    timp: (f2):3/8.f |
+  }
+
+  measure 35 {
+    pno: <[ v1: eb4:16.f g4:16.f bb4:16.f d5:16.f eb5:16.f d5:16.f bb4:16.f g4:16.f ab3:16.f c4:16.f eb4:16.f g4:16.f ab4:16.f g4:16.f eb4:16.f c4:16.f | v2: [eb2 bb2]:2.f [ab1 eb2]:2.f ]>
+    vln1: bb5:4.f.marc g5:8.f.legato eb5:8.f.legato c6:4.f.marc ab5:8.f.legato eb5:8.f.legato |
+    fl: g5:2.f.vib eb6:2.f.vib |
+    hn: [eb3 g3 bb3 d4]:2.f [ab2 c3 eb3 g3]:2.f |
+    vc: eb3:2.f.legato ab2:2.f.legato |
+    cb: eb2:2.f ab1:2.f |
+    timp: (eb3):3/8.f |
+    perc: r:4 s:4.f r:4 s:4.f |
+  }
+
+  measure 36 {
+    pno: <[ v1: d4:16.f f4:16.f ab4:16.f c5:16.f d5:16.f c5:16.f ab4:16.f f4:16.f g3:16.f b3:16.f d4:16.f f4:16.f g4:16.f b4:16.f d5:16.f f5:16.f | v2: [d2 ab2]:2.f [g1 d2]:2.ff ]>
+    vln1: ab5:4.f.legato f5:4.f.legato repeat 4 { g5:32.ff ab5:32.ff } f5:8.f.legato d5:8.f.legato |
+    tpt: r:2 g5:4.ff.marc g5:4.ff.marc |
+    hn: [d3 f3 ab3 c4]:2.f [g2 b2 d3 f3]:2.ff |
+    vc: d3:2.f.legato g2:2.ff.legato |
+    cb: d2:2.f g1:2.ff |
+    timp: d3:2.f g2:2.ff.roll(12) |
+  }
+
+  measure 37 {
+    tpt: [f4 ab4 db5]:2.ff.marc [db4 f4 ab4]:2.f |
+    hn: [db3 f3 ab3 db4]:1.ff |
+    vln1: db6:2.ff.vib ab5:4.f.legato f5:4.f.legato |
+    vln2: [db4 f4 ab4]:1.ff |
+    pno: <[ v1: db4:16.ff f4:16.ff ab4:16.ff db5:16.ff f5:16.ff db5:16.ff ab4:16.ff f4:16.ff db4:16.ff f4:16.ff ab4:16.ff db5:16.ff f5:16.ff db5:16.ff ab4:16.ff f4:16.ff | v2: [db1 ab1 db2]:1.ff ]>
+    vc: db3:2.ff.legato ab2:2.f.legato |
+    cb: db2:1.ff |
+    timp: db3:4.ff r:4 ab2:2.f.roll(12) |
+  }
+
+  measure 38 {
+    tpt: [e4 g4 c5]:2.ff.marc [f4 ab4 c5]:2.ff.marc |
+    hn: [c3 e3 g3 c4]:2.ff [f3 ab3 c4]:2.ff |
+    vln1: c6:2.ff.vib f6:2.ff.vib |
+    pno: <[ v1: c4:16.ff e4:16.ff g4:16.ff bb4:16.ff c5:16.ff bb4:16.ff g4:16.ff e4:16.ff f4:16.ff ab4:16.ff c5:16.ff f5:16.ff ab5:16.ff f5:16.ff c5:16.ff ab4:16.ff | v2: [c2 g2]:2.ff [f1 c2 f2]:2.ff ]>
+    vc: c3:2.ff.legato f2:2.ff.legato |
+    cb: c2:2.ff f1:2.ff |
+    timp: c3:4.ff r:4 f2:4.ff r:4 |
+    perc: r:4 s:4.ff r:4 s:4.ff |
+  }
+
+  measure 39 {
+    vln1: eb6:4.ff.legato d6:8.ff.legato c6:8.ff.legato b5:4.ff.marc g5:4.ff.marc |
+    fl: eb6:4.ff.legato d6:8.ff.legato c6:8.ff.legato b5:4.ff.marc g5:4.ff.marc |
+    pno: <[ v1: f#4:16.ff a4:16.ff c5:16.ff eb5:16.ff f#5:16.ff eb5:16.ff c5:16.ff a4:16.ff g4:16.ff b4:16.ff d5:16.ff g5:16.ff b5:16.ff g5:16.ff d5:16.ff b4:16.ff | v2: [f#1 c2 f#2]:2.ff [g1 d2 g2]:2.ff ]>
+    hn: [f#3 a3 c4 eb4]:2.ff [g3 b3 d4 g4]:2.ff |
+    vc: f#2:2.ff.legato g2:2.ff.legato |
+    cb: f#1:2.ff g1:2.ff |
+    timp: f#2:2.ff.roll(12) g2:4.ff r:4 |
+  }
+
+  measure 40 {
+    pno: c4:16.f d4:16.f eb4:16.f f4:16.f g4:16.f ab4:16.f b4:16.f c5:16.f b4:16.f ab4:16.f g4:16.f f4:16.f eb4:16.f d4:16.f c4:16.f b3:16.f |
+    vln1: c6:16.f b5:16.f ab5:16.f g5:16.f f5:16.f eb5:16.f d5:16.f c5:16.f d5:16.f eb5:16.f f5:16.f g5:16.f ab5:16.f b5:16.f c6:16.f d6:16.f |
+    wt_lead: c5:4.f.stacc eb5:4.f.stacc g5:4.f.stacc b5:4.f.stacc |
+    vc: g2:8.f.stacc g3:8.f g2:8.f g3:8.f g2:8.f g3:8.f g2:8.f g3:8.f |
+    cb: g1:1.f |
+  }
+
+  measure 41 {
+    pno: <[ v1: eb4:16.f g4:16.f c5:16.f eb5:16.f d4:16.f g4:16.f b4:16.f d5:16.f c4:16.f eb4:16.f g4:16.f c5:16.f b3:16.f d4:16.f g4:16.f b4:16.f | v2: [g1 g2]:1.f ]>
+    vln1: eb6:4.f.marc d6:4.f.marc c6:4.f.marc b5:4.f.marc |
+    fl: eb6:4.f.marc d6:4.f.marc c6:4.f.marc b5:4.f.marc |
+    hn: [g3 c4 eb4]:2.f [g3 b3 d4]:2.f |
+    vc: g2:2.f.roll(16) g2:2.f.roll(16) |
+    cb: g1:1.f |
+    timp: (g2):3/8.f |
+  }
+
+  measure 42 {
+    vln1: ab5:2.p.vib g5:2.p.legato |
+    vln2: [c4 eb4 ab4]:2.p [b3 d4 g4]:2.p |
+    ob: c5:2.p.vib b4:2.p.legato |
+    harp: ab2:8.p.ped eb3:8.ped.p ab3:8.ped.p c4:8.ped.p g2:8.ped.p d3:8.ped.p g3:8.ped.p b3:8.ped.p |
+    vc: ab2:2.p.legato g2:2.p.legato |
+    cb: ab1:2.p g1:2.p |
+  }
+
+  measure 43 {
+    vln1: f5:4.mp.cresc g5:4.cresc ab5:4.cresc b5:4.cresc |
+    vln2: [c4 f4 ab4]:2.mp.cresc(55, 95) [d4 f4 b4]:2.f |
+    hn: [f3 ab3 c4]:2.mp.cresc(55, 95) [g3 b3 d4]:2.f |
+    pno: f3:8.mp.cresc ab3:8.cresc c4:8.cresc f4:8.cresc g3:8.cresc b3:8.cresc d4:8.cresc g4:8.cresc |
+    vc: f2:2.mp.cresc(55, 95) g2:2.f |
+    cb: f1:2.mp g1:2.f |
+    timp: f2:2.mp.roll(12).cresc(45, 105) g2:2.roll(12).cresc |
+  }
+
+  measure 44 {
+    vln1: c6:8.f.cresc d6:8.cresc eb6:8.cresc f6:8.cresc g6:4.ff.marc f6:4.ff.marc |
+    fl: c6:8.f.cresc d6:8.cresc eb6:8.cresc f6:8.cresc g6:4.ff.marc f6:4.ff.marc |
+    tpt: g4:2.f.cresc(80, 120) d5:2.ff.vib |
+    hn: [g3 c4 eb4]:2.f [g3 b3 d4 f4]:2.ff |
+    pno: <[ v1: c4:16.f eb4:16.f g4:16.f c5:16.f eb5:16.f g5:16.f c6:16.f eb6:16.f d6:8.ff b5:8.ff g5:8.ff f5:8.ff | v2: [g1 d2 g2]:1.ff ]>
+    vc: g2:2.ff.roll(16) g2:2.ff.roll(16) |
+    cb: g1:1.ff |
+    timp: g2:2.f.roll(12) g2:2.ff.roll(12) |
+  }
+
+  measure 45 {
+    vln1: (b5:8.ff c6:8.ff d6:8.ff):3/2 (eb6:8.ff f6:8.ff g6:8.ff):3/2 repeat 8 { b6:32.ff c7:32.ff } |
+    fl: (b5:8.ff c6:8.ff d6:8.ff):3/2 (eb6:8.ff f6:8.ff g6:8.ff):3/2 g6:2.ff.trill |
+    tpt: [b4 d5 f5]:1.ff.cresc(100, 127) |
+    hn: [g3 b3 d4 f4]:1.ff.cresc(100, 127) |
+    pno: [g1 d2 g2 b2 d3 f3]:1.ff.cresc(100, 127) |
+    vc: g2:2.ff.roll(16).cresc(100, 127) g2:2.roll(16).cresc |
+    cb: g1:1.ff.cresc(100, 127) |
+    timp: g2:2.ff.roll(12).cresc(100, 127) g2:2.roll(12).cresc |
+  }
+
+  %% =========================================================================
+  %% MOVEMENT IV (Measures 46-60): Apotheosis - The Glass Horizon (C Major)
+  %% =========================================================================
+
+  measure 46 {
+    meta @{ tempo: 122 }
+    pno: <[ v1: c4:16.ff e4:16.ff g4:16.ff c5:16.ff e5:16.ff g5:16.ff c6:16.ff e6:16.ff g5:16.ff e5:16.ff c5:16.ff g4:16.ff e4:16.ff g4:16.ff c5:16.ff e5:16.ff | v2: [c1 g1 c2]:2.ff [c2 g2 e3]:2.ff ]>
+    tpt: c5:4.ff.marc d5:8.ff.legato e5:8.ff.legato g5:2.ff.vib |
+    hn: [c3 g3 c4 e4]:1.ff |
+    vln1: e6:2.ff.vib g6:4.ff.marc e6:4.ff.legato |
+    vln2: [c4 e4 g4 c5]:1.ff |
+    vc: c3:4.ff.marc g3:4.ff.marc c4:2.ff.vib |
+    cb: c2:2.ff.marc g1:2.ff.marc |
+    timp: c3:4.ff r:4 g2:4.ff r:4 |
+    perc: cr:2.ff r:4 s:4.ff |
+  }
+
+  measure 47 {
+    pno: <[ v1: f4:16.ff a4:16.ff c5:16.ff f5:16.ff a5:16.ff c6:16.ff a5:16.ff f5:16.ff g4:16.ff b4:16.ff d5:16.ff g5:16.ff b5:16.ff d6:16.ff b5:16.ff g5:16.ff | v2: [f1 c2 f2]:2.ff [g1 d2 g2]:2.ff ]>
+    tpt: a5:4.ff.vib g5:8.ff.legato f5:8.ff.legato d5:2.ff.vib |
+    hn: [f3 a3 c4 f4]:2.ff [g3 b3 d4 g4]:2.ff |
+    vln1: f6:4.ff.vib c6:4.ff.legato b5:2.ff.vib |
+    fl: a6:4.ff.legato f6:4.ff.legato d6:2.ff.vib |
+    vc: f3:2.ff.legato g3:2.ff.legato |
+    cb: f2:2.ff g2:2.ff |
+    timp: f2:4.ff r:8 f2:8.ff g2:4.ff r:4 |
+    perc: r:2 r:4 s:4.ff |
+  }
+
+  measure 48 {
+    pno: <[ v1: e4:16.f g#4:16.f b4:16.f e5:16.f g#5:16.f b5:16.f g#5:16.f e5:16.f a3:16.f e4:16.f a4:16.f c5:16.f e5:16.f a5:16.f e5:16.f c5:16.f | v2: [e1 b1 e2]:2.f [a1 e2 a2]:2.ff ]>
+    vln1: b5:4.f.legato e6:4.f.legato c6:2.ff.vib |
+    ob: g#5:4.f.legato b5:4.f.legato a5:2.ff.vib |
+    hn: [e3 g#3 b3 e4]:2.f [a3 c4 e4 a4]:2.ff |
+    vc: e3:2.f.legato a2:2.ff.legato |
+    cb: e2:2.f a1:2.ff |
+  }
+
+  measure 49 {
+    pno: <[ v1: d4:16.f f#4:16.f a4:16.f d5:16.f f#5:16.f a5:16.f d6:16.f f#6:16.f g4:16.f b4:16.f d5:16.f g5:16.f b5:16.f d6:16.f g6:16.f b6:16.f | v2: [d2 a2 d3]:2.f [g1 d2 g2]:2.ff ]>
+    vln1: d6:4.f.legato a5:4.f.legato b5:2.ff.vib |
+    tpt: d5:4.f.marc f#5:4.f.marc g5:2.ff.vib |
+    hn: [d3 f#3 a3 d4]:2.f [g3 b3 d4 g4]:2.ff |
+    vc: d3:2.f.legato g2:2.ff.legato |
+    cb: d2:2.f g1:2.ff |
+    timp: d3:2.f g2:2.ff.roll(12) |
+  }
+
+  measure 50 {
+    harp: c3:8.mf.ped g3:8.ped.mf c4:8.ped.mf e4:8.ped.mf g4:8.ped.mf c5:8.ped.mf e5:8.ped.mf g5:8.ped.mf |
+    fm_bell: c6:4.mf g5:4.mf e6:4.mf c6:4.mf |
+    wt_lead: c5:4.mf.legato e5:4.mf.legato g5:4.f.vib c6:4.f.legato |
+    vln1: c6:4.f.legato g5:8.f.legato e5:8.f.legato c5:4.mf.legato e5:4.mf.legato |
+    vc: c3:2.mf.legato b2:2.mf.legato |
+    cb: c2:2.mf b1:2.mf |
+    timp: (c3):3/8.mf |
+  }
+
+  measure 51 {
+    harp: a2:8.mf.ped e3:8.ped.mf a3:8.ped.mf c4:8.ped.mf e4:8.ped.mf a4:8.ped.mf c5:8.ped.mf e5:8.ped.mf |
+    wt_lead: b5:4.mf.legato a5:4.mf.legato g5:4.mf.legato e5:4.mf.legato |
+    vln1: a5:4.mf.vib e5:4.mf.legato g5:2.mf.vib |
+    fl: c6:2.mf.vib b5:2.mf.legato |
+    vc: a2:2.mf.legato e3:2.mf.legato |
+    cb: a1:2.mf e2:2.mf |
+    timp: (e3):3/8.mf |
+    perc: r:4 s:4.mp r:4 s:4.mp |
+  }
+
+  measure 52 {
+    harp: [f2 c3 f3 a3 c4 f4]:2.arp.ped.mf [g2 d3 g3 b3 d4 g4]:2.arp.ped.f |
+    vln1: f5:4.mf.cresc a5:4.cresc d6:4.cresc b5:4.cresc |
+    hn: [f3 a3 c4]:2.mf [g3 b3 d4]:2.f.cresc(100, 120) |
+    vc: f2:2.mf.legato g2:2.f.legato |
+    cb: f1:2.mf g1:2.f |
+    timp: f2:2.mf g2:2.f.roll(12).cresc(90, 120) |
+  }
+
+  measure 53 {
+    choir: [ab4 c5 eb5]:1.ff.lyric("Shine") |
+    tpt: eb5:4.ff.marc c5:8.ff.legato eb5:8.ff.legato ab5:2.ff.vib |
+    hn: [ab3 c4 eb4 ab4]:1.ff |
+    pno: <[ v1: ab3:16.ff eb4:16.ff ab4:16.ff c5:16.ff eb5:16.ff ab5:16.ff eb5:16.ff c5:16.ff ab3:16.ff eb4:16.ff ab4:16.ff c5:16.ff eb5:16.ff ab5:16.ff eb5:16.ff c5:16.ff | v2: [ab1 eb2 ab2]:1.ff ]>
+    vln1: c6:2.ff.vib eb6:2.ff.vib |
+    vc: ab2:2.ff.legato eb3:2.ff.legato |
+    cb: ab1:1.ff |
+    timp: ab2:4.ff r:4 eb3:2.ff |
+  }
+
+  measure 54 {
+    choir: [bb4 d5 f5]:1.ff.lyric("free") |
+    tpt: f5:4.ff.marc d5:8.ff.legato f5:8.ff.legato bb5:2.ff.vib |
+    hn: [bb3 d4 f4 bb4]:1.ff |
+    pno: <[ v1: bb3:16.ff f4:16.ff bb4:16.ff d5:16.ff f5:16.ff bb5:16.ff f5:16.ff d5:16.ff bb3:16.ff f4:16.ff bb4:16.ff d5:16.ff f5:16.ff bb5:16.ff f5:16.ff d5:16.ff | v2: [bb1 f2 bb2]:1.ff ]>
+    vln1: d6:2.ff.vib f6:2.ff.vib |
+    vc: bb2:2.ff.legato f3:2.ff.legato |
+    cb: bb1:1.ff |
+    timp: bb2:4.ff r:4 f2:2.ff.roll(12) |
+  }
+
+  measure 55 {
+    choir: [g4 c5 e5]:2.ff.lyric("now") [g4 b4 d5]:2.ff.cresc(100, 127) |
+    pno: <[ v1: g4:16.ff c5:16.ff e5:16.ff g5:16.ff c6:16.ff g5:16.ff e5:16.ff c5:16.ff g4:16.ff b4:16.ff d5:16.ff g5:16.ff b5:16.ff d6:16.ff b5:16.ff g5:16.ff | v2: [g1 d2 g2]:1.ff ]>
+    vln1: e6:2.ff.vib d6:2.ff.vib |
+    tpt: g5:2.ff.vib g5:2.ff.marc |
+    hn: [g3 c4 e4]:2.ff [g3 b3 d4]:2.ff |
+    vc: g2:2.ff.roll(16) g2:2.ff.roll(16) |
+    cb: g1:1.ff |
+    timp: (g2):3/8.ff |
+  }
+
+  measure 56 {
+    pno: <[ v1: g4:16.ff b4:16.ff d5:16.ff f5:16.ff g5:16.ff b5:16.ff d6:16.ff f6:16.ff g6:4.ff.marc d6:4.ff.marc | v2: [g1 d2 g2]:1.ff ]>
+    vln1: g5:8.ff.cresc a5:8.cresc b5:8.cresc c6:8.cresc d6:8.cresc e6:8.cresc f6:8.cresc g6:8.cresc |
+    fl: g5:8.ff.cresc a5:8.cresc b5:8.cresc c6:8.cresc d6:8.cresc e6:8.cresc f6:8.cresc g6:8.cresc |
+    tpt: [g4 b4 d5 f5]:1.ff.cresc(105, 127) |
+    hn: [g3 b3 d4 f4]:1.ff.cresc(105, 127) |
+    vc: g2:2.ff.roll(16).cresc(105, 127) g2:2.roll(16).cresc |
+    cb: g1:1.ff.cresc(105, 127) |
+    timp: g2:2.ff.roll(12).cresc(100, 127) g2:2.roll(12).cresc |
+  }
+
+  measure 57 {
+    meta @{ tempo: 92 }
+    choir: [c4 e4 g4 c5]:1.ff~ |
+    tpt: c6:2.ff.vib g5:4.ff.legato e5:4.ff.legato |
+    hn: [c4 e4 g4 c5]:1.ff |
+    pno: [c1 g1 c2 e2 g2 c3 e3 g3 c4]:1.arp.ped.ff |
+    harp: [c2 g2 c3 e3 g3 c4 e4 g4 c5]:1.arp.ped.ff |
+    vln1: c6:2.ff.vib e6:2.ff.vib |
+    vln2: [c4 e4 g4 c5]:1.ff |
+    vc: c2:1.ff.legato~ |
+    cb: c1:1.ff~ |
+    timp: c3:2.ff c3:2.ff.roll(16) |
+    perc: cr:1.ff |
+  }
+
+  measure 58 {
+    choir: [c4 e4 g4 c5]:4.ff [c4 f4 ab4 d5]:2.ff [c4 f4 ab4]:4.ff |
+    tpt: ab5:2.ff.vib f5:4.ff.legato d5:4.ff.legato |
+    hn: [c3 f3 ab3 d4]:1.ff |
+    pno: <[ v1: c4:16.ff f4:16.ff ab4:16.ff d5:16.ff f5:16.ff ab5:16.ff d6:16.ff f6:16.ff d6:8.ff ab5:8.ff f5:8.ff d5:8.ff | v2: [c1 f1 ab1 c2]:1.ff ]>
+    vln1: f6:2.ff.vib d6:4.ff.legato ab5:4.ff.legato |
+    vln2: [c4 f4 ab4 d5]:1.ff |
+    vc: c2:1.ff.legato |
+    cb: c1:1.ff |
+    timp: c3:2.ff.roll(16) c3:2.ff.roll(16) |
+  }
+
+  measure 59 {
+    meta @{ tempo: 86 }
+    choir: [c4 e4 g4 c5]:1.ff |
+    tpt: c5:4.ff.marc g5:4.ff.marc e5:4.ff.marc g5:4.ff.marc |
+    hn: [c3 g3 c4 e4]:4.ff.marc [g3 b3 d4 g4]:4.ff.marc [c3 g3 c4 e4]:4.ff.marc [g3 b3 d4 g4]:4.ff.marc |
+    pno: [c1 g1 c2 e2 g2 c3]:4.ff.marc [g1 d2 g2 b2 d3 g3]:4.ff.marc [c1 g1 c2 e2 g2 c3]:4.ff.marc [g1 d2 g2 b2 d3 g3]:4.ff.marc |
+    vln1: c6:4.ff.marc d6:4.ff.marc e6:4.ff.marc g6:4.ff.marc |
+    vln2: [c4 e4 g4]:4.ff.marc [b3 d4 g4]:4.ff.marc [c4 e4 g4]:4.ff.marc [b3 d4 g4]:4.ff.marc |
+    vc: c2:4.ff.marc g2:4.ff.marc c2:4.ff.marc g2:4.ff.marc |
+    cb: c1:4.ff.marc g1:4.ff.marc c1:4.ff.marc g1:4.ff.marc |
+    timp: c3:4.ff.marc g2:4.ff.marc c3:4.ff.marc g2:4.ff.roll(8) |
+    perc: r:4 s:4.ff.marc r:2 |
+  }
+
+  measure 60 {
+    choir: [c4 e4 g4 c5]:1.ff.fermata |
+    tpt: c6:1.ff.vib.fermata |
+    hn: [c3 g3 c4 e4 g4 c5]:1.ff.fermata |
+    fl: c6:1.ff.vib.fermata |
+    ob: e5:1.ff.vib.fermata |
+    pno: [c1 g1 c2 e2 g2 c3 e3 g3 c4]:1.arp.ped.ff.fermata |
+    harp: [c2 g2 c3 e3 g3 c4 e4 g4 c5]:1.arp.ped.ff.fermata |
+    wt_lead: [c4 e4 g4 c5]:1.ff.fermata |
+    fm_bell: c6:1.ff.fermata |
+    vln1: c6:1.ff.vib.fermata |
+    vln2: [c4 e4 g4 c5]:1.ff.fermata |
+    vc: [c2 g2 c3]:1.ff.fermata |
+    cb: c1:1.ff.fermata |
+    timp: [g2 c3]:1.ff.fermata |
+    perc: cr:1.ff.fermata |
+  }
+}
