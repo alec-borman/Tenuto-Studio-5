@@ -1,28 +1,35 @@
 {
-  "proposal_id": "tdb-728-krate-chord-coalescing-and-prebaking",
-  "target_intent": "TDB-728: Eliminate Detune Unison Playback Lag via Control-Rate (k-rate) DSP, Chord Buffer Coalescing & Pre-Baked Realtime Buffers",
-  "delta_before": 0.28,
+  "proposal_id": "tdb-729-karaoke-realtime-code-highlighting",
+  "target_intent": "TDB-729: Smooth Karaoke Real-Time Code Highlighting, Auto-Scrolling Measure Spotlight & Token Progress Sweep",
+  "delta_before": 0.24,
   "mutations": [
     {
-      "file": "src/audio/synths/ContinuousSynthEngine.ts",
-      "function": "renderVoiceIntoTrackStem",
-      "ast_depth": 2,
-      "decay_weight": 0.9,
-      "patch": "@@ -1,528 +1,489 @@ 64-sample Control-Rate (k-rate) modulation blocks, branchless polynomial saw/PWM accumulators, and multi-note chordVoices coalescing"
-    },
-    {
-      "file": "src/audio/StudioAudioEngine.ts",
-      "function": "buildScheduledTimeline / prebakeContinuousSynthTimeline / triggerRealtimeVoice / playScore",
-      "ast_depth": 2,
-      "decay_weight": 0.9,
-      "patch": "@@ -58,3 +58,11 @@ Add chordVoices and prebakedBuffer to ScheduledNoteEvent; coalesce simultaneous chord notes in buildScheduledTimeline; prebake synth buffers before startContextTime in playScore"
-    },
-    {
-      "file": "tests/ableton_full_parity_and_synth_workflow.test.ts",
-      "function": "TDB-728 test suite",
+      "file": "src/index.css",
+      "function": "tenuto-karaoke-line-active / tenuto-karaoke-token-active",
       "ast_depth": 1,
       "decay_weight": 0.95,
-      "patch": "@@ -74,2 +74,40 @@ Verify 7-note supersaw chord coalesces into 1 event with chordVoices.length === 7 and renders in < 40ms"
+      "patch": "@@ -1,2 +1,24 @@ Add Karaoke line and token highlight styles for Monaco Editor"
+    },
+    {
+      "file": "src/components/CodeEditor.tsx",
+      "function": "computeActiveKaraokeTokens / CodeEditor",
+      "ast_depth": 2,
+      "decay_weight": 0.9,
+      "patch": "@@ -1,182 +1,334 @@ Add computeActiveKaraokeTokens, Monaco deltaDecorations & auto-scroll, and live karaoke-code-ribbon"
+    },
+    {
+      "file": "src/components/SplitWorkspace.tsx",
+      "function": "SplitWorkspace",
+      "ast_depth": 2,
+      "decay_weight": 0.9,
+      "patch": "@@ -723,3 +723,9 @@ Pass events={compiledEvents}, playheadBeat={playheadBeat}, and isPlaying={isPlaying} to CodeEditor"
+    },
+    {
+      "file": "tests/code_editor_matrix.test.tsx",
+      "function": "TDB-729 test suite",
+      "ast_depth": 1,
+      "decay_weight": 0.95,
+      "patch": "@@ -48,1 +48,44 @@ Add unit test verifying Karaoke token highlighting and 0%-100% progress sweep"
     }
   ]
 }

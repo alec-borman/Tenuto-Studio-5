@@ -721,7 +721,13 @@ export default function SplitWorkspace() {
             </span>
           </div>
           <div className="flex-1 overflow-hidden">
-            <CodeEditor code={sourceCode} onChange={handleCodeEdit} />
+            <CodeEditor
+              code={sourceCode}
+              onChange={handleCodeEdit}
+              events={compiledEvents}
+              playheadBeat={playheadBeat}
+              isPlaying={isPlaying}
+            />
           </div>
         </section>
 

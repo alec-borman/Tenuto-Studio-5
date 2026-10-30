@@ -1,1 +1,23 @@
 @import "tailwindcss";
+
+/* Karaoke Real-Time Code Highlighting in Monaco Editor */
+.tenuto-karaoke-line-active {
+  background: linear-gradient(
+    90deg,
+    rgba(16, 185, 129, 0.16) 0%,
+    rgba(56, 189, 248, 0.06) 75%,
+    transparent 100%
+  ) !important;
+  border-left: 3px solid #10b981 !important;
+  transition: background 120ms ease-out;
+}
+
+.tenuto-karaoke-token-active {
+  background-color: rgba(16, 185, 129, 0.34) !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  border-bottom: 2px solid #34d399 !important;
+  border-radius: 3px;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.4);
+  transition: background-color 80ms ease-out, box-shadow 80ms ease-out;
+}
