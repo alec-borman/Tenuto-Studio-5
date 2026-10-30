@@ -43,7 +43,7 @@ export interface TrackedVoiceEvent {
   durationWhole: number;
   startMidi: number;
   targetMidi: number;
-  stringIndex: number; // 0 = High E (String 1, top tab line) .. 5 = Low E (String 6, bottom tab line)
+  stringIndex: number; // 0 = High E (String 1) .. 5 = Low E (String 6)
   targetStringIndex: number;
   fret: number;
   targetFret: number;
@@ -95,7 +95,9 @@ const TRACK_COLORS: Record<string, string> = {
   fpad: '#F59E0B',
   pad: '#34D399',
   lead: '#38BDF8',
+  alto_lead: '#38BDF8',
   reese: '#FB7185',
+  sub: '#A78BFA',
   bass: '#F97316',
   pno: '#60A5FA',
   epno: '#818CF8',
@@ -105,6 +107,7 @@ const TRACK_COLORS: Record<string, string> = {
   vla: '#2DD4BF',
   vc: '#FBBF24',
   cb: '#FB923C',
+  strings: '#F472B6',
   hn: '#FACC15',
   tpt: '#F87171',
   tbn: '#FB923C',
@@ -114,6 +117,9 @@ const TRACK_COLORS: Record<string, string> = {
   ob: '#5EEAD4',
   cl: '#93C5FD',
   choir: '#F472B6',
+  low_choir: '#FBBF24',
+  mid_oohs: '#F59E0B',
+  nebula_vox: '#38BDF8',
   timp: '#FCA5A5',
   drums: '#FDA4AF',
 };
@@ -140,6 +146,18 @@ const STANDARD_GUITAR_OPEN_MIDI = [40, 45, 50, 55, 59, 64];
 const TAB_STAFF_OPEN_MIDI_TOP_DOWN = [64, 59, 55, 50, 45, 40];
 const TAB_STAFF_STRING_LABELS = ['e', 'B', 'G', 'D', 'A', 'E'];
 
+/**
+ * Folds extreme sub-bass (< E2 = 40, e.g. Bb0 = 22, Bb1 = 34) or high piccolo (> G6 = 91)
+ * pitches by octaves into the playable 6-string fretboard range [40..86] so bass, cello,
+ * and viola tracks always produce valid fretted dots and fret numbers.
+ */
+export function foldMidiIntoGuitarRange(midi: number): number {
+  let folded = Math.round(midi);
+  while (folded < 40) folded += 12;
+  while (folded > 86) folded -= 12;
+  return folded;
+}
+
 export function formatMidiPitchDisplay(midi: number, preferFlats: boolean = false): string {
   const clamped = Math.max(12, Math.min(108, Math.round(midi)));
   const octave = Math.floor(clamped / 12) - 1;
@@ -163,7 +181,7 @@ export function formatPitchClassDisplay(
 /**
  * Allocates a set of simultaneous MIDI pitches on a single instrument track across the
  * 6 guitar tab strings (`stringIndex`: 0 = top High E string .. 5 = bottom Low E string)
- * so chord voices sit on distinct tab staff lines with accurate fret numbers.
+ * with automatic sub-bass/cello octave folding so every note gets an accurate fret number.
  */
 export function allocateNotesToTabStrings(
   midiNotes: number[]
@@ -177,36 +195,31 @@ export function allocateNotesToTabStrings(
   const usedStrings = new Set<number>();
 
   for (let i = 0; i < sortedLowToHigh.length; i++) {
-    const midi = sortedLowToHigh[i];
-    let bestStringIdx = 5; // Default Low E
-    let bestFret = Math.max(0, midi - 40);
+    const rawMidi = sortedLowToHigh[i];
+    const playableMidi = foldMidiIntoGuitarRange(rawMidi);
+    let bestStringIdx = 5;
+    let bestFret = Math.max(0, playableMidi - 40);
     let bestCost = Infinity;
 
     for (let sIdx = 0; sIdx < 6; sIdx++) {
       const openMidi = TAB_STAFF_OPEN_MIDI_TOP_DOWN[sIdx];
-      let fret = midi - openMidi;
-      // Fold extreme sub-bass or flute octaves into playable 0..24 fret range on the nearest outer string
-      if (fret < 0) {
-        if (sIdx === 5) fret = ((fret % 12) + 12) % 12;
-        else continue;
-      }
-      if (fret > 24 && sIdx > 0) continue;
-      const clampedFret = Math.max(0, Math.min(24, fret));
+      const fret = playableMidi - openMidi;
+      if (fret < 0 || fret > 22) continue;
+
       const penalty = usedStrings.has(sIdx) ? 100 : 0;
-      // Prefer fretting around frets 0..12 and matching low notes to lower strings
-      const idealString = Math.max(0, Math.min(5, 5 - Math.floor((midi - 40) / 5.5)));
+      const idealString = Math.max(0, Math.min(5, 5 - Math.floor((playableMidi - 40) / 5.5)));
       const cost =
-        penalty + Math.abs(sIdx - idealString) * 3.5 + (clampedFret > 12 ? (clampedFret - 12) * 1.5 : 0);
+        penalty + Math.abs(sIdx - idealString) * 3.0 + (fret > 12 ? (fret - 12) * 1.5 : 0);
 
       if (cost < bestCost) {
         bestCost = cost;
         bestStringIdx = sIdx;
-        bestFret = clampedFret;
+        bestFret = fret;
       }
     }
 
     usedStrings.add(bestStringIdx);
-    result.set(midi, { stringIndex: bestStringIdx, fret: bestFret });
+    result.set(rawMidi, { stringIndex: bestStringIdx, fret: bestFret });
   }
 
   return result;
@@ -306,6 +319,11 @@ export function detectChordSymbol(
   };
 }
 
+/**
+ * Computes a playable 6-string guitar fretboard diagram for any set of MIDI notes,
+ * automatically folding sub-bass (`Bb0 = 22`) and low cello/viola (`Bb1 = 34`) registers
+ * into the fretboard window so low-register instruments never display an empty fretboard.
+ */
 export function computeGuitarVoicing(
   midiNotes: number[],
   preferFlats: boolean = false
@@ -322,9 +340,13 @@ export function computeGuitarVoicing(
     };
   }
 
-  const sorted = [...midiNotes].sort((a, b) => a - b);
-  const uniquePcs = Array.from(new Set(sorted.map((m) => ((m % 12) + 12) % 12)));
-  const bassNote = sorted[0];
+  // Fold sub-bass (< E2 = 40) and extreme high notes (> D6 = 86) into playable fretboard range
+  const foldedNotes = Array.from(
+    new Set(midiNotes.map((m) => foldMidiIntoGuitarRange(m)))
+  ).sort((a, b) => a - b);
+
+  const uniquePcs = Array.from(new Set(foldedNotes.map((m) => ((m % 12) + 12) % 12)));
+  const bassNote = foldedNotes[0];
 
   const fretOn6 = bassNote - STANDARD_GUITAR_OPEN_MIDI[0];
   const fretOn5 = bassNote - STANDARD_GUITAR_OPEN_MIDI[1];
@@ -337,32 +359,43 @@ export function computeGuitarVoicing(
     anchorFret = ((bassNote - 40) % 12 + 12) % 12 || 1;
   }
 
-  const baseFret = anchorFret <= 2 ? 1 : Math.max(1, anchorFret - 1);
+  const baseFret = anchorFret <= 3 ? 1 : Math.max(1, anchorFret - 1);
 
   const strings: GuitarStringState[] = [];
+  let hasAtLeastOneFrettedString = false;
+
   for (let sIdx = 0; sIdx < 6; sIdx++) {
     const openMidi = STANDARD_GUITAR_OPEN_MIDI[sIdx];
     let bestFret: number | 'x' = 'x';
     let bestMidi: number | null = null;
     let minFretDist = Infinity;
 
-    if (sorted.length === 1) {
+    if (foldedNotes.length === 1) {
+      // Single-note line (e.g. Viola, Cello, Reese Sub, Solo Lead): place on the lowest matching string
       const exactFret = bassNote - openMidi;
-      if (exactFret >= baseFret - 1 && exactFret <= baseFret + 4 && exactFret >= 0) {
+      if (
+        !hasAtLeastOneFrettedString &&
+        exactFret >= 0 &&
+        exactFret >= baseFret - 1 &&
+        exactFret <= baseFret + 4
+      ) {
         bestFret = exactFret;
         bestMidi = bassNote;
+        hasAtLeastOneFrettedString = true;
       }
     } else if (sIdx === 0) {
       const f = bassNote - openMidi;
       if (f >= 0 && f <= 15) {
         bestFret = f;
         bestMidi = bassNote;
+        hasAtLeastOneFrettedString = true;
       }
-    } else if (sIdx === 1 && sorted.length >= 4 && sorted[1] - sorted[0] >= 6) {
-      const f5 = sorted[1] - openMidi;
+    } else if (sIdx === 1 && foldedNotes.length >= 4 && foldedNotes[1] - foldedNotes[0] >= 6) {
+      const f5 = foldedNotes[1] - openMidi;
       if (f5 >= baseFret && f5 <= baseFret + 4) {
         bestFret = f5;
-        bestMidi = sorted[1];
+        bestMidi = foldedNotes[1];
+        hasAtLeastOneFrettedString = true;
       } else {
         bestFret = 'x';
       }
@@ -377,6 +410,7 @@ export function computeGuitarVoicing(
             minFretDist = dist;
             bestFret = f;
             bestMidi = candidateMidi;
+            hasAtLeastOneFrettedString = true;
           }
         }
       }
@@ -393,6 +427,18 @@ export function computeGuitarVoicing(
       midi: bestMidi,
       noteLabel,
     });
+  }
+
+  // Guarantee that if midiNotes is non-empty, at least one string is fretted on the diagram
+  if (!hasAtLeastOneFrettedString && strings.length === 6) {
+    const fallbackFret = Math.max(0, Math.min(12, ((bassNote - 40) % 12 + 12) % 12));
+    const fallbackMidi = 40 + fallbackFret;
+    strings[0] = {
+      stringNumber: 6,
+      fret: fallbackFret,
+      midi: fallbackMidi,
+      noteLabel: formatPitchClassDisplay(fallbackMidi % 12, preferFlats).text,
+    };
   }
 
   return {
@@ -500,7 +546,8 @@ export function extractCodeChordSlices(
 
 /**
  * Builds true per-instrument, per-voice note trajectory segments (`TrackedVoiceEvent[]`)
- * with 6-string guitar tab allocation (`stringIndex: 0..5` and `fret: 0..24`).
+ * linking each note/chord voice on `(trackId, voiceId)` to the next contiguous note/chord
+ * voice on that same `(trackId, voiceId)` so melodic steps and glides are always continuous.
  */
 export function buildTrueVoiceTrajectories(
   events: any[],
@@ -587,7 +634,7 @@ export function buildTrueVoiceTrajectories(
           targetMidi = startMidi + bendArr[bendArr.length - 1];
         } else if (sortedNext.length > 0) {
           const dstEv = sortedNext[Math.min(sortedNext.length - 1, vIdx)];
-          if (dstEv && (hasExplicitGlide || ev.physics?.legato)) {
+          if (dstEv) {
             targetMidi = Math.round(dstEv.pitch.midi);
           }
         }
@@ -625,7 +672,8 @@ export function buildTrueVoiceTrajectories(
 }
 
 /**
- * Evaluates the exact MIDI pitch of a `TrackedVoiceEvent` at `wholeTime`.
+ * Single source of truth for both the SVG voice line Y-coordinate and the playhead orb Y-coordinate:
+ * evaluates the exact MIDI pitch of a `TrackedVoiceEvent` at `wholeTime`.
  */
 export function evaluateTrackedEventMidiAtWhole(
   item: TrackedVoiceEvent,
@@ -637,7 +685,7 @@ export function evaluateTrackedEventMidiAtWhole(
   );
 
   if (item.mpeBend && item.mpeBend.length > 1) {
-    const glideStartU = 0.76;
+    const glideStartU = 0.78;
     if (
       item.mpeBend.length === 5 &&
       item.mpeBend[0] === 0 &&
@@ -661,7 +709,7 @@ export function evaluateTrackedEventMidiAtWhole(
   }
 
   if (item.targetMidi !== item.startMidi) {
-    const glideStartU = 0.76;
+    const glideStartU = 0.78;
     if (u <= glideStartU) return item.startMidi;
     const gU = (u - glideStartU) / (1 - glideStartU);
     const smooth = gU * gU * (3 - 2 * gU);
@@ -691,7 +739,6 @@ export default function TabChordFlowView({
     return (events || []).some((ev) => /[a-g]b\d/i.test(ev?.rawToken || ''));
   }, [rootKey, score?.meta?.key, events]);
 
-  // Extract ALL instruments present in the score (including grid/drums)
   const availableTracks = useMemo(() => {
     const map = new Map<
       string,
@@ -734,7 +781,6 @@ export default function TabChordFlowView({
     }
   }, [availableTracks, selectedTrackId]);
 
-  // Native macOS trackpad pinch-to-zoom handler (wheel with ctrlKey / metaKey)
   useEffect(() => {
     const viewport = scrollViewportRef.current;
     if (!viewport) return;
@@ -807,13 +853,12 @@ export default function TabChordFlowView({
 
   const activeSlice = chordSlices[activeSliceIndex];
 
-  // Dimensions scaled by zoomLevel (matching Piano Roll ergonomics)
   const headerWidthPx = 228;
   const wholeNoteScale = Math.max(56, Math.round(240 * zoomLevel));
   const isSingleTrackFocus = visibleTracks.length === 1;
   const staffHeightPx = isSingleTrackFocus
     ? Math.max(180, Math.round(230 * zoomLevel))
-    : Math.max(82, Math.round(124 * zoomLevel));
+    : Math.max(88, Math.round(128 * zoomLevel));
   const timelineWidthPx = Math.max(720, Math.ceil(maxEndWhole * wholeNoteScale) + 160);
   const playheadX = (playheadBeat / 4) * wholeNoteScale;
 
@@ -823,7 +868,7 @@ export default function TabChordFlowView({
     const availH = (viewport?.clientHeight || 460) - 48;
 
     const idealHoriz = availW / Math.max(1, maxEndWhole * 240);
-    const idealVert = availH / Math.max(1, visibleTracks.length * 124);
+    const idealVert = availH / Math.max(1, visibleTracks.length * 128);
     const fitted = Math.max(0.2, Math.min(2.5, Math.min(idealHoriz, idealVert)));
     setZoomLevel(Number(fitted.toFixed(2)));
     if (viewport) {
@@ -832,7 +877,6 @@ export default function TabChordFlowView({
     }
   }, [maxEndWhole, visibleTracks.length]);
 
-  // Smoothly auto-scroll container horizontally to follow playhead during playback
   useEffect(() => {
     const el = scrollViewportRef.current;
     if (!el) return;
@@ -847,7 +891,6 @@ export default function TabChordFlowView({
     }
   }, [playheadX, isPlaying, playheadBeat]);
 
-  // Global active notes across visible tracks at the playhead
   const activeGlobalItems = useMemo(() => {
     const active = allTrajectories.filter(
       (item) => currentWhole >= item.startWhole - 1e-4 && currentWhole <= item.endWhole + 1e-4
@@ -895,7 +938,7 @@ export default function TabChordFlowView({
       }}
       className="w-full h-full flex flex-col justify-between text-amber-50 overflow-hidden relative select-none"
     >
-      {/* Top Piano-Roll-Parity Control Bar: Track Filter, Scrollable Pills & Pinch-Zoom / Fit-All */}
+      {/* Top Piano-Roll-Parity Control Bar */}
       <div className="bg-black/35 border-b border-amber-300/20 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 z-20">
         <div className="flex items-center gap-1.5 min-w-0 flex-1">
           <button
@@ -985,7 +1028,6 @@ export default function TabChordFlowView({
           )}
         </div>
 
-        {/* Right: Zoom Controls & Fit All (Identical Ergonomics to Piano Roll) */}
         <div className="flex items-center gap-1 shrink-0 bg-black/45 border border-amber-300/30 rounded px-1.5 py-0.5 font-mono">
           <button
             type="button"
@@ -1027,7 +1069,7 @@ export default function TabChordFlowView({
         </div>
       </div>
 
-      {/* Compact Harmonic Summary Banner: Global Active Chord Symbol + Reference Guitar Fretboard */}
+      {/* Compact Harmonic Summary Banner */}
       <div className="px-4 py-2 bg-black/20 border-b border-amber-200/15 flex items-center justify-between gap-4 shrink-0 z-10">
         <div className="flex items-center gap-3 min-w-0">
           <div
@@ -1063,7 +1105,7 @@ export default function TabChordFlowView({
           </div>
         </div>
 
-        {/* Compact Reference 6-String Guitar Fretboard Diagram */}
+        {/* Reference 6-String Guitar Fretboard Diagram */}
         <div
           data-testid="guitar-fretboard-diagram"
           className="flex items-center gap-2 bg-black/30 border border-amber-300/25 rounded px-2.5 py-1 shrink-0"
@@ -1174,16 +1216,16 @@ export default function TabChordFlowView({
           style={{ width: `${headerWidthPx + timelineWidthPx}px` }}
         >
           {/* Sticky Top Measure & Chord Ruler */}
-          <div className="flex sticky top-0 z-20 bg-[#3B1503]/95 border-b border-amber-200/25 h-7 items-center">
+          <div className="flex sticky top-0 z-30 bg-[#3B1503] border-b border-amber-200/25 h-7 items-center">
             <div
               style={{ width: `${headerWidthPx}px` }}
-              className="sticky left-0 z-30 bg-[#3B1503] h-full px-3 border-r border-amber-200/25 flex items-center justify-between text-[10px] font-mono text-amber-200/90 uppercase tracking-wider shrink-0"
+              className="sticky left-0 z-40 bg-[#3B1503] h-full px-3 border-r border-amber-200/25 flex items-center justify-between text-[10px] font-mono text-amber-200/90 uppercase tracking-wider shrink-0"
             >
               <span>Instrument / Fretboard</span>
               <span>6-Str Tab</span>
             </div>
 
-            <div className="relative h-full" style={{ width: `${timelineWidthPx}px` }}>
+            <div className="relative h-full overflow-hidden" style={{ width: `${timelineWidthPx}px` }}>
               {Array.from({ length: Math.ceil(maxEndWhole) + 1 }).map((_, mIdx) => {
                 const x = mIdx * wholeNoteScale;
                 const sliceAtMeasure = chordSlices.find(
@@ -1239,12 +1281,61 @@ export default function TabChordFlowView({
               preferFlats
             );
 
+            // Compute this track's exact MIDI pitch range so trajectory lines and orbs map
+            // 100% accurately to continuous musical pitch (higher pitch = higher on staff)
+            let tMinMidi = 127;
+            let tMaxMidi = 0;
+            for (const item of trackTrajectories) {
+              if (item.startMidi < tMinMidi) tMinMidi = item.startMidi;
+              if (item.startMidi > tMaxMidi) tMaxMidi = item.startMidi;
+              if (item.targetMidi < tMinMidi) tMinMidi = item.targetMidi;
+              if (item.targetMidi > tMaxMidi) tMaxMidi = item.targetMidi;
+            }
+            if (tMinMidi > tMaxMidi) {
+              tMinMidi = 48;
+              tMaxMidi = 72;
+            }
+            const midCenter = (tMinMidi + tMaxMidi) * 0.5;
+            const halfRange = Math.max(6, (tMaxMidi - tMinMidi) * 0.5 + 2);
+            const effectiveMinMidi = midCenter - halfRange;
+            const effectiveMaxMidi = midCenter + halfRange;
+
             const topPad = 16;
-            const bottomPad = 14;
-            const usableH = Math.max(40, staffHeightPx - topPad - bottomPad);
+            const bottomPad = 16;
+            const usableH = Math.max(44, staffHeightPx - topPad - bottomPad);
             const stringSpacing = usableH / 5;
             const stringIndexToY = (sIdx: number) =>
               Number((topPad + Math.max(0, Math.min(5, sIdx)) * stringSpacing).toFixed(1));
+
+            const trackMidiToY = (midiVal: number): number => {
+              const norm =
+                (midiVal - effectiveMinMidi) /
+                Math.max(1, effectiveMaxMidi - effectiveMinMidi);
+              const clampedNorm = Math.max(0, Math.min(1, norm));
+              return Number((topPad + (1 - clampedNorm) * usableH).toFixed(1));
+            };
+
+            // De-collide vertical label positions for playhead orbs on this track
+            const sortedOrbs = [...fallbackTrackItems]
+              .map((item) => {
+                const exactMidi = evaluateTrackedEventMidiAtWhole(item, currentWhole);
+                const orbY = trackMidiToY(exactMidi);
+                return {
+                  item,
+                  exactMidi,
+                  orbY,
+                  labelY: orbY,
+                  orbLabel: formatMidiPitchDisplay(Math.round(exactMidi), preferFlats),
+                };
+              })
+              .sort((a, b) => a.orbY - b.orbY);
+
+            const minLabelGapPx = 12;
+            for (let k = 1; k < sortedOrbs.length; k++) {
+              if (sortedOrbs[k].labelY - sortedOrbs[k - 1].labelY < minLabelGapPx) {
+                sortedOrbs[k].labelY = sortedOrbs[k - 1].labelY + minLabelGapPx;
+              }
+            }
 
             return (
               <div
@@ -1253,13 +1344,13 @@ export default function TabChordFlowView({
                 style={{ height: `${staffHeightPx}px` }}
                 className="flex border-b border-amber-100/20 relative bg-black/10 hover:bg-black/20 transition-colors"
               >
-                {/* Sticky Left Per-Instrument Header + Mini 6-String Fretboard */}
+                {/* Opaque Sticky Left Per-Instrument Header + Mini 6-String Fretboard */}
                 <div
                   style={{
                     width: `${headerWidthPx}px`,
                     borderLeft: `4px solid ${track.color}`,
                   }}
-                  className="sticky left-0 z-10 bg-[#431904]/95 border-r border-amber-200/25 px-2.5 py-1.5 flex flex-col justify-between shrink-0"
+                  className="sticky left-0 z-20 bg-[#3B1503] shadow-[4px_0_12px_rgba(0,0,0,0.45)] border-r border-amber-200/25 px-2.5 py-1.5 flex flex-col justify-between shrink-0"
                 >
                   <div className="flex items-center justify-between gap-1">
                     <div className="flex items-center gap-1.5 min-w-0">
@@ -1283,7 +1374,7 @@ export default function TabChordFlowView({
                     </button>
                   </div>
 
-                  {/* Per-Instrument Active Chord & Mini 6-String Fretboard */}
+                  {/* Per-Instrument Active Chord & Octave-Folded Mini 6-String Fretboard */}
                   <div className="flex items-center justify-between gap-2 my-auto">
                     <div className="min-w-0">
                       <div className="text-sm font-sans font-bold text-amber-100 truncate">
@@ -1299,12 +1390,12 @@ export default function TabChordFlowView({
                       </div>
                     </div>
 
-                    {/* Mini Per-Track Guitar Diagram */}
                     <svg
+                      data-testid={`mini-fretboard-${track.id}`}
                       width={64}
                       height={36}
                       viewBox="0 0 130 76"
-                      className="shrink-0 bg-black/25 rounded p-0.5 border border-amber-200/15"
+                      className="shrink-0 bg-black/30 rounded p-0.5 border border-amber-200/20"
                     >
                       {Array.from({ length: 4 }).map((_, fIdx) => (
                         <line
@@ -1330,11 +1421,21 @@ export default function TabChordFlowView({
                               stroke="rgba(255,247,237,0.65)"
                               strokeWidth={1}
                             />
+                            {st.fret === 0 && (
+                              <circle
+                                cx={x}
+                                cy={6}
+                                r={3}
+                                fill="none"
+                                stroke={track.color}
+                                strokeWidth={1.5}
+                              />
+                            )}
                             {typeof st.fret === 'number' && st.fret > 0 && (
                               <circle
                                 cx={x}
                                 cy={12 + Math.min(3.5, Math.max(0.5, st.fret - bf + 0.5)) * 16}
-                                r={4.2}
+                                r={4.5}
                                 fill={track.color}
                               />
                             )}
@@ -1344,22 +1445,24 @@ export default function TabChordFlowView({
                     </svg>
                   </div>
 
-                  {/* String Tuning Legend */}
                   <div className="flex items-center justify-between text-[8px] font-mono text-amber-200/60">
                     <span>{track.id}</span>
                     <span>e B G D A E</span>
                   </div>
                 </div>
 
-                {/* Right Horizontal 6-String Tab Staff & Voice-Leading SVG */}
-                <div className="relative" style={{ width: `${timelineWidthPx}px` }}>
+                {/* Right Horizontal 6-String Tab Staff & Pitch-Accurate Voice-Leading SVG */}
+                <div
+                  className="relative overflow-hidden"
+                  style={{ width: `${timelineWidthPx}px` }}
+                >
                   <svg
                     width={timelineWidthPx}
                     height={staffHeightPx}
                     className="block"
                     aria-label={`Tab Staff for ${track.id}`}
                   >
-                    {/* 6 Horizontal Guitar Tab String Lines (1=e high .. 6=E low) */}
+                    {/* 6 Horizontal Guitar Tab Reference Lines */}
                     {TAB_STAFF_STRING_LABELS.map((sLabel, sIdx) => {
                       const y = stringIndexToY(sIdx);
                       return (
@@ -1369,13 +1472,13 @@ export default function TabChordFlowView({
                             y1={y}
                             x2={timelineWidthPx}
                             y2={y}
-                            stroke="rgba(255, 237, 213, 0.24)"
-                            strokeWidth={sIdx >= 4 ? 1.2 : 0.85}
+                            stroke="rgba(255, 237, 213, 0.22)"
+                            strokeWidth={sIdx >= 4 ? 1.15 : 0.8}
                           />
                           <text
                             x={4}
                             y={y + 3}
-                            className="fill-amber-200/60 font-mono text-[9px]"
+                            className="fill-amber-200/50 font-mono text-[9px]"
                           >
                             {sLabel}
                           </text>
@@ -1405,32 +1508,35 @@ export default function TabChordFlowView({
                       );
                     })}
 
-                    {/* Per-Instrument Voice-Leading Tab Trajectories & Fret Numbers */}
+                    {/* Pitch-Accurate Per-Instrument Voice-Leading Trajectories & Fret Pills */}
                     {trackTrajectories.map((item) => {
                       const xStart = item.startWhole * wholeNoteScale;
                       const xEnd = item.endWhole * wholeNoteScale;
                       const wPx = Math.max(8, xEnd - xStart);
-                      const yStart = stringIndexToY(item.stringIndex);
-                      const yEnd = stringIndexToY(item.targetStringIndex);
 
-                      const glideW = item.hasGlide
-                        ? Math.min(42, Math.max(10, wPx * 0.25))
-                        : 0;
-                      const xHold = xEnd - glideW;
+                      // Sample the exact same `evaluateTrackedEventMidiAtWhole` + `trackMidiToY`
+                      // used by the playhead orbs so the line is 100% faithful to the musical pitch!
+                      let dPath = '';
+                      const numSteps = item.hasGlide ? 12 : 2;
+                      for (let s = 0; s <= numSteps; s++) {
+                        const u = s / numSteps;
+                        const wTime = item.startWhole + u * item.durationWhole;
+                        const x = xStart + u * wPx;
+                        const y = trackMidiToY(evaluateTrackedEventMidiAtWhole(item, wTime));
+                        dPath += `${s === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)} `;
+                      }
 
-                      const dPath = item.hasGlide
-                        ? `M ${xStart.toFixed(1)} ${yStart} L ${xHold.toFixed(1)} ${yStart} C ${(
-                            xHold +
-                            glideW * 0.5
-                          ).toFixed(1)} ${yStart}, ${(xEnd - glideW * 0.5).toFixed(
-                            1
-                          )} ${yEnd}, ${xEnd.toFixed(1)} ${yEnd}`
-                        : `M ${xStart.toFixed(1)} ${yStart} L ${xEnd.toFixed(1)} ${yStart}`;
-
+                      const yStart = trackMidiToY(item.startMidi);
                       const pitchText = formatMidiPitchDisplay(
                         item.startMidi,
                         preferFlats
                       );
+                      // Hide the static start-of-note pill when the playhead orb is right over it
+                      // so the white playhead orb text and static pill never overlap!
+                      const isPlayheadOverStartPill =
+                        Math.abs(playheadX - (xStart + 20)) < 36 &&
+                        currentWhole >= item.startWhole - 0.02 &&
+                        currentWhole <= item.endWhole + 0.02;
 
                       return (
                         <g key={item.id}>
@@ -1438,11 +1544,10 @@ export default function TabChordFlowView({
                             d={dPath}
                             fill="none"
                             stroke={track.color}
-                            strokeOpacity={0.55}
+                            strokeOpacity={0.58}
                             strokeWidth={2.4}
                             strokeLinecap="round"
                           />
-                          {/* Illuminated Played Portion (Left of Playhead) */}
                           {playheadX > xStart && (
                             <path
                               d={dPath}
@@ -1459,29 +1564,32 @@ export default function TabChordFlowView({
                             />
                           )}
 
-                          {/* Tab Fret Number Pill on the String Line */}
-                          <rect
-                            x={xStart + 2}
-                            y={yStart - 7}
-                            width={wPx > 46 ? 40 : 18}
-                            height={14}
-                            rx={3}
-                            fill="#3B1503"
-                            stroke={track.color}
-                            strokeWidth={1}
-                          />
-                          <text
-                            x={xStart + 6}
-                            y={yStart + 3}
-                            className="fill-white font-mono text-[9px] font-bold pointer-events-none"
-                          >
-                            {wPx > 46 ? `${item.fret} ${pitchText}` : `${item.fret}`}
-                          </text>
+                          {!isPlayheadOverStartPill && (
+                            <>
+                              <rect
+                                x={xStart + 2}
+                                y={yStart - 7}
+                                width={wPx > 46 ? 40 : 18}
+                                height={14}
+                                rx={3}
+                                fill="#3B1503"
+                                stroke={track.color}
+                                strokeWidth={1}
+                              />
+                              <text
+                                x={xStart + 6}
+                                y={yStart + 3}
+                                className="fill-white font-mono text-[9px] font-bold pointer-events-none"
+                              >
+                                {wPx > 46 ? `${item.fret} ${pitchText}` : `${item.fret}`}
+                              </text>
+                            </>
+                          )}
                         </g>
                       );
                     })}
 
-                    {/* Active Playhead Line & Locked Per-Instrument Orbs */}
+                    {/* Active Playhead Line & De-Collided Per-Instrument Orbs */}
                     <line
                       x1={playheadX}
                       y1={0}
@@ -1492,32 +1600,8 @@ export default function TabChordFlowView({
                       strokeWidth={1.8}
                     />
 
-                    {fallbackTrackItems.map((item) => {
-                      const u = Math.max(
-                        0,
-                        Math.min(
-                          1,
-                          (currentWhole - item.startWhole) /
-                            Math.max(1e-5, item.durationWhole)
-                        )
-                      );
-                      const glideU =
-                        item.hasGlide && u > 0.76 ? (u - 0.76) / 0.24 : 0;
-                      const smoothG = glideU * glideU * (3 - 2 * glideU);
-                      const interpString =
-                        item.stringIndex +
-                        (item.targetStringIndex - item.stringIndex) * smoothG;
-                      const orbY = stringIndexToY(interpString);
-                      const exactMidi = evaluateTrackedEventMidiAtWhole(
-                        item,
-                        currentWhole
-                      );
-                      const orbLabel = formatMidiPitchDisplay(
-                        Math.round(exactMidi),
-                        preferFlats
-                      );
+                    {sortedOrbs.map(({ item, orbY, labelY, orbLabel }) => {
                       const orbIdx = globalOrbCounter++;
-
                       return (
                         <g
                           key={`orb-${item.id}`}
@@ -1531,10 +1615,18 @@ export default function TabChordFlowView({
                             fillOpacity={0.55}
                           />
                           <circle cx={playheadX} cy={orbY} r={4.2} fill="#FFFFFF" />
+                          <rect
+                            x={playheadX + 8}
+                            y={labelY - 6.5}
+                            width={34}
+                            height={12}
+                            rx={3}
+                            fill="rgba(28, 10, 2, 0.88)"
+                          />
                           <text
-                            x={playheadX + 10}
-                            y={orbY + 3.5}
-                            className="fill-white font-sans text-[10px] font-bold drop-shadow"
+                            x={playheadX + 11}
+                            y={labelY + 2.5}
+                            className="fill-white font-mono text-[9.5px] font-bold"
                           >
                             {orbLabel}
                           </text>

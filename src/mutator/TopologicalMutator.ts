@@ -183,14 +183,24 @@ export class TopologicalMutator {
     return `${parts.pitchPart}${durSuffix}${modSuffix}${tieSuffix}`;
   }
 
-  public resizeDuration(rawToken: string, deltaWidth: number, zScale: number): string {
+  public resizeDuration(
+    rawToken: string,
+    deltaWidth: number,
+    zScale: number,
+    fallbackDuration?: { numerator: number; denominator: number }
+  ): string {
     const { pitchPart, durationPart, modifiers, hasTie } = this.decomposeToken(rawToken);
 
-    if (!durationPart) {
+    if (!durationPart && !fallbackDuration) {
       throw new Error(`Invalid token format, missing duration: ${rawToken}`);
     }
 
-    const { numerator: N1, denominator: D1 } = this.temporalEngine.parseDuration(':' + durationPart);
+    const { numerator: N1, denominator: D1 } = durationPart
+      ? this.temporalEngine.parseDuration(':' + durationPart)
+      : {
+          numerator: fallbackDuration!.numerator || 1,
+          denominator: fallbackDuration!.denominator || 4,
+        };
 
     const dragRatio = deltaWidth / zScale;
     const { numerator: N2, denominator: D2 } = this.approximateFraction(dragRatio, 128);
@@ -228,8 +238,14 @@ export class TopologicalMutator {
   /**
    * Transposes a single note token (`c4:4.stacc`) or chord token (`[c4 e4 g4]:2.mf`)
    * by `semitoneDelta` semitones while preserving duration, modifiers, and ties.
+   * If `originalMidi` is provided for a chord token, only the matching voice in the chord is transposed.
    */
-  public transposePitch(rawToken: string, semitoneDelta: number, preferFlats?: boolean): string {
+  public transposePitch(
+    rawToken: string,
+    semitoneDelta: number,
+    preferFlats?: boolean,
+    originalMidi?: number
+  ): string {
     if (semitoneDelta === 0) return rawToken;
     const { pitchPart, durationPart, modifiers, hasTie } = this.decomposeToken(rawToken);
 
@@ -245,9 +261,17 @@ export class TopologicalMutator {
         .split(/\s+/)
         .filter(Boolean);
       this.pitchEngine.reset(4);
+      let matchedSingleVoice = false;
       const transposedNotes = innerNotes.map((n) => {
         const parsed = this.pitchEngine.parsePitch(n);
         if (parsed.isRest || parsed.isSpacer || parsed.gridKey) return n;
+        if (typeof originalMidi === 'number' && originalMidi > 0) {
+          if (!matchedSingleVoice && parsed.midi === originalMidi) {
+            matchedSingleVoice = true;
+            return this.midiToPitchLiteral(parsed.midi + semitoneDelta, useFlats);
+          }
+          return n;
+        }
         return this.midiToPitchLiteral(parsed.midi + semitoneDelta, useFlats);
       });
       return this.recomposeToken({
@@ -264,7 +288,9 @@ export class TopologicalMutator {
       return rawToken;
     }
 
-    const nextPitch = this.midiToPitchLiteral(parsed.midi + semitoneDelta, useFlats);
+    const baseMidi =
+      typeof originalMidi === 'number' && originalMidi > 0 ? originalMidi : parsed.midi;
+    const nextPitch = this.midiToPitchLiteral(baseMidi + semitoneDelta, useFlats);
     return this.recomposeToken({
       pitchPart: nextPitch,
       durationPart,

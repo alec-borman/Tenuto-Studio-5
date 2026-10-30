@@ -509,5 +509,40 @@ describe('TDB-603 & TDB-604: Syntax-Highlighted Code Editor, Scrolling Player & 
       expect(rms).toBeGreaterThan(0.18);
     }
   });
+
+  it('bidirectionally transposes pitch on vertical note drag and resizes duration on right-edge drag in WebGPUCanvas', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile('pno: c4:4');
+    const onMutation = vi.fn();
+
+    render(<WebGPUCanvas events={score.events} onMutation={onMutation} />);
+
+    const noteEl = screen.getByTestId('piano-roll-note-0');
+    // Drag note vertically upward by 80px (4 rows at rowH=20 -> +4 semitones: C4 -> E4)
+    fireEvent.mouseDown(noteEl, { clientX: 120, clientY: 200 });
+    fireEvent.mouseMove(window, { clientX: 120, clientY: 120 });
+    fireEvent.mouseUp(window);
+
+    expect(onMutation).toHaveBeenCalledWith(
+      expect.objectContaining({ rawToken: 'c4:4' }),
+      0,
+      4,
+      260
+    );
+
+    // Drag right-edge resize handle horizontally by +65px (1/4 whole note at wholeNoteScale=260)
+    onMutation.mockClear();
+    const resizeHandle = screen.getByTestId('note-resize-handle-0');
+    fireEvent.mouseDown(resizeHandle, { clientX: 120, clientY: 200 });
+    fireEvent.mouseMove(window, { clientX: 185, clientY: 200 });
+    fireEvent.mouseUp(window);
+
+    expect(onMutation).toHaveBeenCalledWith(
+      expect.objectContaining({ rawToken: 'c4:4' }),
+      65,
+      0,
+      260
+    );
+  });
 });
 

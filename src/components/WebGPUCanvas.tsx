@@ -95,7 +95,12 @@ export default function WebGPUCanvas({
   rootKey?: string;
   scaleName?: string;
   automationLanes?: AutomationLane[];
-  onMutation?: (eventData: any, deltaX: number) => void;
+  onMutation?: (
+    eventData: any,
+    deltaX: number,
+    semitoneDelta?: number,
+    zScale?: number
+  ) => void;
   onSelect?: (nodeData: any) => void;
   onCommitAutomation?: (
     trackId: string,
@@ -120,6 +125,15 @@ export default function WebGPUCanvas({
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [isClipEnvelopeOpen, setIsClipEnvelopeOpen] = useState<boolean>(false);
   const [isMidiToolsOpen, setIsMidiToolsOpen] = useState<boolean>(false);
+  const [dragState, setDragState] = useState<{
+    eventIndex: number;
+    event: any;
+    mode: 'move' | 'resize';
+    startClientX: number;
+    startClientY: number;
+    semitoneDelta: number;
+    deltaWidthPx: number;
+  } | null>(null);
 
   useEffect(() => {
     onMutationRef.current = onMutation;
@@ -419,6 +433,54 @@ export default function WebGPUCanvas({
     }
   }, [maxEndWhole, numRows]);
 
+  useEffect(() => {
+    if (!dragState) return;
+
+    const stepPx = Math.max(4, wholeNoteScale / 16);
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const rawDeltaX = e.clientX - dragState.startClientX;
+      const rawDeltaY = e.clientY - dragState.startClientY;
+
+      if (dragState.mode === 'resize') {
+        const snappedDeltaX = Math.round(rawDeltaX / stepPx) * stepPx;
+        setDragState((prev) =>
+          prev ? { ...prev, deltaWidthPx: snappedDeltaX, semitoneDelta: 0 } : null
+        );
+      } else {
+        const semiDelta = Math.round(-rawDeltaY / rowH);
+        const snappedDeltaX =
+          semiDelta === 0 && Math.abs(rawDeltaX) >= stepPx
+            ? Math.round(rawDeltaX / stepPx) * stepPx
+            : 0;
+        setDragState((prev) =>
+          prev
+            ? { ...prev, semitoneDelta: semiDelta, deltaWidthPx: snappedDeltaX }
+            : null
+        );
+      }
+    };
+
+    const handleMouseUp = () => {
+      if (dragState.semitoneDelta !== 0 || dragState.deltaWidthPx !== 0) {
+        onMutationRef.current?.(
+          dragState.event,
+          dragState.deltaWidthPx,
+          dragState.semitoneDelta,
+          wholeNoteScale
+        );
+      }
+      setDragState(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [dragState, rowH, wholeNoteScale]);
+
   // Smoothly auto-scroll container horizontally to follow playhead during playback
   useEffect(() => {
     const el = scrollViewportRef.current;
@@ -523,16 +585,26 @@ export default function WebGPUCanvas({
           );
         })}
 
-        {/* Projected Note Blocks */}
+        {/* Projected Note Blocks (Interactive Bi-Directional Dragging for Pitch & Duration) */}
         {visibleEvents.map((ev, idx) => {
-          const midi = ev.pitch?.midi ?? 60;
-          if (midi <= 0) return null;
+          const baseMidi = ev.pitch?.midi ?? 60;
+          if (baseMidi <= 0) return null;
+          const isBeingDragged = dragState?.eventIndex === idx;
+          const effectiveMidi = Math.max(
+            12,
+            Math.min(108, baseMidi + (isBeingDragged ? dragState.semitoneDelta : 0))
+          );
+
           const startWhole = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
           const durWhole = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
 
           const x = keyWidth + startWhole * wholeNoteScale;
-          const w = Math.max(4, durWhole * wholeNoteScale - 1.5);
-          const clampedMidi = Math.max(minMidi, Math.min(maxMidi, midi));
+          const baseW = Math.max(4, durWhole * wholeNoteScale - 1.5);
+          const w = Math.max(
+            6,
+            baseW + (isBeingDragged ? dragState.deltaWidthPx : 0)
+          );
+          const clampedMidi = Math.max(minMidi, Math.min(maxMidi, effectiveMidi));
           const y = (maxMidi - clampedMidi) * rowH + 1.5;
           const tId = ev.trackId || 'pno';
           const baseColor = getTrackColor(tId, ev.style, trackIndexMap.get(tId) ?? 0);
@@ -552,31 +624,49 @@ export default function WebGPUCanvas({
                       : swell === 'diminuendo'
                         ? ' >'
                         : '';
-          const pitchName = ev.pitch?.noteName || `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
+          const pitchName =
+            isBeingDragged && dragState.semitoneDelta !== 0
+              ? `${NOTE_NAMES[effectiveMidi % 12]}${Math.floor(effectiveMidi / 12) - 1}`
+              : ev.pitch?.noteName ||
+                `${NOTE_NAMES[baseMidi % 12]}${Math.floor(baseMidi / 12) - 1}`;
           const lyricText = ev.physics?.lyric ? `"${ev.physics.lyric}" ` : '';
           const label = `${lyricText}${pitchName}${badge}`;
+
+          const selectPayload = {
+            type: 'PitchLit',
+            duration: `${ev.duration?.numerator || 1}/${ev.duration?.denominator || 4}`,
+            velocity: ev.physics?.velocity ?? 80,
+            articulation: ev.physics?.articulation || '',
+            chance: ev.physics?.chance ?? 100,
+            pan: ev.physics?.pan ?? 0,
+            lyric: ev.physics?.lyric || '',
+            line: ev.line ?? 1,
+            col: ev.col ?? 1,
+            rawToken: ev.rawToken,
+            trackId: ev.trackId,
+            sourceStartOffset: ev.sourceStartOffset,
+            sourceEndOffset: ev.sourceEndOffset,
+          };
 
           return (
             <g
               key={idx}
-              className="cursor-pointer transition-opacity"
-              onClick={() =>
-                onSelectRef.current?.({
-                  type: 'PitchLit',
-                  duration: `${ev.duration?.numerator || 1}/${ev.duration?.denominator || 4}`,
-                  velocity: ev.physics?.velocity ?? 80,
-                  articulation: ev.physics?.articulation || '',
-                  chance: ev.physics?.chance ?? 100,
-                  pan: ev.physics?.pan ?? 0,
-                  lyric: ev.physics?.lyric || '',
-                  line: ev.line ?? 1,
-                  col: ev.col ?? 1,
-                  rawToken: ev.rawToken,
-                  trackId: ev.trackId,
-                  sourceStartOffset: ev.sourceStartOffset,
-                  sourceEndOffset: ev.sourceEndOffset,
-                })
-              }
+              data-testid={`piano-roll-note-${idx}`}
+              className="cursor-grab active:cursor-grabbing transition-opacity"
+              onClick={() => onSelectRef.current?.(selectPayload)}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                onSelectRef.current?.(selectPayload);
+                setDragState({
+                  eventIndex: idx,
+                  event: ev,
+                  mode: 'move',
+                  startClientX: e.clientX,
+                  startClientY: e.clientY,
+                  semitoneDelta: 0,
+                  deltaWidthPx: 0,
+                });
+              }}
             >
               <rect
                 x={x}
@@ -584,11 +674,11 @@ export default function WebGPUCanvas({
                 width={w}
                 height={noteH}
                 rx={Math.min(4, Math.max(2, rowH / 4))}
-                fill={baseColor}
-                fillOpacity={swell ? 0.65 : 1}
-                stroke="#F8FAFC"
-                strokeOpacity={0.35}
-                strokeWidth={0.8}
+                fill={isBeingDragged ? '#38BDF8' : baseColor}
+                fillOpacity={isBeingDragged ? 0.92 : swell ? 0.65 : 1}
+                stroke={isBeingDragged ? '#FFFFFF' : '#F8FAFC'}
+                strokeOpacity={isBeingDragged ? 1 : 0.35}
+                strokeWidth={isBeingDragged ? 1.8 : 0.8}
               />
               {swell === 'crescendo' && w > 12 && (
                 <polygon
@@ -625,6 +715,29 @@ export default function WebGPUCanvas({
                   {label}
                 </text>
               )}
+              {/* Right-Edge Duration Resize Handle */}
+              <rect
+                data-testid={`note-resize-handle-${idx}`}
+                x={x + Math.max(2, w - 6)}
+                y={y}
+                width={6}
+                height={noteH}
+                fill="transparent"
+                className="cursor-col-resize"
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  onSelectRef.current?.(selectPayload);
+                  setDragState({
+                    eventIndex: idx,
+                    event: ev,
+                    mode: 'resize',
+                    startClientX: e.clientX,
+                    startClientY: e.clientY,
+                    semitoneDelta: 0,
+                    deltaWidthPx: 0,
+                  });
+                }}
+              />
             </g>
           );
         })}
@@ -642,6 +755,7 @@ export default function WebGPUCanvas({
     trackIndexMap,
     rootKey,
     scaleName,
+    dragState,
   ]);
 
   const currentWholeTime = playheadBeat / 4;

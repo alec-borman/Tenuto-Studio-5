@@ -6,7 +6,7 @@
 
   [![Live Web Studio](https://img.shields.io/badge/Try_Live_Web_Studio-tenuto--studio--5--production.up.railway.app-10b981?style=for-the-badge)](https://tenuto-studio-5-production.up.railway.app/)
 
-  [![Release: v5.1.0](https://img.shields.io/badge/Release-v5.1.0-2563eb.svg)](./SPEC.md)
+  [![Release: v5.1.6](https://img.shields.io/badge/Release-v5.1.6-2563eb.svg)](./SPEC.md)
   [![Grammar Guide: TENUTO_GRAMMAR.md](https://img.shields.io/badge/Grammar_Guide-TENUTO__GRAMMAR.md-10b981.svg)](./TENUTO_GRAMMAR.md)
   [![Platform: macOS .pkg | Windows .exe | Web](https://img.shields.io/badge/Platform-macOS_.pkg_%7C_Windows_.exe_%7C_Web-8b5cf6.svg)](#installation--desktop-packaging)
   [![License: MIT](https://img.shields.io/badge/License-MIT-64748b.svg)](LICENSE)
@@ -24,7 +24,7 @@ Launch **Tenuto Studio 5** immediately in your browser with zero installation:
 
 ## Overview
 
-**Tenuto Studio 5** (`v5.1.0`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
+**Tenuto Studio 5** (`v5.1.6`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
 
 In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of Truth**:
 * **Code Projects the Entire Studio:** Writing or pasting `.ten` code (including raw Markdown blocks straight from Gemini, Claude, or ChatGPT) immediately compiles into four synchronized visual views (**Scrolling Piano Roll**, **Tab / Chord Flow**, **Session View Clip Matrix**, and **Arrangement View Timeline**), three interactive bottom studio docks (**Console Mixer**, **Device Chain & 8-Macro Rack**, and **Context Note/Score Inspector**), and a real-time WebAudio / PCM DSP engine.
@@ -65,6 +65,7 @@ In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of 
 ### 3. Four Synchronized Projectional DAW Views (Right Hemisphere)
 
 #### A. Scrolling Piano Roll View (`WebGPUCanvas.tsx`)
+* **Bi-Directional Click-and-Drag Note Editing (`piano-roll-note-<idx>` & `note-resize-handle-<idx>`):** Drag any note block vertically to transpose its pitch in semitones (updating single notes, sticky-octave notes, or individual voices inside `[...]` chords) or drag horizontally / via the right-edge resize handle to resize its rational duration on a `1/16`th-note snap grid—complete with a live optimistic visual preview and single-step `Cmd/Ctrl + Z` Undo/Redo.
 * **Auto-Centered Pitch Grid & Scale Highlighting:** Automatically centers on the active pitch range (minimum 3-octave span), highlights Root Key and in-scale rows, and illuminates notes in emerald green as the playhead crosses them.
 * **Mac Trackpad Pinch-to-Zoom & Track Isolation Navigator:** Two-finger pinch-to-zoom (`20%` to `300%`), `-` / `100%` / `+` / **`Fit All`** buttons, **`All Instruments (N)`** toggle, **`Jump to Track (N)...`** dropdown, and `◀` / `▶` scrollable color-coded track pills.
 * **Rich Notation Overlays:** Displays `<` and `>` dynamic hairpin wedges on `.cresc` / `.dim` notes, ornament badges (`tr~`, `~`, `pizz`, `𝄐`), sung `.lyric("...")` syllables, and glowing cyan **MPE 3D pitch-bend curves**.
@@ -75,7 +76,7 @@ In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of 
 #### B. Dynamic Code-Driven Tab & Voice-Leading Chord Flow View (`TabChordFlowView.tsx`)
 * **Dedicated Per-Instrument 6-String Tab Staves (`instrument-tab-staff-<id>`):** In `All Instruments` mode, every instrument track renders on its own horizontal 6-string Guitar Tab Staff (`E4, B3, G3, D3, A2, E2`) with a sticky left header displaying that instrument's active chord symbol, live per-instrument 6-string fretboard diagram, and 1-click track focus toggle—preventing multi-track orb collisions.
 * **Piano-Roll-Parity Pinch-to-Zoom, `Fit All` & Auto-Scroll:** Supports two-finger trackpad pinch-to-zoom (`20%` to `300%`), `-` / `100%` / `+` zoom buttons, 1-click **`Fit All`** (scaling both measure width and staff lane height to fit the viewport), `◀` / `▶` track pill scroll buttons, and real-time horizontal playhead auto-scrolling.
-* **True Voice-Leading Trajectories & String/Fret Allocation (`allocateNotesToTabStrings`):** Maps each note and chord voice onto optimal guitar strings with fret numbers, smooth S-curve glides (`evaluateTrackedEventMidiAtWhole`), and glowing playhead orbs locked 1-to-1 onto their string/pitch lines.
+* **Pitch-Accurate Voice-Leading Trajectories, Sub-Bass Fretboard Folding & Anti-Collision Orbs:** Maps every note trajectory and glide curve to its true continuous MIDI pitch (`evaluateTrackedEventMidiAtWhole`), octave-normalizes sub-bass/cello/viola registers (`< E2`) onto playable fretboard diagrams (`computeGuitarVoicing`), suppresses overlapping static pills under the playhead, and de-collides stacked chord orb labels.
 
 #### C. Ableton Session View Clip & Scene Matrix (`SessionView.tsx` & `FollowActionEngine.ts`)
 * **2D Track-by-Scene Launch Grid:** Launch individual clips (`▶`), launch full horizontal scene rows (`▶ Scene` with optional scene tempo changes), or stop tracks (`■ Stop`).
@@ -149,7 +150,7 @@ npm install
 npm run electron:build:mac
 
 # 3. Run the macOS installer
-open release/"Tenuto Studio 5-5.1.0-arm64.pkg"
+open release/"Tenuto Studio 5-5.1.6-arm64.pkg"
 ```
 
 ### Option 1B: Windows Desktop App (`.exe` NSIS Setup Installer)
@@ -166,7 +167,7 @@ npm install
 npm run electron:build:win
 
 # 3. Launch the generated Setup .exe inside the release/ folder
-start "" "release\Tenuto Studio 5 Setup 5.1.0.exe"
+start "" "release\Tenuto Studio 5 Setup 5.1.6.exe"
 ```
 
 ### Option 2: Local Web Development
@@ -315,9 +316,11 @@ npm run build
 
 ---
 
-## Release Notes (`v5.1.0`)
+## Release Notes (`v5.1.6`)
 
-* **`v5.1.0`**: Upgraded `TabChordFlowView.tsx` with dedicated per-instrument 6-string Tab Staff lanes (`instrument-tab-staff-<trackId>`), per-track sticky fretboard headers, string/fret allocation (`allocateNotesToTabStrings`), trackpad pinch-to-zoom (`20%–300%`), `- / 100% / +` and `Fit All` zoom controls, `◀ / ▶` instrument pill scroll buttons, and horizontal playhead auto-scrolling.
+* **`v5.1.6`:** Fixed `TabChordFlowView.tsx` so low-register instruments (`Bb0` sub-bass, `Bb1` cellos/violas) always render fretted dots on their fretboard diagrams (`computeGuitarVoicing` octave folding), mapped per-instrument trajectory lines to true continuous MIDI pitch (`trackMidiToY`) for 100% melodic accuracy, and eliminated text overlap at the playhead and sticky track headers.
+* **`v5.1.4`:** Added bi-directional Piano Roll click-and-drag note editing in `WebGPUCanvas.tsx`, `SplitWorkspace.tsx`, and `TopologicalMutator.ts`—supporting vertical semitone pitch dragging (for single notes, sticky-octave notes, and individual voices within chords), 1/16th-quantized horizontal duration resizing, live optimistic drag previews, and `CommandManager` Undo/Redo integration.
+* **`v5.1.0`:** Upgraded `TabChordFlowView.tsx` with dedicated per-instrument 6-string Tab Staff lanes (`instrument-tab-staff-<trackId>`), per-track sticky fretboard headers, string/fret allocation (`allocateNotesToTabStrings`), trackpad pinch-to-zoom (`20%–300%`), `- / 100% / +` and `Fit All` zoom controls, `◀ / ▶` instrument pill scroll buttons, and horizontal playhead auto-scrolling.
 * **`v5.0.8`**: Always-centered active measure playback scrolling in `CodeEditor.tsx` (`computeActiveMeasureScrollTarget` + `revealLinesInCenter` / `revealLineInCenter`), keeping the currently playing `measure N { ... }` block dead-center in the Monaco viewport at all times.
 * **`v5.0.6`**: Comprehensive `README.md` overhaul documenting the complete Tenuto 6.0 DAW workspace, 4 projectional views (`Piano Roll`, `Tab / Chord Flow`, `Session`, `Arrangement`), 3 bottom studio docks (`Mixer`, `Devices`, `Inspector`), Surgical Core-Note Karaoke code spotlight, 500ms debounced `localStorage` code memory, 128-sample `k-rate` `ContinuousSynthEngine` with 20+ intra-note modifiers, Ableton Flagship Synth/Sampler/FX Suite, 20-Band Talking Vocoder, and 128-instrument MusyngKite HD SoundFont engine.
 * **`v5.0.4`**: True multi-instrument voice-leading trajectories, exact playhead orb-to-line lock (`evaluateTrackedEventMidiAtWhole`), and all-instrument selector pills in `TabChordFlowView`.

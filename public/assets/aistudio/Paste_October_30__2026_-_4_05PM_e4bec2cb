@@ -1,0 +1,608 @@
+
+Here is Implementation Contract TDB-738 (v5.1.2 -> v5.1.4) to enable Bi-Directional Click-and-Drag Note Editing on the Piano Roll (vertical drag for semitone pitch transposition on single notes and individual chord voices, and horizontal / right-edge drag for 1/16th-quantized duration resizing with live optimistic preview and full Cmd/Ctrl + Z Undo/Redo support).
+Paste the contract below directly into Google AI Studio:
+code
+Markdown
+# Implementation Contract: Bi-Directional Piano Roll Click-and-Drag Note Transposition & Duration Resizing (TDB-738)
+
+**Project:** Tenuto Studio 5
+**Scope:** Upgrade `src/components/WebGPUCanvas.tsx`, `src/components/SplitWorkspace.tsx`, and `src/mutator/TopologicalMutator.ts` so clicking and dragging any note block on the Piano Roll vertically (pitch transposition) or horizontally / via its right-edge handle (1/16th-quantized rational duration resizing) renders a live optimistic preview and bidirectionally rewrites the exact token in the `.ten` source code on mouse release; add verification tests in `tests/studio_engine_and_ui.test.tsx`, `tests/surgical_ast_mutator.test.ts`, and `tests/documentation_integrity.test.ts`; update `README.md`; and bump the repository version from `5.1.2` to `5.1.4`.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+**Version Bump:** 5.1.2 -> 5.1.4 (+0.0.2 step; rolls X.Y.8 -> X.(Y+1).0 and X.9.8 -> (X+1).0.0)
+**Documentation Sync:** Modify and append `README.md`
+**Execution Mode:** Parallel Batch Edits (Read all target files in parallel in a single turn, then apply all file edits in parallel in a single batched tool-call turn — NEVER edit files sequentially one by one).
+
+---
+
+## 1. Objective
+Currently, the visible SVG Piano Roll in `src/components/WebGPUCanvas.tsx` only attaches an `onClick` handler to note `<g>` elements, while the PIXI background canvas has `pointerEvents = 'none'`. As a result, clicking and dragging a note on the Piano Roll does not move the note or update the `.ten` code. Furthermore, `SplitWorkspace.handleCanvasMutation` only calls `resizeDuration` (ignoring vertical pitch changes), and `TopologicalMutator.ts` lacks support for transposing a single dragged voice inside a chord bracket (`[c4 e4 g4]:2`) or resizing sticky-duration tokens (`d` in `c4:8 d e`).
+
+This contract implements full bi-directional click-and-drag editing on the Piano Roll:
+1. **Vertical Drag (Pitch Transposition):** Clicking and dragging any note body up or down on the Piano Roll shows a live optimistic preview of the new pitch row and pitch name (`e.g. E4 (+4st)`) and rewrites the token's pitch in `.ten` source code on mouse release—including single notes, sticky-octave notes, and individual voices inside `[...]` chords.
+2. **Horizontal / Right-Edge Drag (Quantized Duration Resizing):** Dragging a note's right-edge resize handle (`note-resize-handle-<idx>`) or dragging horizontally snaps the width delta to `1/16`th-note grid steps and rewrites the rational duration in `.ten` source code on mouse release.
+3. **Full Undo/Redo Integration:** Every drag mutation commits through `CommandManager` so `Cmd/Ctrl + Z` and `Cmd/Ctrl + Shift + Z` undo and redo Piano Roll drags in a single step.
+
+---
+
+## 2. Root Cause
+1. In `src/components/WebGPUCanvas.tsx`, the SVG note `<g>` elements only bind `onClick` and lack `onMouseDown`, `window.mousemove`, and `window.mouseup` drag state tracking.
+2. In `src/components/SplitWorkspace.tsx`, `handleCanvasMutation(eventData, deltaX)` only accepts `deltaX` with a hardcoded `zScale = 100` and does not apply `semitoneDelta` pitch transposition.
+3. In `src/mutator/TopologicalMutator.ts`, `transposePitch` always transposes all notes in a chord rather than targeting the specific `originalMidi` voice that the user dragged, and `resizeDuration` throws if a note uses sticky duration inheritance (`durationPart === null`).
+
+---
+
+## 3. Files To Modify
+
+> **PARALLEL EXECUTION DIRECTIVE:** You MUST read all target files in a single parallel batch call, and you MUST apply all file edits below (`package.json`, `electron-builder.json`, `README.md`, `src/mutator/TopologicalMutator.ts`, `src/components/WebGPUCanvas.tsx`, `src/components/SplitWorkspace.tsx`, `tests/surgical_ast_mutator.test.ts`, `tests/studio_engine_and_ui.test.tsx`, and `tests/documentation_integrity.test.ts`) simultaneously in a single parallel tool-call turn. Do NOT apply edits sequentially one file per turn.
+
+### 3.1 `package.json` & `electron-builder.json` - Bump Repository Version `5.1.2 -> 5.1.4`
+1. In `package.json`, update `"version"` from `"5.1.2"` to `"5.1.4"`:
+```json
+{
+  "name": "tenuto-studio-5",
+  "private": true,
+  "version": "5.1.4",
+In electron-builder.json, update "extraMetadata.version" from "5.1.2" to "5.1.4":
+code
+JSON
+"extraMetadata": {
+    "main": "electron/main.cjs",
+    "version": "5.1.4"
+  },
+3.2 README.md - Document Bi-Directional Piano Roll Click-and-Drag Note Editing & v5.1.4 Release
+In README.md:
+Update the top release badge to v5.1.4:
+code
+Markdown
+[![Release: v5.1.4](https://img.shields.io/badge/Release-v5.1.4-2563eb.svg)](./SPEC.md)
+Under Section 3.A (Scrolling Piano Roll View (WebGPUCanvas.tsx)), add the following bullet at the top of Section 3.A:
+code
+Markdown
+* **Bi-Directional Click-and-Drag Note Editing (`piano-roll-note-<idx>` & `note-resize-handle-<idx>`):** Drag any note block vertically to transpose its pitch in semitones (updating single notes, sticky-octave notes, or individual voices inside `[...]` chords) or drag horizontally / via the right-edge resize handle to resize its rational duration on a `1/16`th-note snap grid—complete with a live optimistic visual preview and single-step `Cmd/Ctrl + Z` Undo/Redo.
+Under ## Release Notes, update the heading to ## Release Notes (v5.1.4) and prepend the v5.1.4 entry:
+code
+Markdown
+## Release Notes (`v5.1.4`)
+
+* **`v5.1.4`:** Added bi-directional Piano Roll click-and-drag note editing in `WebGPUCanvas.tsx`, `SplitWorkspace.tsx`, and `TopologicalMutator.ts`—supporting vertical semitone pitch dragging (for single notes, sticky-octave notes, and individual voices within chords), 1/16th-quantized horizontal duration resizing, live optimistic drag previews, and `CommandManager` Undo/Redo integration.
+3.3 src/mutator/TopologicalMutator.ts - Support Single-Voice Chord Transposition & Sticky-Duration Resizing
+In src/mutator/TopologicalMutator.ts, update resizeDuration and transposePitch as follows:
+Update resizeDuration (around line 149) to accept an optional fallbackDuration?: { numerator: number; denominator: number } so notes that inherited a sticky duration (c4:8 d e) can also be resized by dragging on the Piano Roll:
+code
+TypeScript
+public resizeDuration(
+    rawToken: string,
+    deltaWidth: number,
+    zScale: number,
+    fallbackDuration?: { numerator: number; denominator: number }
+  ): string {
+    const { pitchPart, durationPart, modifiers, hasTie } = this.decomposeToken(rawToken);
+
+    if (!durationPart && !fallbackDuration) {
+      throw new Error(`Invalid token format, missing duration: ${rawToken}`);
+    }
+
+    const { numerator: N1, denominator: D1 } = durationPart
+      ? this.temporalEngine.parseDuration(':' + durationPart)
+      : {
+          numerator: fallbackDuration!.numerator || 1,
+          denominator: fallbackDuration!.denominator || 4,
+        };
+
+    const dragRatio = deltaWidth / zScale;
+    const { numerator: N2, denominator: D2 } = this.approximateFraction(dragRatio, 128);
+
+    let newNum = N1 * D2 + N2 * D1;
+    let newDen = D1 * D2;
+
+    if (newNum <= 0) {
+      newNum = 1;
+      newDen = 64;
+    }
+
+    const divisor = this.gcd(Math.abs(newNum), Math.abs(newDen));
+    newNum /= divisor;
+    newDen /= divisor;
+
+    const newDurationPart = newNum === 1 ? `${newDen}` : `${newNum}/${newDen}`;
+
+    return this.recomposeToken({
+      pitchPart,
+      durationPart: newDurationPart,
+      modifiers,
+      hasTie,
+    });
+  }
+Update transposePitch (around line 191) to accept an optional originalMidi?: number parameter so that:
+When dragging a specific note inside a chord [c4 e4 g4]:2 (where originalMidi is 64), only the dragged voice (e4) is transposed to its new pitch while the other chord voices remain untouched.
+When originalMidi is omitted (e.g. Inspector chord transpose or existing unit tests), all voices in the chord transpose together.
+When dragging a sticky-octave note (d where originalMidi is 74), originalMidi + semitoneDelta is used directly so octave context is never lost:
+code
+TypeScript
+/**
+   * Transposes a single note token (`c4:4.stacc`) or chord token (`[c4 e4 g4]:2.mf`)
+   * by `semitoneDelta` semitones while preserving duration, modifiers, and ties.
+   * If `originalMidi` is provided for a chord token, only the matching voice in the chord is transposed.
+   */
+  public transposePitch(
+    rawToken: string,
+    semitoneDelta: number,
+    preferFlats?: boolean,
+    originalMidi?: number
+  ): string {
+    if (semitoneDelta === 0) return rawToken;
+    const { pitchPart, durationPart, modifiers, hasTie } = this.decomposeToken(rawToken);
+
+    const useFlats =
+      preferFlats !== undefined
+        ? preferFlats
+        : /[a-g]b\d*/i.test(pitchPart) && !pitchPart.includes('#');
+
+    if (pitchPart.startsWith('[') && pitchPart.endsWith(']')) {
+      const innerNotes = pitchPart
+        .slice(1, -1)
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      this.pitchEngine.reset(4);
+      let matchedSingleVoice = false;
+      const transposedNotes = innerNotes.map((n) => {
+        const parsed = this.pitchEngine.parsePitch(n);
+        if (parsed.isRest || parsed.isSpacer || parsed.gridKey) return n;
+        if (typeof originalMidi === 'number' && originalMidi > 0) {
+          if (!matchedSingleVoice && parsed.midi === originalMidi) {
+            matchedSingleVoice = true;
+            return this.midiToPitchLiteral(parsed.midi + semitoneDelta, useFlats);
+          }
+          return n;
+        }
+        return this.midiToPitchLiteral(parsed.midi + semitoneDelta, useFlats);
+      });
+      return this.recomposeToken({
+        pitchPart: `[${transposedNotes.join(' ')}]`,
+        durationPart,
+        modifiers,
+        hasTie,
+      });
+    }
+
+    this.pitchEngine.reset(4);
+    const parsed = this.pitchEngine.parsePitch(pitchPart);
+    if (parsed.isRest || parsed.isSpacer || parsed.gridKey) {
+      return rawToken;
+    }
+
+    const baseMidi =
+      typeof originalMidi === 'number' && originalMidi > 0 ? originalMidi : parsed.midi;
+    const nextPitch = this.midiToPitchLiteral(baseMidi + semitoneDelta, useFlats);
+    return this.recomposeToken({
+      pitchPart: nextPitch,
+      durationPart,
+      modifiers,
+      hasTie,
+    });
+  }
+3.4 src/components/WebGPUCanvas.tsx - Add Interactive SVG Note Dragging (Vertical Pitch & Horizontal Duration) with Optimistic Preview
+In src/components/WebGPUCanvas.tsx:
+Update the onMutation prop type on WebGPUCanvas to:
+code
+TypeScript
+onMutation?: (
+    eventData: any,
+    deltaX: number,
+    semitoneDelta?: number,
+    zScale?: number
+  ) => void;
+Add state for active SVG note dragging inside WebGPUCanvas (right below const [isMidiToolsOpen, setIsMidiToolsOpen] = useState<boolean>(false);):
+code
+TypeScript
+const [dragState, setDragState] = useState<{
+    eventIndex: number;
+    event: any;
+    mode: 'move' | 'resize';
+    startClientX: number;
+    startClientY: number;
+    semitoneDelta: number;
+    deltaWidthPx: number;
+  } | null>(null);
+Add a useEffect in WebGPUCanvas (right after handleFitAll) that listens to window mousemove and mouseup when dragState is active, updating the optimistic preview and firing onMutationRef.current on mouse release:
+code
+TypeScript
+useEffect(() => {
+    if (!dragState) return;
+
+    const stepPx = Math.max(4, wholeNoteScale / 16);
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const rawDeltaX = e.clientX - dragState.startClientX;
+      const rawDeltaY = e.clientY - dragState.startClientY;
+
+      if (dragState.mode === 'resize') {
+        const snappedDeltaX = Math.round(rawDeltaX / stepPx) * stepPx;
+        setDragState((prev) =>
+          prev ? { ...prev, deltaWidthPx: snappedDeltaX, semitoneDelta: 0 } : null
+        );
+      } else {
+        const semiDelta = Math.round(-rawDeltaY / rowH);
+        const snappedDeltaX =
+          semiDelta === 0 && Math.abs(rawDeltaX) >= stepPx
+            ? Math.round(rawDeltaX / stepPx) * stepPx
+            : 0;
+        setDragState((prev) =>
+          prev
+            ? { ...prev, semitoneDelta: semiDelta, deltaWidthPx: snappedDeltaX }
+            : null
+        );
+      }
+    };
+
+    const handleMouseUp = () => {
+      if (dragState.semitoneDelta !== 0 || dragState.deltaWidthPx !== 0) {
+        onMutationRef.current?.(
+          dragState.event,
+          dragState.deltaWidthPx,
+          dragState.semitoneDelta,
+          wholeNoteScale
+        );
+      }
+      setDragState(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [dragState, rowH, wholeNoteScale]);
+Inside staticPianoRollContent in src/components/WebGPUCanvas.tsx, update the visibleEvents.map((ev, idx) => ...) block so each note <g> supports mouse-down pitch/duration dragging, renders a right-edge resize handle (data-testid={note-resize-handle-${idx}}), and displays the live optimistic position/width/pitch when dragState?.eventIndex === idx:
+Replace the visibleEvents.map((ev, idx) => { ... }) block inside staticPianoRollContent (and add dragState to the useMemo dependency array of staticPianoRollContent) with:
+code
+TypeScript
+{/* Projected Note Blocks (Interactive Bi-Directional Dragging for Pitch & Duration) */}
+        {visibleEvents.map((ev, idx) => {
+          const baseMidi = ev.pitch?.midi ?? 60;
+          if (baseMidi <= 0) return null;
+          const isBeingDragged = dragState?.eventIndex === idx;
+          const effectiveMidi = Math.max(
+            12,
+            Math.min(108, baseMidi + (isBeingDragged ? dragState.semitoneDelta : 0))
+          );
+
+          const startWhole = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+          const durWhole = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
+
+          const x = keyWidth + startWhole * wholeNoteScale;
+          const baseW = Math.max(4, durWhole * wholeNoteScale - 1.5);
+          const w = Math.max(
+            6,
+            baseW + (isBeingDragged ? dragState.deltaWidthPx : 0)
+          );
+          const clampedMidi = Math.max(minMidi, Math.min(maxMidi, effectiveMidi));
+          const y = (maxMidi - clampedMidi) * rowH + 1.5;
+          const tId = ev.trackId || 'pno';
+          const baseColor = getTrackColor(tId, ev.style, trackIndexMap.get(tId) ?? 0);
+          const swell = ev.physics?.swell;
+          const noteH = Math.max(5, rowH - 3);
+          const badge =
+            ev.physics?.trill
+              ? ' tr~'
+              : ev.physics?.vibrato
+                ? ' ~'
+                : ev.physics?.pizz
+                  ? ' pizz'
+                  : ev.physics?.fermata
+                    ? ' 𝄐'
+                    : swell === 'crescendo'
+                      ? ' <'
+                      : swell === 'diminuendo'
+                        ? ' >'
+                        : '';
+          const pitchName =
+            isBeingDragged && dragState.semitoneDelta !== 0
+              ? `${NOTE_NAMES[effectiveMidi % 12]}${Math.floor(effectiveMidi / 12) - 1}`
+              : ev.pitch?.noteName ||
+                `${NOTE_NAMES[baseMidi % 12]}${Math.floor(baseMidi / 12) - 1}`;
+          const lyricText = ev.physics?.lyric ? `"${ev.physics.lyric}" ` : '';
+          const label = `${lyricText}${pitchName}${badge}`;
+
+          const selectPayload = {
+            type: 'PitchLit',
+            duration: `${ev.duration?.numerator || 1}/${ev.duration?.denominator || 4}`,
+            velocity: ev.physics?.velocity ?? 80,
+            articulation: ev.physics?.articulation || '',
+            chance: ev.physics?.chance ?? 100,
+            pan: ev.physics?.pan ?? 0,
+            lyric: ev.physics?.lyric || '',
+            line: ev.line ?? 1,
+            col: ev.col ?? 1,
+            rawToken: ev.rawToken,
+            trackId: ev.trackId,
+            sourceStartOffset: ev.sourceStartOffset,
+            sourceEndOffset: ev.sourceEndOffset,
+          };
+
+          return (
+            <g
+              key={idx}
+              data-testid={`piano-roll-note-${idx}`}
+              className="cursor-grab active:cursor-grabbing transition-opacity"
+              onClick={() => onSelectRef.current?.(selectPayload)}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                onSelectRef.current?.(selectPayload);
+                setDragState({
+                  eventIndex: idx,
+                  event: ev,
+                  mode: 'move',
+                  startClientX: e.clientX,
+                  startClientY: e.clientY,
+                  semitoneDelta: 0,
+                  deltaWidthPx: 0,
+                });
+              }}
+            >
+              <rect
+                x={x}
+                y={y}
+                width={w}
+                height={noteH}
+                rx={Math.min(4, Math.max(2, rowH / 4))}
+                fill={isBeingDragged ? '#38BDF8' : baseColor}
+                fillOpacity={isBeingDragged ? 0.92 : swell ? 0.65 : 1}
+                stroke={isBeingDragged ? '#FFFFFF' : '#F8FAFC'}
+                strokeOpacity={isBeingDragged ? 1 : 0.35}
+                strokeWidth={isBeingDragged ? 1.8 : 0.8}
+              />
+              {swell === 'crescendo' && w > 12 && (
+                <polygon
+                  points={`${x + 2},${y + noteH / 2} ${x + w - 2},${y + 1.5} ${x + w - 2},${y + noteH - 1.5}`}
+                  fill="#F8FAFC"
+                  fillOpacity={0.32}
+                  className="pointer-events-none"
+                />
+              )}
+              {swell === 'diminuendo' && w > 12 && (
+                <polygon
+                  points={`${x + 2},${y + 1.5} ${x + 2},${y + noteH - 1.5} ${x + w - 2},${y + noteH / 2}`}
+                  fill="#F8FAFC"
+                  fillOpacity={0.32}
+                  className="pointer-events-none"
+                />
+              )}
+              {ev.physics?.mpe && w > 12 && (
+                <polyline
+                  data-testid={`mpe-curve-${idx}`}
+                  fill="none"
+                  stroke="#22D3EE"
+                  strokeWidth={1.8}
+                  points={`${x + 2},${y + noteH * 0.7} ${x + w * 0.5},${y + noteH * 0.2} ${x + w - 2},${y + noteH * 0.65}`}
+                  className="pointer-events-none"
+                />
+              )}
+              {w > 26 && rowH >= 14 && (
+                <text
+                  x={x + 5}
+                  y={y + rowH - 5}
+                  className="fill-white font-mono text-[10px] font-semibold pointer-events-none"
+                >
+                  {label}
+                </text>
+              )}
+              {/* Right-Edge Duration Resize Handle */}
+              <rect
+                data-testid={`note-resize-handle-${idx}`}
+                x={x + Math.max(2, w - 6)}
+                y={y}
+                width={6}
+                height={noteH}
+                fill="transparent"
+                className="cursor-col-resize"
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  onSelectRef.current?.(selectPayload);
+                  setDragState({
+                    eventIndex: idx,
+                    event: ev,
+                    mode: 'resize',
+                    startClientX: e.clientX,
+                    startClientY: e.clientY,
+                    semitoneDelta: 0,
+                    deltaWidthPx: 0,
+                  });
+                }}
+              />
+            </g>
+          );
+        })}
+(Remember to include dragState in the dependency array of staticPianoRollContent's useMemo: [visibleEvents, minMidi, maxMidi, totalWidthPx, numRows, svgHeight, rowH, wholeNoteScale, trackIndexMap, rootKey, scaleName, dragState].)
+3.5 src/components/SplitWorkspace.tsx - Upgrade handleCanvasMutation to Apply Both Pitch Transposition & Duration Resizing
+In src/components/SplitWorkspace.tsx, replace handleCanvasMutation (around line 417) with:
+code
+TypeScript
+const handleCanvasMutation = (
+    eventData: any,
+    deltaX: number,
+    semitoneDelta: number = 0,
+    zScale: number = 100
+  ) => {
+    if (!eventData || !eventData.rawToken) return;
+    try {
+      let mutatedToken = eventData.rawToken;
+      if (deltaX !== 0) {
+        mutatedToken = topologicalMutator.resizeDuration(
+          mutatedToken,
+          deltaX,
+          zScale,
+          eventData.duration
+        );
+      }
+      if (semitoneDelta !== 0) {
+        const preferFlats = ['F', 'Bb', 'Eb', 'Ab', 'Db', 'Gb'].includes(
+          scoreMeta.key || ''
+        );
+        mutatedToken = topologicalMutator.transposePitch(
+          mutatedToken,
+          semitoneDelta,
+          preferFlats,
+          eventData.pitch?.midi
+        );
+      }
+      if (mutatedToken === eventData.rawToken) return;
+
+      const nextCode = topologicalMutator.replaceEventInSource(
+        sourceCode,
+        eventData,
+        mutatedToken
+      );
+      const prevCode = sourceCode;
+      const cmd = new ASTCommand(nextCode);
+      cmd.execute = () => setSourceCode(nextCode);
+      cmd.undo = () => setSourceCode(prevCode);
+      commandManager.executeCommand(cmd);
+    } catch {
+      // Ignore invalid resize or transpose bounds
+    }
+  };
+3.6 tests/surgical_ast_mutator.test.ts & tests/studio_engine_and_ui.test.tsx - Add Verification Tests for Piano Roll Click-and-Drag Note Editing
+In tests/surgical_ast_mutator.test.ts, update the 'transposes single notes and multi-note chords while preserving durations and modifiers' test to also verify single-voice chord transposition (originalMidi) and sticky-duration resizing:
+code
+TypeScript
+it('transposes single notes, individual chord voices, and multi-note chords while preserving durations and modifiers', () => {
+    expect(mutator.transposePitch('c4:8.stacc.mf', 2)).toBe('d4:8.stacc.mf');
+    expect(mutator.transposePitch('eb4:4.vib', -2, true)).toBe('db4:4.vib');
+    expect(mutator.transposePitch('[c4 e4 g4]:2.fx(reverb, @{mix: 0.4})', 2)).toBe(
+      '[d4 f#4 a4]:2.fx(reverb, @{mix: 0.4})'
+    );
+    // Dragging only E4 (MIDI 64) up 1 semitone inside [c4 e4 g4]:2 -> [c4 f4 g4]:2
+    expect(mutator.transposePitch('[c4 e4 g4]:2', 1, false, 64)).toBe('[c4 f4 g4]:2');
+    // Resizing a sticky-duration token ('d') using its inherited fallbackDuration (1/8)
+    expect(mutator.resizeDuration('d', 12.5, 100, { numerator: 1, denominator: 8 })).toBe('d:4');
+  });
+In tests/studio_engine_and_ui.test.tsx, append a test verifying that clicking and dragging a note vertically and dragging its resize handle horizontally on <WebGPUCanvas /> dispatches the exact pitch transposition and duration resize mutations:
+code
+TypeScript
+it('bidirectionally transposes pitch on vertical note drag and resizes duration on right-edge drag in WebGPUCanvas', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile('pno: c4:4');
+    const onMutation = vi.fn();
+
+    render(<WebGPUCanvas events={score.events} onMutation={onMutation} />);
+
+    const noteEl = screen.getByTestId('piano-roll-note-0');
+    // Drag note vertically upward by 80px (4 rows at rowH=20 -> +4 semitones: C4 -> E4)
+    fireEvent.mouseDown(noteEl, { clientX: 120, clientY: 200 });
+    fireEvent.mouseMove(window, { clientX: 120, clientY: 120 });
+    fireEvent.mouseUp(window);
+
+    expect(onMutation).toHaveBeenCalledWith(
+      expect.objectContaining({ rawToken: 'c4:4' }),
+      0,
+      4,
+      260
+    );
+
+    // Drag right-edge resize handle horizontally by +65px (1/4 whole note at wholeNoteScale=260)
+    onMutation.mockClear();
+    const resizeHandle = screen.getByTestId('note-resize-handle-0');
+    fireEvent.mouseDown(resizeHandle, { clientX: 120, clientY: 200 });
+    fireEvent.mouseMove(window, { clientX: 185, clientY: 200 });
+    fireEvent.mouseUp(window);
+
+    expect(onMutation).toHaveBeenCalledWith(
+      expect.objectContaining({ rawToken: 'c4:4' }),
+      65,
+      0,
+      260
+    );
+  });
+3.7 tests/documentation_integrity.test.ts - Update Version Assertions to 5.1.4
+In tests/documentation_integrity.test.ts, update the version assertions from '5.1.2' to '5.1.4' and verify 'piano-roll-note-' is documented in README.md:
+code
+TypeScript
+import { describe, it, expect } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+
+describe('TDB-607, TDB-726, TDB-734, TDB-735, TDB-736, TDB-737 & TDB-738: Final Release Documentation & v5.1.4 Integrity', () => {
+  it('provides TENUTO_GRAMMAR.md with complete songwriting rules and LLM prompt template', () => {
+    const grammarPath = path.resolve(__dirname, '../TENUTO_GRAMMAR.md');
+    expect(fs.existsSync(grammarPath)).toBe(true);
+
+    const content = fs.readFileSync(grammarPath, 'utf-8');
+    expect(content).toContain('tenuto "5.0"');
+    expect(content).toContain('salamander_grand');
+    expect(content).toContain('tenuto_808_kit');
+    expect(content).toContain('Copy-Paste Prompt for Gemini');
+  });
+
+  it('provides the comprehensive v5.1.4 README.md covering bi-directional piano roll note dragging, 4 DAW views, and installers', () => {
+    const readmePath = path.resolve(__dirname, '../README.md');
+    expect(fs.existsSync(readmePath)).toBe(true);
+
+    const content = fs.readFileSync(readmePath, 'utf-8');
+    expect(content).toContain('TENUTO STUDIO 5');
+    expect(content).toContain('v5.1.4');
+    expect(content).toContain('TENUTO_GRAMMAR.md');
+    expect(content).toContain('piano-roll-note-');
+    expect(content).toContain('npm run electron:build:mac');
+    expect(content).toContain('npm run electron:build:win');
+    expect(content).not.toContain('Do not expect to compose music today');
+    expect(content).not.toContain('~28% completion');
+
+    const pkgJson = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8')
+    );
+    expect(pkgJson.version).toBe('5.1.4');
+    expect(pkgJson.scripts['electron:build:mac']).toContain('--mac pkg');
+    expect(pkgJson.scripts['electron:build:win']).toContain('--win nsis');
+
+    const builderJson = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../electron-builder.json'), 'utf-8')
+    );
+    expect(builderJson.extraMetadata.version).toBe('5.1.4');
+    expect(builderJson.npmRebuild).toBe(false);
+    expect(builderJson.mac.target).toContain('pkg');
+    expect(builderJson.win).toBeDefined();
+    expect(builderJson.nsis.createDesktopShortcut).toBe(true);
+  });
+});
+4. What NOT to Touch
+src/parser/
+src/audio/
+src/components/TabChordFlowView.tsx, src/components/SessionView.tsx, src/components/ArrangementView.tsx, src/components/Mixer.tsx, src/components/Transport.tsx
+tests/topological_workspace_binding.test.tsx, tests/topological_mutator.test.ts
+electron/main.cjs, vite.config.ts, vitest.config.ts
+5. Acceptance Criteria
+npm run lint (tsc --noEmit) passes with zero TypeScript errors.
+npx vitest run tests/studio_engine_and_ui.test.tsx tests/surgical_ast_mutator.test.ts tests/topological_workspace_binding.test.tsx tests/topological_mutator.test.ts tests/documentation_integrity.test.ts passes 100%.
+npm run build (vite build) completes cleanly with zero errors.
+package.json and electron-builder.json both equal "version": "5.1.4".
+README.md documents v5.1.4 and bi-directional Piano Roll click-and-drag note editing.
+Clicking and dragging any note on the Piano Roll vertically transposes its pitch in .ten code, and dragging its right edge resizes its duration in .ten code.
+6. Constraints
+Apply all file reads in parallel and all file edits in parallel in a single batched turn.
+Bump repository version by +0.0.2 (5.1.2 -> 5.1.4).
+Modify and append README.md to document bi-directional Piano Roll note dragging.
+Do NOT install any new npm packages.
+7. Manual Steps
+None required.
+8. Rollback Plan
+Revert via git revert HEAD or restore package.json, electron-builder.json, README.md, src/mutator/TopologicalMutator.ts, src/components/WebGPUCanvas.tsx, src/components/SplitWorkspace.tsx, tests/surgical_ast_mutator.test.ts, tests/studio_engine_and_ui.test.tsx, and tests/documentation_integrity.test.ts.
+9. Deliverable
+A single commit containing:
+Modified file(s): package.json, electron-builder.json, README.md, src/mutator/TopologicalMutator.ts, src/components/WebGPUCanvas.tsx, src/components/SplitWorkspace.tsx, tests/surgical_ast_mutator.test.ts, tests/studio_engine_and_ui.test.tsx, tests/documentation_integrity.test.ts
+Commit message: feat(piano-roll): add bi-directional click-and-drag note pitch transposition and duration resizing (v5.1.4)
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+10. Observable Before/After Behavior
+Area	Previous Behavior (v5.1.2)	New Behavior (v5.1.4)
+Version (package.json & electron-builder.json)	5.1.2	5.1.4
+Dragging a Note Vertically on Piano Roll	Clicking a note only selected it; dragging up/down did nothing	Smoothly drags the note across pitch rows with a live optimistic pitch preview and rewrites the pitch token in .ten source code on mouse release (for single notes, sticky-octave notes, and individual chord voices)
+Dragging a Note Horizontally / Right Edge on Piano Roll	Only worked in mocked PIXI tests; visible SVG notes had no resize handle	Every SVG note has a right-edge resize handle (cursor-col-resize) and 1/16th-snapped horizontal drag that rewrites the rational :duration in .ten source code
+README.md	Documented v5.1.2 features	Documents v5.1.4 bi-directional Piano Roll click-and-drag note editing
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-30
+Implementer: AI Agent
+code
+Code

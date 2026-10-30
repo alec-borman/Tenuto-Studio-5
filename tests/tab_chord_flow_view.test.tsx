@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import TabChordFlowView, {
   detectChordSymbol,
+  computeGuitarVoicing,
   buildTrueVoiceTrajectories,
   evaluateTrackedEventMidiAtWhole,
   allocateNotesToTabStrings,
@@ -25,7 +26,19 @@ vi.mock('@monaco-editor/react', () => ({
 
 HTMLCanvasElement.prototype.getContext = vi.fn();
 
-describe('TDB-733 & TDB-736: Multi-Instrument Tab Staff Lanes, Per-Track Fretboards & Pinch-Zoom / Fit-All', () => {
+describe('TDB-733, TDB-736 & TDB-739: Multi-Instrument Tab Staff Lanes, Sub-Bass/Viola Fretboard Folding & Pitch-Accurate Lines', () => {
+  it('folds low sub-bass (Bb0 = MIDI 22) and viola/cello (Bb1 = MIDI 34) notes onto playable fretboards so they never render empty', () => {
+    const violaVoicing = computeGuitarVoicing([34], true); // Bb1 (MIDI 34)
+    const violaFretted = violaVoicing.strings.filter((s) => typeof s.fret === 'number');
+    expect(violaFretted.length).toBeGreaterThanOrEqual(1);
+    expect(violaFretted[0].noteLabel).toBe('B♭');
+
+    const subVoicing = computeGuitarVoicing([22], true); // Bb0 (MIDI 22)
+    const subFretted = subVoicing.strings.filter((s) => typeof s.fret === 'number');
+    expect(subFretted.length).toBeGreaterThanOrEqual(1);
+    expect(subFretted[0].noteLabel).toBe('B♭');
+  });
+
   it('renders a dedicated horizontal 6-string Tab Staff lane for each instrument and supports Pinch-to-Zoom and Fit All', () => {
     const parser = new DocumentParser();
     const score = parser.compile(`
@@ -56,8 +69,9 @@ describe('TDB-733 & TDB-736: Multi-Instrument Tab Staff Lanes, Per-Track Fretboa
 
     const leadFirst = trajectories.find((t) => t.trackId === 'lead' && t.startWhole === 0)!;
     expect(evaluateTrackedEventMidiAtWhole(leadFirst, 0.25)).toBe(78); // F#5 = 78
+    // Because f#5:2 is followed contiguously by a5:2 on 'lead', targetMidi links to 81 (A5)
+    expect(leadFirst.targetMidi).toBe(81);
 
-    // Verify 6-string tab allocation assigns distinct strings to chord notes
     const allocated = allocateNotesToTabStrings([50, 57, 62, 66, 69, 73]);
     expect(allocated.size).toBe(6);
 
@@ -71,14 +85,16 @@ describe('TDB-733 & TDB-736: Multi-Instrument Tab Staff Lanes, Per-Track Fretboa
       />
     );
 
-    // Every instrument gets its own dedicated Tab Staff row when All (4) is selected
     expect(screen.getByText(/All \(4\)/i)).toBeInTheDocument();
     expect(screen.getByTestId('instrument-tab-staff-saws')).toBeInTheDocument();
     expect(screen.getByTestId('instrument-tab-staff-reese')).toBeInTheDocument();
     expect(screen.getByTestId('instrument-tab-staff-lead')).toBeInTheDocument();
     expect(screen.getByTestId('instrument-tab-staff-drums')).toBeInTheDocument();
 
-    // Test trackpad pinch-to-zoom and Fit All controls
+    // Verify reese (d1 = MIDI 26) mini fretboard has a fretted circle dot
+    const reeseFretboard = screen.getByTestId('mini-fretboard-reese');
+    expect(reeseFretboard.querySelectorAll('circle').length).toBeGreaterThanOrEqual(1);
+
     const viewport = screen.getByTestId('tab-flow-scroll-viewport');
     expect(screen.getByRole('button', { name: /Tab Reset Zoom/i })).toHaveTextContent('100%');
 
@@ -91,7 +107,6 @@ describe('TDB-733 & TDB-736: Multi-Instrument Tab Staff Lanes, Per-Track Fretboa
     fireEvent.click(screen.getByRole('button', { name: /Fit All Tab View/i }));
     expect(screen.getByRole('button', { name: /Tab Reset Zoom/i })).not.toHaveTextContent('100%');
 
-    // Clicking 'lead' pill isolates only the lead track's Tab Staff and orb (F#5 at beat 1.0)
     fireEvent.click(screen.getByRole('button', { name: /Filter chord flow by lead/i }));
     expect(screen.getByTestId('instrument-tab-staff-lead')).toBeInTheDocument();
     expect(screen.queryByTestId('instrument-tab-staff-saws')).not.toBeInTheDocument();

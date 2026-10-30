@@ -540,18 +540,48 @@ export default function SplitWorkspace() {
     });
   };
 
-  const handleCanvasMutation = (eventData: any, deltaX: number) => {
+  const handleCanvasMutation = (
+    eventData: any,
+    deltaX: number,
+    semitoneDelta: number = 0,
+    zScale: number = 100
+  ) => {
     if (!eventData || !eventData.rawToken) return;
     try {
-      const mutatedToken = topologicalMutator.resizeDuration(eventData.rawToken, deltaX, 100);
-      const nextCode = topologicalMutator.replaceEventInSource(sourceCode, eventData, mutatedToken);
+      let mutatedToken = eventData.rawToken;
+      if (deltaX !== 0) {
+        mutatedToken = topologicalMutator.resizeDuration(
+          mutatedToken,
+          deltaX,
+          zScale,
+          eventData.duration
+        );
+      }
+      if (semitoneDelta !== 0) {
+        const preferFlats = ['F', 'Bb', 'Eb', 'Ab', 'Db', 'Gb'].includes(
+          scoreMeta.key || ''
+        );
+        mutatedToken = topologicalMutator.transposePitch(
+          mutatedToken,
+          semitoneDelta,
+          preferFlats,
+          eventData.pitch?.midi
+        );
+      }
+      if (mutatedToken === eventData.rawToken) return;
+
+      const nextCode = topologicalMutator.replaceEventInSource(
+        sourceCode,
+        eventData,
+        mutatedToken
+      );
       const prevCode = sourceCode;
       const cmd = new ASTCommand(nextCode);
       cmd.execute = () => setSourceCode(nextCode);
       cmd.undo = () => setSourceCode(prevCode);
       commandManager.executeCommand(cmd);
     } catch {
-      // Ignore invalid resize bounds
+      // Ignore invalid resize or transpose bounds
     }
   };
 

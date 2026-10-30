@@ -16,12 +16,16 @@ describe('TDB-702: Surgical Bi-Directional AST Code Mutator', () => {
     expect(resized).toBe('c4:3/8.stacc.vol(95).pan(-0.3)~');
   });
 
-  it('transposes single notes and multi-note chords while preserving durations and modifiers', () => {
+  it('transposes single notes, individual chord voices, and multi-note chords while preserving durations and modifiers', () => {
     expect(mutator.transposePitch('c4:8.stacc.mf', 2)).toBe('d4:8.stacc.mf');
     expect(mutator.transposePitch('eb4:4.vib', -2, true)).toBe('db4:4.vib');
     expect(mutator.transposePitch('[c4 e4 g4]:2.fx(reverb, @{mix: 0.4})', 2)).toBe(
       '[d4 f#4 a4]:2.fx(reverb, @{mix: 0.4})'
     );
+    // Dragging only E4 (MIDI 64) up 1 semitone inside [c4 e4 g4]:2 -> [c4 f4 g4]:2
+    expect(mutator.transposePitch('[c4 e4 g4]:2', 1, false, 64)).toBe('[c4 f4 g4]:2');
+    // Resizing a sticky-duration token ('d') using its inherited fallbackDuration (1/8)
+    expect(mutator.resizeDuration('d', 12.5, 100, { numerator: 1, denominator: 8 })).toBe('d:4');
   });
 
   it('surgically patches duration, velocity, pan, chance, and articulation on a token', () => {

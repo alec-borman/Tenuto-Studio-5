@@ -1,49 +1,35 @@
 {
-  "proposal_id": "tdb-736-multi-instrument-tab-staff-lanes-v5.1.0",
-  "target_intent": "TDB-736: Multi-Instrument Tab Staff Lanes, Per-Track Fretboards & Piano-Roll-Parity Pinch-Zoom / Fit-All in Tab View (v5.1.0)",
-  "delta_before": 0.14,
+  "proposal_id": "tdb-739-tab-view-subbass-fretboards-pitch-lines-v5.1.6",
+  "target_intent": "TDB-739 Fix Sub-Bass/Viola Fretboards, Pitch-Accurate Tab Trajectory Lines & Orb Text De-Collision in Tab View",
+  "delta_before": 0.1950,
   "mutations": [
     {
       "file": "package.json",
       "function": "version",
       "ast_depth": 1,
       "decay_weight": 0.95,
-      "patch": "--- a/package.json\n+++ b/package.json\n@@ -2,3 +2,3 @@\n   \"name\": \"tenuto-studio-5\",\n   \"private\": true,\n-  \"version\": \"5.0.8\",\n+  \"version\": \"5.1.0\","
+      "patch": "@@ -4 +4 @@\n-  \"version\": \"5.1.4\",\n+  \"version\": \"5.1.6\","
     },
     {
       "file": "electron-builder.json",
       "function": "extraMetadata.version",
       "ast_depth": 2,
-      "decay_weight": 0.9,
-      "patch": "--- a/electron-builder.json\n+++ b/electron-builder.json\n@@ -10,3 +10,3 @@\n   \"extraMetadata\": {\n     \"main\": \"electron/main.cjs\",\n-    \"version\": \"5.0.8\"\n+    \"version\": \"5.1.0\"\n   },"
+      "decay_weight": 0.90,
+      "patch": "@@ -11 +11 @@\n-    \"version\": \"5.1.4\"\n+    \"version\": \"5.1.6\""
     },
     {
       "file": "src/components/TabChordFlowView.tsx",
-      "function": "allocateNotesToTabStrings, buildTrueVoiceTrajectories, TabChordFlowView",
+      "function": "foldMidiIntoGuitarRange, computeGuitarVoicing, TabChordFlowView",
       "ast_depth": 2,
-      "decay_weight": 0.9,
-      "patch": "--- a/src/components/TabChordFlowView.tsx\n+++ b/src/components/TabChordFlowView.tsx\n@@ -148,1 +148,12 @@\n+export function allocateNotesToTabStrings(\n+  midiNotes: number[]\n+): Map<number, { stringIndex: number; fret: number }> {"
-    },
-    {
-      "file": "README.md",
-      "function": "v5.1.0 Release Notes & Multi-Instrument Tab Staff Lanes",
-      "ast_depth": 1,
-      "decay_weight": 0.95,
-      "patch": "--- a/README.md\n+++ b/README.md\n@@ -9,1 +9,1 @@\n-[![Release: v5.0.8](https://img.shields.io/badge/Release-v5.0.8-2563eb.svg)](./SPEC.md)\n+[![Release: v5.1.0](https://img.shields.io/badge/Release-v5.1.0-2563eb.svg)](./SPEC.md)"
+      "decay_weight": 0.90,
+      "patch": "@@ -138,15 +138,25 @@\n+export function foldMidiIntoGuitarRange(midi: number): number\n+computeGuitarVoicing octave folding + trackMidiToY(evaluateTrackedEventMidiAtWhole(...)) + sortedOrbs vertical de-collision + isPlayheadOverStartPill suppression + opaque sticky left header"
     },
     {
       "file": "tests/tab_chord_flow_view.test.tsx",
-      "function": "Multi-Instrument Tab Staff Lanes, Per-Track Fretboards & Pinch-Zoom / Fit-All",
+      "function": "TDB-739 test suite",
       "ast_depth": 2,
-      "decay_weight": 0.9,
-      "patch": "--- a/tests/tab_chord_flow_view.test.tsx\n+++ b/tests/tab_chord_flow_view.test.tsx\n@@ -28,1 +28,8 @@\n+describe('TDB-733 & TDB-736: Multi-Instrument Tab Staff Lanes, Per-Track Fretboards & Pinch-Zoom / Fit-All', () => {"
-    },
-    {
-      "file": "tests/documentation_integrity.test.ts",
-      "function": "v5.1.0 Documentation Integrity",
-      "ast_depth": 2,
-      "decay_weight": 0.9,
-      "patch": "--- a/tests/documentation_integrity.test.ts\n+++ b/tests/documentation_integrity.test.ts\n@@ -22,3 +22,4 @@\n+    expect(content).toContain('v5.1.0');\n+    expect(content).toContain('allocateNotesToTabStrings');"
+      "decay_weight": 0.90,
+      "patch": "@@ -28,12 +28,26 @@\n+  it('folds low sub-bass (Bb0 = MIDI 22) and viola/cello (Bb1 = MIDI 34) notes onto playable fretboards so they never render empty', ...)"
     }
   ]
 }
