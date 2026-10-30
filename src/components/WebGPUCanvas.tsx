@@ -120,6 +120,7 @@ export default function WebGPUCanvas({
   const gridRef = useRef<PIXI.Graphics | null>(null);
   const onMutationRef = useRef(onMutation);
   const onSelectRef = useRef(onSelect);
+  const touchPinchDistanceRef = useRef<number | null>(null);
 
   const [zoomLevel, setZoomLevel] = useState<number>(1.0);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
@@ -531,11 +532,44 @@ export default function WebGPUCanvas({
       setDragState(null);
     };
 
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!e.touches || e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      const rawDeltaX = touch.clientX - dragState.startClientX;
+      const rawDeltaY = touch.clientY - dragState.startClientY;
+
+      if (dragState.mode === 'resize') {
+        const snappedDeltaX = Math.round(rawDeltaX / stepPx) * stepPx;
+        setDragState((prev) =>
+          prev ? { ...prev, deltaWidthPx: snappedDeltaX, semitoneDelta: 0 } : null
+        );
+      } else {
+        const semiDelta = Math.round(-rawDeltaY / rowH);
+        const snappedDeltaX =
+          semiDelta === 0 && Math.abs(rawDeltaX) >= stepPx
+            ? Math.round(rawDeltaX / stepPx) * stepPx
+            : 0;
+        setDragState((prev) =>
+          prev
+            ? { ...prev, semitoneDelta: semiDelta, deltaWidthPx: snappedDeltaX }
+            : null
+        );
+      }
+    };
+
+    const handleTouchEnd = () => {
+      handleMouseUp();
+    };
+
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener('touchmove', handleTouchMove, { passive: true });
+    window.addEventListener('touchend', handleTouchEnd);
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchend', handleTouchEnd);
     };
   }, [dragState, rowH, wholeNoteScale]);
 
@@ -865,6 +899,23 @@ export default function WebGPUCanvas({
                   deltaWidthPx: 0,
                 });
               }}
+              onTouchStart={(e) => {
+                if (!e.touches || e.touches.length !== 1) return;
+                e.stopPropagation();
+                const touch = e.touches[0];
+                onSelectRef.current?.(selectPayload);
+                setDragState({
+                  eventIndex: idx,
+                  event: ev,
+                  mode: 'move',
+                  isBeatWide: false,
+                  beatStartWhole: startWhole,
+                  startClientX: touch.clientX,
+                  startClientY: touch.clientY,
+                  semitoneDelta: 0,
+                  deltaWidthPx: 0,
+                });
+              }}
             >
               <rect
                 x={x}
@@ -931,6 +982,21 @@ export default function WebGPUCanvas({
                     mode: 'resize',
                     startClientX: e.clientX,
                     startClientY: e.clientY,
+                    semitoneDelta: 0,
+                    deltaWidthPx: 0,
+                  });
+                }}
+                onTouchStart={(e) => {
+                  if (!e.touches || e.touches.length !== 1) return;
+                  e.stopPropagation();
+                  const touch = e.touches[0];
+                  onSelectRef.current?.(selectPayload);
+                  setDragState({
+                    eventIndex: idx,
+                    event: ev,
+                    mode: 'resize',
+                    startClientX: touch.clientX,
+                    startClientY: touch.clientY,
                     semitoneDelta: 0,
                     deltaWidthPx: 0,
                   });
@@ -1212,7 +1278,31 @@ export default function WebGPUCanvas({
       <div
         ref={scrollViewportRef}
         data-testid="piano-roll-scroll-viewport"
-        className="flex-1 w-full overflow-auto relative"
+        className="flex-1 w-full overflow-auto relative touch-pan-x touch-pan-y"
+        onTouchStart={(e) => {
+          if (e.touches && e.touches.length === 2) {
+            const dx = e.touches[1].clientX - e.touches[0].clientX;
+            const dy = e.touches[1].clientY - e.touches[0].clientY;
+            touchPinchDistanceRef.current = Math.hypot(dx, dy);
+          }
+        }}
+        onTouchMove={(e) => {
+          if (e.touches && e.touches.length === 2 && touchPinchDistanceRef.current) {
+            const dx = e.touches[1].clientX - e.touches[0].clientX;
+            const dy = e.touches[1].clientY - e.touches[0].clientY;
+            const nextDist = Math.hypot(dx, dy);
+            if (touchPinchDistanceRef.current > 10 && nextDist > 10) {
+              const ratio = nextDist / touchPinchDistanceRef.current;
+              touchPinchDistanceRef.current = nextDist;
+              setZoomLevel((prev) =>
+                Math.max(0.2, Math.min(3.0, Number((prev * ratio).toFixed(2))))
+              );
+            }
+          }
+        }}
+        onTouchEnd={() => {
+          touchPinchDistanceRef.current = null;
+        }}
       >
         <svg
           width={totalWidthPx}

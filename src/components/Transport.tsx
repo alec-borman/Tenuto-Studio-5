@@ -254,16 +254,16 @@ export default function Transport({
           {onToggleFullscreen && (
             <button
               type="button"
-              aria-label={isFullscreen ? 'Exit Fullscreen' : 'Toggle Fullscreen'}
+              aria-label="Toggle Fullscreen"
               onClick={onToggleFullscreen}
               className={`${
                 isFullscreen
-                  ? 'bg-indigo-600/30 border-indigo-400 text-indigo-200'
-                  : 'bg-slate-950 hover:bg-slate-800 border-slate-700 text-slate-200'
+                  ? 'bg-blue-600/30 border-blue-500 text-blue-200'
+                  : 'bg-slate-950 hover:bg-slate-800 border-slate-700 text-slate-300'
               } border text-xs font-semibold py-1 px-2.5 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0`}
               title={isFullscreen ? 'Exit Fullscreen (Esc)' : 'Enter Fullscreen Studio Mode'}
             >
-              {isFullscreen ? '✕ Exit' : '⛶ Fullscreen'}
+              {isFullscreen ? '⤓ Exit Full' : '⛶ Fullscreen'}
             </button>
           )}
         </div>

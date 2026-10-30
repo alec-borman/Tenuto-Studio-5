@@ -51,8 +51,9 @@ export default function SplitWorkspace() {
   const [loopEndMeasure, setLoopEndMeasure] = useState<number | null>(null);
   const [isMetronomeEnabled, setIsMetronomeEnabled] = useState<boolean>(false);
   const [countInBars, setCountInBars] = useState<number>(0);
-  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const workspaceRootRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [mobileFocusPane, setMobileFocusPane] = useState<'code' | 'visual'>('visual');
   const isAudioInitialized = useRef<boolean>(false);
 
   const [astState, setAstState] = useState<ASTState>({
@@ -136,40 +137,43 @@ export default function SplitWorkspace() {
   }, [codeMemory]);
 
   useEffect(() => {
-    const handleFullscreenChange = () => {
-      const doc: any = document;
-      const activeFs = Boolean(doc.fullscreenElement || doc.webkitFullscreenElement);
-      setIsFullscreen(activeFs);
+    const onFsChange = () => {
+      const fsElement =
+        document.fullscreenElement || (document as any).webkitFullscreenElement;
+      if (fsElement) {
+        setIsFullscreen(true);
+      }
     };
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('fullscreenchange', onFsChange);
+    document.addEventListener('webkitfullscreenchange', onFsChange);
     return () => {
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
-      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('fullscreenchange', onFsChange);
+      document.removeEventListener('webkitfullscreenchange', onFsChange);
     };
   }, []);
 
   const handleToggleFullscreen = async () => {
-    const doc: any = document;
-    const el: any = workspaceRootRef.current || document.documentElement;
+    const nextFs = !isFullscreen;
+    setIsFullscreen(nextFs);
     try {
-      if (!isFullscreen && !doc.fullscreenElement && !doc.webkitFullscreenElement) {
-        if (typeof el.requestFullscreen === 'function') {
-          await el.requestFullscreen();
-        } else if (typeof el.webkitRequestFullscreen === 'function') {
-          await el.webkitRequestFullscreen();
+      const fsElement =
+        document.fullscreenElement || (document as any).webkitFullscreenElement;
+      if (nextFs && !fsElement) {
+        const targetEl = workspaceRootRef.current || document.documentElement;
+        if (typeof targetEl.requestFullscreen === 'function') {
+          await targetEl.requestFullscreen();
+        } else if (typeof (targetEl as any).webkitRequestFullscreen === 'function') {
+          await (targetEl as any).webkitRequestFullscreen();
         }
-        setIsFullscreen(true);
-      } else {
-        if (typeof doc.exitFullscreen === 'function' && doc.fullscreenElement) {
-          await doc.exitFullscreen();
-        } else if (typeof doc.webkitExitFullscreen === 'function' && doc.webkitFullscreenElement) {
-          await doc.webkitExitFullscreen();
+      } else if (!nextFs && fsElement) {
+        if (typeof document.exitFullscreen === 'function') {
+          await document.exitFullscreen();
+        } else if (typeof (document as any).webkitExitFullscreen === 'function') {
+          await (document as any).webkitExitFullscreen();
         }
-        setIsFullscreen(false);
       }
     } catch {
-      setIsFullscreen((prev) => !prev);
+      // Fallback: `.tenuto-fullscreen-active` CSS class still maximizes the studio inside restricted iframes or iOS Safari
     }
   };
 
@@ -796,9 +800,10 @@ export default function SplitWorkspace() {
   return (
     <div
       ref={workspaceRootRef}
-      className={`tenuto-dvh-shell bg-slate-950 text-slate-100 overflow-hidden flex flex-col ${
+      data-testid="studio-workspace-root"
+      className={`${
         isFullscreen ? 'tenuto-fullscreen-active' : ''
-      }`}
+      } h-[100dvh] w-full max-w-[100vw] bg-slate-950 text-slate-100 overflow-hidden flex flex-col`}
     >
       {/* Top Bar: Transport Controls & Demo Selector */}
       <Transport
@@ -819,11 +824,22 @@ export default function SplitWorkspace() {
         masterVolume={masterVolume}
         onMasterVolumeChange={handleMasterVolumeChange}
         activeMainView={activeMainView}
-        onMainViewChange={setActiveMainView}
+        onMainViewChange={(view) => {
+          setActiveMainView(view);
+          setMobileFocusPane('visual');
+        }}
         activeBottomDock={activeBottomDock}
         onToggleBottomDock={handleToggleBottomDock}
         isCodeVisible={isCodeVisible}
-        onToggleCodeVisible={() => setIsCodeVisible((prev) => !prev)}
+        onToggleCodeVisible={() => {
+          setIsCodeVisible((prev) => {
+            const next = !prev;
+            if (next && mobileFocusPane === 'visual') {
+              setMobileFocusPane('code');
+            }
+            return next;
+          });
+        }}
         isMetronomeEnabled={isMetronomeEnabled}
         onToggleMetronome={handleToggleMetronome}
         countInBars={countInBars}
@@ -834,13 +850,11 @@ export default function SplitWorkspace() {
         onToggleFullscreen={handleToggleFullscreen}
       />
 
-      {/* Main Split Workspace */}
+      {/* Main Split Workspace (Responsive 1-Column on Mobile, 2-Column 50/50 Split on Desktop) */}
       <main
         data-testid="workspace-main-grid"
         className={`flex-1 grid ${
-          isCodeVisible
-            ? 'grid-cols-1 grid-rows-2 md:grid-cols-2 md:grid-rows-1'
-            : 'grid-cols-1 grid-rows-1'
+          isCodeVisible ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'
         } min-h-0 overflow-hidden`}
       >
         {/* Left Side: Tenuto Code Editor */}
@@ -848,7 +862,9 @@ export default function SplitWorkspace() {
           data-testid="code-editor-pane"
           className={`${
             isCodeVisible ? 'flex' : 'hidden'
-          } h-full w-full border-b md:border-b-0 md:border-r border-slate-800 bg-[#0B0F19] flex-col min-h-0 overflow-hidden`}
+          } ${
+            mobileFocusPane === 'visual' ? 'max-md:hidden' : ''
+          } h-full w-full border-r border-slate-800 bg-[#0B0F19] flex-col min-h-0 overflow-hidden`}
         >
           <div className="h-8 bg-slate-900 border-b border-slate-800 px-4 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2.5">
@@ -894,8 +910,13 @@ export default function SplitWorkspace() {
           </div>
         </section>
 
-        {/* Right Side: Multi-View DAW Viewport (Piano Roll | Session | Arrangement) */}
-        <section className="h-full w-full bg-slate-950 flex flex-col min-h-0 overflow-hidden">
+        {/* Right Side: Multi-View DAW Viewport (Piano Roll | Tab / Chord Flow | Session | Arrangement) */}
+        <section
+          data-testid="visual-studio-pane"
+          className={`${
+            isCodeVisible && mobileFocusPane === 'code' ? 'max-md:hidden' : 'flex'
+          } h-full w-full bg-slate-950 flex-col min-h-0 overflow-hidden`}
+        >
           <div className="h-8 bg-slate-900 border-b border-slate-800 px-4 flex items-center justify-between shrink-0">
             <span className="text-[11px] uppercase font-semibold tracking-wider text-slate-400">
               {activeMainView === 'session'
@@ -988,7 +1009,7 @@ export default function SplitWorkspace() {
         data-testid="bottom-studio-dock"
         className={
           activeBottomDock
-            ? 'h-80 w-full bg-slate-900 border-t border-slate-800 flex flex-row overflow-x-auto shrink-0 z-20'
+            ? 'h-64 md:h-80 w-full bg-slate-900 border-t border-slate-800 flex flex-row overflow-x-auto shrink-0 z-20'
             : 'sr-only'
         }
         aria-hidden={!activeBottomDock}
@@ -1050,6 +1071,80 @@ export default function SplitWorkspace() {
           />
         </div>
       </div>
+
+      {/* Responsive Mobile Bottom Navigation Bar (Visible on Mobile / Small Screens) */}
+      <nav
+        data-testid="mobile-bottom-nav"
+        aria-label="Mobile Studio Navigation"
+        className="md:hidden h-11 w-full bg-slate-950 border-t border-slate-800 px-2 flex items-center justify-between gap-1 overflow-x-auto no-scrollbar shrink-0 z-30 select-none"
+      >
+        <button
+          type="button"
+          aria-label="Mobile View Code Editor"
+          onClick={() => {
+            setIsCodeVisible(true);
+            setMobileFocusPane('code');
+            setActiveBottomDock(null);
+          }}
+          className={`px-2.5 py-1 rounded text-[11px] font-mono font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
+            isCodeVisible && mobileFocusPane === 'code'
+              ? 'bg-blue-600 text-white'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          Code
+        </button>
+
+        {(
+          [
+            { id: 'piano_roll', label: 'Roll', aria: 'Mobile View Piano Roll' },
+            { id: 'tab_flow', label: 'Tab', aria: 'Mobile View Tab Flow' },
+            { id: 'session', label: 'Session', aria: 'Mobile View Session' },
+            { id: 'arrangement', label: 'Arrange', aria: 'Mobile View Arrangement' },
+          ] as const
+        ).map((v) => (
+          <button
+            key={v.id}
+            type="button"
+            aria-label={v.aria}
+            onClick={() => {
+              setActiveMainView(v.id);
+              setMobileFocusPane('visual');
+            }}
+            className={`px-2.5 py-1 rounded text-[11px] font-mono font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
+              mobileFocusPane === 'visual' && activeMainView === v.id
+                ? 'bg-emerald-600 text-white'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            {v.label}
+          </button>
+        ))}
+
+        <div className="w-px h-4 bg-slate-800 shrink-0 mx-0.5" />
+
+        {(
+          [
+            { id: 'mixer', label: 'Mixer', aria: 'Mobile Dock Mixer' },
+            { id: 'devices', label: 'FX', aria: 'Mobile Dock Devices' },
+            { id: 'inspector', label: 'Inspect', aria: 'Mobile Dock Inspector' },
+          ] as const
+        ).map((d) => (
+          <button
+            key={d.id}
+            type="button"
+            aria-label={d.aria}
+            onClick={() => handleToggleBottomDock(d.id)}
+            className={`px-2 py-1 rounded text-[11px] font-mono font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
+              activeBottomDock === d.id
+                ? 'bg-indigo-600 text-white'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            {d.label}
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }

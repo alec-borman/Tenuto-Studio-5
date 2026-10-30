@@ -85,20 +85,33 @@ describe('TDB-706: Multi-View Studio Shell & Tab View Switcher', () => {
     expect(editor.value).toContain('macros=@{cutoff: 95}');
   });
 
-  it('toggles Fullscreen Studio mode and applies mobile-responsive stacked/split grid classes', async () => {
+  it('toggles Fullscreen Studio Mode and switches panes via the Mobile Bottom Navigation Bar', () => {
     render(<SplitWorkspace />);
 
-    const mainGrid = screen.getByTestId('workspace-main-grid');
-    expect(mainGrid).toHaveClass('grid-cols-1', 'grid-rows-2', 'md:grid-cols-2');
+    const root = screen.getByTestId('studio-workspace-root');
+    expect(root).not.toHaveClass('tenuto-fullscreen-active');
 
+    // Click Fullscreen button in Transport -> activates fullscreen studio class
     const fsBtn = screen.getByRole('button', { name: /Toggle Fullscreen/i });
-    expect(fsBtn).toBeInTheDocument();
-
     fireEvent.click(fsBtn);
-    const exitFsBtn = await screen.findByRole('button', { name: /Exit Fullscreen/i });
-    expect(exitFsBtn).toBeInTheDocument();
+    expect(root).toHaveClass('tenuto-fullscreen-active');
 
-    fireEvent.click(exitFsBtn);
-    expect(await screen.findByRole('button', { name: /Toggle Fullscreen/i })).toBeInTheDocument();
+    // Click Fullscreen button again -> exits fullscreen
+    fireEvent.click(fsBtn);
+    expect(root).not.toHaveClass('tenuto-fullscreen-active');
+
+    // Verify Mobile Bottom Navigation Bar renders and switches views/docks
+    const mobileNav = screen.getByTestId('mobile-bottom-nav');
+    expect(mobileNav).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Mobile View Tab Flow/i }));
+    expect(screen.getByTestId('tab-chord-flow-view')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Mobile View Code Editor/i }));
+    expect(screen.getByTestId('code-editor-pane')).not.toHaveClass('hidden');
+
+    fireEvent.click(screen.getByRole('button', { name: /Mobile Dock Mixer/i }));
+    expect(screen.getByTestId('bottom-studio-dock')).not.toHaveClass('sr-only');
   });
 });
+

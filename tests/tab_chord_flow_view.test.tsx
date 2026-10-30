@@ -7,6 +7,8 @@ import TabChordFlowView, {
   buildTrueVoiceTrajectories,
   evaluateTrackedEventMidiAtWhole,
   allocateNotesToTabStrings,
+  GUITAR_SCROLL_THEMES,
+  buildCustomGuitarScrollPalette,
 } from '../src/components/TabChordFlowView';
 import { DocumentParser } from '../src/parser/DocumentParser';
 import SplitWorkspace from '../src/components/SplitWorkspace';
@@ -144,5 +146,41 @@ describe('TDB-733, TDB-736, TDB-739 & TDB-741: Detune-Only Tab Sliding, Sub-Bass
 
     expect(detectChordSymbol([44, 51, 60, 67, 72], true).fullText).toBe('A♭maj7');
     expect(detectChordSymbol([43, 58, 63, 67, 70], true).fullText).toBe('E♭/G');
+  });
+
+  it('changes the Guitar Scroll color theme via preset selector and custom hex color picker', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile('pno: [c4 e4 g4]:1');
+
+    render(
+      <TabChordFlowView
+        events={score.events}
+        isPlaying={false}
+        playheadBeat={0}
+        rootKey="C"
+        score={score}
+      />
+    );
+
+    const viewRoot = screen.getByTestId('tab-chord-flow-view');
+    expect(viewRoot).toHaveAttribute('data-scroll-theme', 'sunset_amber');
+
+    // 1. Switch to Midnight Indigo preset theme
+    const themeSelect = screen.getByRole('combobox', { name: /Guitar Scroll Color Theme/i });
+    fireEvent.change(themeSelect, { target: { value: 'midnight_indigo' } });
+    expect(viewRoot).toHaveAttribute('data-scroll-theme', 'midnight_indigo');
+    expect(viewRoot.style.background).toMatch(/#1D4ED8|rgb\(29,\s*78,\s*216\)/i);
+    expect(GUITAR_SCROLL_THEMES.midnight_indigo.headerBg).toBe('#0F172A');
+
+    // 2. Pick a custom hex color (#2563EB) via the Custom Guitar Scroll Color input
+    const colorInput = screen.getByLabelText(/Custom Guitar Scroll Color/i);
+    fireEvent.change(colorInput, { target: { value: '#2563eb' } });
+    expect(viewRoot).toHaveAttribute('data-scroll-theme', 'custom');
+    expect(viewRoot.style.background).toMatch(/#2563EB|rgb\(37,\s*99,\s*235\)/i);
+
+    const customPalette = buildCustomGuitarScrollPalette('#2563eb');
+    expect(customPalette.id).toBe('custom');
+    expect(customPalette.primaryHex).toBe('#2563EB');
+    expect(customPalette.backgroundGradient).toContain('#2563EB');
   });
 });

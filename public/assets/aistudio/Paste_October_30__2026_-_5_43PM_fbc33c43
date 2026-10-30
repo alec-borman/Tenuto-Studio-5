@@ -1,0 +1,600 @@
+
+Here is Implementation Contract TDB-742 (v5.2.0 -> v5.2.2) to fix Fullscreen mode (across desktop browsers, iframes, and Safari/iOS) and add a complete Responsive Mobile Web View (single-pane mobile viewport switching, a touch-friendly Mobile Bottom Navigation Bar, responsive bottom dock sheets, and single-finger / two-finger touch gestures on the Piano Roll).
+Paste the contract below directly into Google AI Studio:
+code
+Markdown
+# Implementation Contract: Fullscreen API & Iframe Fallback, Responsive Mobile Studio View & Mobile Touch Gestures (TDB-742)
+
+**Project:** Tenuto Studio 5
+**Scope:** Upgrade `index.html`, `src/index.css`, `src/components/Transport.tsx`, `src/components/SplitWorkspace.tsx`, and `src/components/WebGPUCanvas.tsx` to add a cross-browser Fullscreen Mode (Native Fullscreen API + Webkit/iOS + iframe viewport-fill fallback), a responsive Mobile Web View (`100dvh` dynamic viewport, single-pane mobile layout, and a touch-friendly Mobile Bottom Navigation Bar switching between `Code`, `Roll`, `Tab`, `Session`, `Arrange`, `Mixer`, `Devices`, and `Inspect`), and mobile touch gestures (1-finger touch note drag/resize and 2-finger touch pinch-to-zoom) on the Piano Roll; add unit/integration tests in `tests/multi_view_shell.test.tsx` and `tests/documentation_integrity.test.ts`; update `README.md`; and bump the repository version from `5.2.0` to `5.2.2`.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+**Version Bump:** 5.2.0 -> 5.2.2 (+0.0.2 step; rolls X.Y.8 -> X.(Y+1).0 and X.9.8 -> (X+1).0.0)
+**Documentation Sync:** Modify and append `README.md`
+**Execution Mode:** Parallel Batch Edits (Read all target files in parallel in a single turn, then apply all file edits in parallel in a single batched tool-call turn — NEVER edit files sequentially one by one).
+
+---
+
+## 1. Objective
+When deployed on a website (`https://tenuto-studio-5-production.up.railway.app/`), Tenuto Studio 5 currently has three viewport and mobile usability issues:
+1. **No Fullscreen Mode & `100vh`/`100vw` Overflow:** `SplitWorkspace.tsx` uses `h-screen w-screen`, which overflows mobile browser address bars, and lacks a Fullscreen toggle button (`requestFullscreen` / `webkitRequestFullscreen` + CSS fixed-viewport fallback when embedded inside an iframe or mobile Safari).
+2. **Hardcoded Side-by-Side Split on Mobile (`grid-cols-2`):** `SplitWorkspace.tsx` forces `grid-cols-2` on all screen widths. On a mobile phone (`375px–430px` wide), squeezing the Monaco Code Editor and the Piano Roll side-by-side into `~185px` each makes both panes unusable, and opening the bottom dock (`h-80`) covers most of the vertical screen.
+3. **Mouse-Only Piano Roll Interactions:** `WebGPUCanvas.tsx` only binds mouse events (`onMouseDown`, `mousemove`, `mouseup`) and desktop trackpad wheel zoom (`ctrlKey + wheel`), lacking mobile `touchstart` / `touchmove` / `touchend` note dragging and two-finger touch pinch-to-zoom.
+
+This contract fixes all three issues, bumps the repository version to `5.2.2` in `package.json` and `electron-builder.json`, and updates `README.md`.
+
+---
+
+## 2. Root Cause
+1. `src/components/SplitWorkspace.tsx` (line 646) uses `h-screen w-screen` instead of `h-[100dvh] w-full max-w-[100vw]` and lacks a Fullscreen API controller (`isFullscreen`, `handleToggleFullscreen`).
+2. `src/components/SplitWorkspace.tsx` (line 676) hardcodes `isCodeVisible ? 'grid-cols-2' : 'grid-cols-1'` instead of collapsing into a single active mobile pane (`grid-cols-1 md:grid-cols-2`) with a Mobile Bottom Navigation Bar (`data-testid="mobile-bottom-nav"`).
+3. `src/components/WebGPUCanvas.tsx` lacks two-finger touch pinch distance calculation and single-finger touch note drag listeners.
+
+---
+
+## 3. Files To Modify
+
+> **PARALLEL EXECUTION DIRECTIVE:** You MUST read all target files in a single parallel batch call, and you MUST apply all file edits below (`package.json`, `electron-builder.json`, `index.html`, `src/index.css`, `src/components/Transport.tsx`, `src/components/SplitWorkspace.tsx`, `src/components/WebGPUCanvas.tsx`, `README.md`, `tests/multi_view_shell.test.tsx`, and `tests/documentation_integrity.test.ts`) simultaneously in a single parallel tool-call turn. Do NOT apply edits sequentially one file per turn.
+
+### 3.1 `package.json` & `electron-builder.json` - Bump Repository Version to `5.2.2`
+1. In `package.json`, update `"version"` to `"5.2.2"`:
+```json
+{
+  "name": "tenuto-studio-5",
+  "private": true,
+  "version": "5.2.2",
+In electron-builder.json, update "extraMetadata.version" to "5.2.2":
+code
+JSON
+"extraMetadata": {
+    "main": "electron/main.cjs",
+    "version": "5.2.2"
+  },
+3.2 index.html & src/index.css - Mobile Viewport Meta, Dynamic 100dvh & Fullscreen Shell Rules
+Replace index.html with mobile-ready viewport and PWA meta tags:
+code
+Html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#020617" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Tenuto Studio 5</title>
+  </head>
+  <body class="bg-slate-950 text-slate-100 antialiased selection:bg-blue-600 selection:text-white">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+Replace src/index.css with dynamic viewport (100dvh), fullscreen shell, and mobile safe-area rules:
+code
+CSS
+@import "tailwindcss";
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: #020617;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Fullscreen Studio Shell (supports both native Fullscreen API and iframe/mobile fallback) */
+.tenuto-fullscreen-active {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100dvh !important;
+  z-index: 9999 !important;
+}
+
+/* Surgical Core-Note Playback Highlight in Monaco Editor (TDB-734) */
+.tenuto-karaoke-token-active {
+  background-color: rgba(16, 185, 129, 0.38) !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  border-bottom: 2px solid #34d399 !important;
+  border-radius: 3px;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.45);
+}
+
+/* Hide scrollbars for compact studio toolbars */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+3.3 src/components/Transport.tsx - Add Fullscreen Toggle Button (Toggle Fullscreen)
+In src/components/Transport.tsx:
+CRITICAL TEST CONSTRAINT: Never use the substring "Play" inside any new button text or aria-label in Transport.tsx so tests/transport_binding.test.tsx (screen.getByRole('button', { name: /Play/i })) continues to match only the main Play/Pause button!
+Add optional props isFullscreen?: boolean; and onToggleFullscreen?: () => void; to TransportProps and destructure them (isFullscreen = false, onToggleFullscreen) in Transport:
+code
+TypeScript
+isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
+Inside Transport.tsx in the Right: Master Volume, Export WAV & Fullscreen section (right after the Export WAV button), render the Fullscreen Toggle Button:
+code
+Tsx
+{onToggleFullscreen && (
+            <button
+              type="button"
+              aria-label="Toggle Fullscreen"
+              onClick={onToggleFullscreen}
+              className={`${
+                isFullscreen
+                  ? 'bg-blue-600/30 border-blue-500 text-blue-200'
+                  : 'bg-slate-950 hover:bg-slate-800 border-slate-700 text-slate-300'
+              } border text-xs font-semibold py-1 px-2.5 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0`}
+              title={isFullscreen ? 'Exit Fullscreen (Esc)' : 'Enter Fullscreen Studio Mode'}
+            >
+              {isFullscreen ? '⤓ Exit Full' : '⛶ Fullscreen'}
+            </button>
+          )}
+3.4 src/components/WebGPUCanvas.tsx - Add Mobile 1-Finger Touch Note Dragging & 2-Finger Touch Pinch-to-Zoom
+In src/components/WebGPUCanvas.tsx:
+Add a touchPinchDistanceRef = useRef<number | null>(null); right below const onSelectRef = useRef(onSelect);.
+Extend the dragState useEffect in src/components/WebGPUCanvas.tsx so it also listens to window touchmove and touchend events (allowing mobile users to drag notes vertically to transpose pitch or drag note edges horizontally to resize duration):
+code
+TypeScript
+const handleTouchMove = (e: TouchEvent) => {
+      if (!e.touches || e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      const rawDeltaX = touch.clientX - dragState.startClientX;
+      const rawDeltaY = touch.clientY - dragState.startClientY;
+
+      if (dragState.mode === 'resize') {
+        const snappedDeltaX = Math.round(rawDeltaX / stepPx) * stepPx;
+        setDragState((prev) =>
+          prev ? { ...prev, deltaWidthPx: snappedDeltaX, semitoneDelta: 0 } : null
+        );
+      } else {
+        const semiDelta = Math.round(-rawDeltaY / rowH);
+        const snappedDeltaX =
+          semiDelta === 0 && Math.abs(rawDeltaX) >= stepPx
+            ? Math.round(rawDeltaX / stepPx) * stepPx
+            : 0;
+        setDragState((prev) =>
+          prev
+            ? { ...prev, semitoneDelta: semiDelta, deltaWidthPx: snappedDeltaX }
+            : null
+        );
+      }
+    };
+
+    const handleTouchEnd = () => {
+      handleMouseUp();
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener('touchmove', handleTouchMove, { passive: true });
+    window.addEventListener('touchend', handleTouchEnd);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchend', handleTouchEnd);
+    };
+On the note <g> (data-testid={piano-roll-note-
+{idx}}) inside staticPianoRollContent, add onTouchStart handlers alongside onMouseDown:
+On the note <g>:
+code
+Tsx
+onTouchStart={(e) => {
+                if (!e.touches || e.touches.length !== 1) return;
+                e.stopPropagation();
+                const touch = e.touches[0];
+                onSelectRef.current?.(selectPayload);
+                setDragState({
+                  eventIndex: idx,
+                  event: ev,
+                  mode: 'move',
+                  isBeatWide: false,
+                  beatStartWhole: startWhole,
+                  startClientX: touch.clientX,
+                  startClientY: touch.clientY,
+                  semitoneDelta: 0,
+                  deltaWidthPx: 0,
+                });
+              }}
+On the right-edge resize handle <rect>:
+code
+Tsx
+onTouchStart={(e) => {
+                  if (!e.touches || e.touches.length !== 1) return;
+                  e.stopPropagation();
+                  const touch = e.touches[0];
+                  onSelectRef.current?.(selectPayload);
+                  setDragState({
+                    eventIndex: idx,
+                    event: ev,
+                    mode: 'resize',
+                    startClientX: touch.clientX,
+                    startClientY: touch.clientY,
+                    semitoneDelta: 0,
+                    deltaWidthPx: 0,
+                  });
+                }}
+On the scrollable Piano Roll viewport <div ref={scrollViewportRef} data-testid="piano-roll-scroll-viewport" ...>, add two-finger touch pinch-to-zoom handlers (onTouchStart, onTouchMove, onTouchEnd):
+code
+Tsx
+<div
+        ref={scrollViewportRef}
+        data-testid="piano-roll-scroll-viewport"
+        className="flex-1 w-full overflow-auto relative touch-pan-x touch-pan-y"
+        onTouchStart={(e) => {
+          if (e.touches && e.touches.length === 2) {
+            const dx = e.touches[1].clientX - e.touches[0].clientX;
+            const dy = e.touches[1].clientY - e.touches[0].clientY;
+            touchPinchDistanceRef.current = Math.hypot(dx, dy);
+          }
+        }}
+        onTouchMove={(e) => {
+          if (e.touches && e.touches.length === 2 && touchPinchDistanceRef.current) {
+            const dx = e.touches[1].clientX - e.touches[0].clientX;
+            const dy = e.touches[1].clientY - e.touches[0].clientY;
+            const nextDist = Math.hypot(dx, dy);
+            if (touchPinchDistanceRef.current > 10 && nextDist > 10) {
+              const ratio = nextDist / touchPinchDistanceRef.current;
+              touchPinchDistanceRef.current = nextDist;
+              setZoomLevel((prev) =>
+                Math.max(0.2, Math.min(3.0, Number((prev * ratio).toFixed(2))))
+              );
+            }
+          }
+        }}
+        onTouchEnd={() => {
+          touchPinchDistanceRef.current = null;
+        }}
+      >
+3.5 src/components/SplitWorkspace.tsx - Add Fullscreen Controller, Responsive Mobile Single-Pane Layout & Mobile Bottom Navigation Bar
+In src/components/SplitWorkspace.tsx:
+Add a workspaceRootRef = useRef<HTMLDivElement>(null); and state for isFullscreen and mobileFocusPane ('code' | 'visual'):
+code
+TypeScript
+const workspaceRootRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [mobileFocusPane, setMobileFocusPane] = useState<'code' | 'visual'>('visual');
+Add a useEffect listening to fullscreenchange and webkitfullscreenchange, and implement handleToggleFullscreen:
+code
+TypeScript
+useEffect(() => {
+    const onFsChange = () => {
+      const fsElement =
+        document.fullscreenElement || (document as any).webkitFullscreenElement;
+      if (fsElement) {
+        setIsFullscreen(true);
+      }
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    document.addEventListener('webkitfullscreenchange', onFsChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFsChange);
+      document.removeEventListener('webkitfullscreenchange', onFsChange);
+    };
+  }, []);
+
+  const handleToggleFullscreen = async () => {
+    const nextFs = !isFullscreen;
+    setIsFullscreen(nextFs);
+    try {
+      const fsElement =
+        document.fullscreenElement || (document as any).webkitFullscreenElement;
+      if (nextFs && !fsElement) {
+        const targetEl = workspaceRootRef.current || document.documentElement;
+        if (typeof targetEl.requestFullscreen === 'function') {
+          await targetEl.requestFullscreen();
+        } else if (typeof (targetEl as any).webkitRequestFullscreen === 'function') {
+          await (targetEl as any).webkitRequestFullscreen();
+        }
+      } else if (!nextFs && fsElement) {
+        if (typeof document.exitFullscreen === 'function') {
+          await document.exitFullscreen();
+        } else if (typeof (document as any).webkitExitFullscreen === 'function') {
+          await (document as any).webkitExitFullscreen();
+        }
+      }
+    } catch {
+      // Fallback: `.tenuto-fullscreen-active` CSS class still maximizes the studio inside restricted iframes or iOS Safari
+    }
+  };
+Update the root div of SplitWorkspace.tsx to use ref={workspaceRootRef}, h-[100dvh] w-full max-w-[100vw], and tenuto-fullscreen-active when isFullscreen is true, and pass isFullscreen={isFullscreen} and onToggleFullscreen={handleToggleFullscreen} to <Transport />:
+code
+Tsx
+return (
+    <div
+      ref={workspaceRootRef}
+      data-testid="studio-workspace-root"
+      className={`${
+        isFullscreen ? 'tenuto-fullscreen-active' : ''
+      } h-[100dvh] w-full max-w-[100vw] bg-slate-950 text-slate-100 overflow-hidden flex flex-col`}
+    >
+Update <main> and its two <section> panes in SplitWorkspace.tsx so:
+On desktop (md:), isCodeVisible controls the 50/50 split (grid-cols-1 md:grid-cols-2) or full-width visual view (grid-cols-1), while keeping className="${isCodeVisible ? 'flex' : 'hidden'} ..." on data-testid="code-editor-pane" so tests/multi_view_shell.test.tsx passes without change.
+On mobile (< 768px), mobileFocusPane ('code' vs 'visual') shows either the .ten Code Editor at 100% width or the active Visual DAW View (Piano Roll, Tab / Chord Flow, Session, Arrangement) at 100% width so the two panes are never squished into 180px columns on a phone:
+code
+Tsx
+{/* Main Split Workspace (Responsive 1-Column on Mobile, 2-Column 50/50 Split on Desktop) */}
+      <main
+        className={`flex-1 grid ${
+          isCodeVisible ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'
+        } min-h-0 overflow-hidden`}
+      >
+        {/* Left Side: Tenuto Code Editor */}
+        <section
+          data-testid="code-editor-pane"
+          className={`${
+            isCodeVisible ? 'flex' : 'hidden'
+          } ${
+            mobileFocusPane === 'visual' ? 'max-md:hidden' : ''
+          } h-full w-full border-r border-slate-800 bg-[#0B0F19] flex-col min-h-0 overflow-hidden`}
+        >
+and on the Right Side <section> (Visual DAW Viewport):
+code
+Tsx
+{/* Right Side: Multi-View DAW Viewport (Piano Roll | Tab / Chord Flow | Session | Arrangement) */}
+        <section
+          data-testid="visual-studio-pane"
+          className={`${
+            isCodeVisible && mobileFocusPane === 'code' ? 'max-md:hidden' : 'flex'
+          } h-full w-full bg-slate-950 flex-col min-h-0 overflow-hidden`}
+        >
+Update the bottom-studio-dock height class in SplitWorkspace.tsx so on mobile screens it uses a responsive sheet height (h-64 md:h-80) with a compact mobile close bar:
+code
+Tsx
+<div
+        data-testid="bottom-studio-dock"
+        className={
+          activeBottomDock
+            ? 'h-64 md:h-80 w-full bg-slate-900 border-t border-slate-800 flex flex-row overflow-x-auto shrink-0 z-20'
+            : 'sr-only'
+        }
+        aria-hidden={!activeBottomDock}
+      >
+Immediately below bottom-studio-dock (right before the closing </div> of SplitWorkspace), render the Mobile Studio Bottom Navigation Bar (data-testid="mobile-bottom-nav") so mobile users can switch between .ten Code, Piano Roll, Tab Flow, Session, Arrange, Mixer, Devices, and Inspector with 1 tap:
+code
+Tsx
+{/* Responsive Mobile Bottom Navigation Bar (Visible on Mobile / Small Screens) */}
+      <nav
+        data-testid="mobile-bottom-nav"
+        aria-label="Mobile Studio Navigation"
+        className="md:hidden h-11 w-full bg-slate-950 border-t border-slate-800 px-2 flex items-center justify-between gap-1 overflow-x-auto no-scrollbar shrink-0 z-30 select-none"
+      >
+        <button
+          type="button"
+          aria-label="Mobile View Code Editor"
+          onClick={() => {
+            setIsCodeVisible(true);
+            setMobileFocusPane('code');
+            setActiveBottomDock(null);
+          }}
+          className={`px-2.5 py-1 rounded text-[11px] font-mono font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
+            isCodeVisible && mobileFocusPane === 'code'
+              ? 'bg-blue-600 text-white'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          Code
+        </button>
+
+        {(
+          [
+            { id: 'piano_roll', label: 'Roll', aria: 'Mobile View Piano Roll' },
+            { id: 'tab_flow', label: 'Tab', aria: 'Mobile View Tab Flow' },
+            { id: 'session', label: 'Session', aria: 'Mobile View Session' },
+            { id: 'arrangement', label: 'Arrange', aria: 'Mobile View Arrangement' },
+          ] as const
+        ).map((v) => (
+          <button
+            key={v.id}
+            type="button"
+            aria-label={v.aria}
+            onClick={() => {
+              setActiveMainView(v.id);
+              setMobileFocusPane('visual');
+            }}
+            className={`px-2.5 py-1 rounded text-[11px] font-mono font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
+              mobileFocusPane === 'visual' && activeMainView === v.id
+                ? 'bg-emerald-600 text-white'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            {v.label}
+          </button>
+        ))}
+
+        <div className="w-px h-4 bg-slate-800 shrink-0 mx-0.5" />
+
+        {(
+          [
+            { id: 'mixer', label: 'Mixer', aria: 'Mobile Dock Mixer' },
+            { id: 'devices', label: 'FX', aria: 'Mobile Dock Devices' },
+            { id: 'inspector', label: 'Inspect', aria: 'Mobile Dock Inspector' },
+          ] as const
+        ).map((d) => (
+          <button
+            key={d.id}
+            type="button"
+            aria-label={d.aria}
+            onClick={() => handleToggleBottomDock(d.id)}
+            className={`px-2 py-1 rounded text-[11px] font-mono font-semibold whitespace-nowrap shrink-0 cursor-pointer ${
+              activeBottomDock === d.id
+                ? 'bg-indigo-600 text-white'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            {d.label}
+          </button>
+        ))}
+      </nav>
+(Also in SplitWorkspace.tsx, when onMainViewChange is triggered from the top bar, set setMobileFocusPane('visual'), and when onToggleCodeVisible is clicked while mobileFocusPane === 'visual', ensure setMobileFocusPane('code') is synced on mobile.)
+3.6 README.md - Document Fullscreen Mode, Responsive Mobile Studio View & Mobile Touch Gestures (v5.2.2)
+In README.md:
+Update the top release badge and version references to v5.2.2 / 5.2.2:
+code
+Markdown
+[![Release: v5.2.2](https://img.shields.io/badge/Release-v5.2.2-2563eb.svg)](./SPEC.md)
+and in the Overview and Installation sections:
+code
+Markdown
+**Tenuto Studio 5** (`v5.2.2`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
+code
+Bash
+open release/"Tenuto Studio 5-5.2.2-arm64.pkg"
+code
+Bash
+start "" "release\Tenuto Studio 5 Setup 5.2.2.exe"
+Under Section 1 (Two-Tier Studio Transport & Multi-View Workspace Shell), add a bullet documenting Fullscreen Studio Mode & Responsive Mobile Web View:
+code
+Markdown
+* **Fullscreen Studio Mode & Responsive Mobile Web View (`TDB-742`):**
+  * **Cross-Browser & Iframe Fullscreen (`Toggle Fullscreen`):** 1-click `⛶ Fullscreen` / `⤓ Exit Full` button in `Transport.tsx` combining the native Fullscreen API (`requestFullscreen` / `webkitRequestFullscreen`) with a fixed `100dvh` viewport-fill fallback (`tenuto-fullscreen-active`) for embedded webviews and iOS Safari.
+  * **Single-Pane Mobile Studio & Mobile Bottom Navigation Bar (`mobile-bottom-nav`):** On mobile phones and narrow viewports (`< 768px`), automatically switches from a side-by-side split to a full-width single-pane mobile layout with a dedicated bottom bar (`Code`, `Roll`, `Tab`, `Session`, `Arrange`, `Mixer`, `FX`, `Inspect`) and touch gestures (1-finger note drag/resize and 2-finger touch pinch-to-zoom).
+Under ## Release Notes, update the heading to ## Release Notes (\v5.2.2`)and prepend thev5.2.2` entry:
+code
+Markdown
+## Release Notes (`v5.2.2`)
+
+* **`v5.2.2`:** Added Fullscreen Studio Mode (`Toggle Fullscreen` with native Fullscreen API + `tenuto-fullscreen-active` iframe/iOS fallback), a responsive Mobile Web View (`100dvh` dynamic viewport, single-pane mobile switching, and `mobile-bottom-nav` bar), and mobile touch gestures (1-finger touch note dragging and 2-finger touch pinch-to-zoom) on the Piano Roll.
+3.7 tests/multi_view_shell.test.tsx & tests/documentation_integrity.test.ts - Verify Fullscreen Toggle, Mobile Navigation & v5.2.2 Docs
+In tests/multi_view_shell.test.tsx, append a test verifying the Fullscreen toggle button (Toggle Fullscreen) and Mobile Bottom Navigation Bar (mobile-bottom-nav):
+code
+TypeScript
+it('toggles Fullscreen Studio Mode and switches panes via the Mobile Bottom Navigation Bar', () => {
+    render(<SplitWorkspace />);
+
+    const root = screen.getByTestId('studio-workspace-root');
+    expect(root).not.toHaveClass('tenuto-fullscreen-active');
+
+    // Click Fullscreen button in Transport -> activates fullscreen studio class
+    const fsBtn = screen.getByRole('button', { name: /Toggle Fullscreen/i });
+    fireEvent.click(fsBtn);
+    expect(root).toHaveClass('tenuto-fullscreen-active');
+
+    // Click Fullscreen button again -> exits fullscreen
+    fireEvent.click(fsBtn);
+    expect(root).not.toHaveClass('tenuto-fullscreen-active');
+
+    // Verify Mobile Bottom Navigation Bar renders and switches views/docks
+    const mobileNav = screen.getByTestId('mobile-bottom-nav');
+    expect(mobileNav).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Mobile View Tab Flow/i }));
+    expect(screen.getByTestId('tab-chord-flow-view')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Mobile View Code Editor/i }));
+    expect(screen.getByTestId('code-editor-pane')).not.toHaveClass('hidden');
+
+    fireEvent.click(screen.getByRole('button', { name: /Mobile Dock Mixer/i }));
+    expect(screen.getByTestId('bottom-studio-dock')).not.toHaveClass('sr-only');
+  });
+In tests/documentation_integrity.test.ts, update the version assertions to '5.2.2' and verify 'mobile-bottom-nav' and 'tenuto-fullscreen-active' are documented in README.md:
+code
+TypeScript
+import { describe, it, expect } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+
+describe('TDB-607, TDB-726, TDB-734 through TDB-742: Final Release Documentation & v5.2.2 Integrity', () => {
+  it('provides TENUTO_GRAMMAR.md with complete songwriting rules and LLM prompt template', () => {
+    const grammarPath = path.resolve(__dirname, '../TENUTO_GRAMMAR.md');
+    expect(fs.existsSync(grammarPath)).toBe(true);
+
+    const content = fs.readFileSync(grammarPath, 'utf-8');
+    expect(content).toContain('tenuto "5.0"');
+    expect(content).toContain('salamander_grand');
+    expect(content).toContain('tenuto_808_kit');
+    expect(content).toContain('Copy-Paste Prompt for Gemini');
+  });
+
+  it('provides the comprehensive v5.2.2 README.md covering Fullscreen Mode, Mobile Studio View, and installers', () => {
+    const readmePath = path.resolve(__dirname, '../README.md');
+    expect(fs.existsSync(readmePath)).toBe(true);
+
+    const content = fs.readFileSync(readmePath, 'utf-8');
+    expect(content).toContain('TENUTO STUDIO 5');
+    expect(content).toContain('v5.2.2');
+    expect(content).toContain('TENUTO_GRAMMAR.md');
+    expect(content).toContain('mobile-bottom-nav');
+    expect(content).toContain('tenuto-fullscreen-active');
+    expect(content).toContain('npm run electron:build:mac');
+    expect(content).toContain('npm run electron:build:win');
+    expect(content).not.toContain('Do not expect to compose music today');
+    expect(content).not.toContain('~28% completion');
+
+    const pkgJson = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8')
+    );
+    expect(pkgJson.version).toBe('5.2.2');
+    expect(pkgJson.scripts['electron:build:mac']).toContain('--mac pkg');
+    expect(pkgJson.scripts['electron:build:win']).toContain('--win nsis');
+
+    const builderJson = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../electron-builder.json'), 'utf-8')
+    );
+    expect(builderJson.extraMetadata.version).toBe('5.2.2');
+    expect(builderJson.npmRebuild).toBe(false);
+    expect(builderJson.mac.target).toContain('pkg');
+    expect(builderJson.win).toBeDefined();
+    expect(builderJson.nsis.createDesktopShortcut).toBe(true);
+  });
+});
+4. What NOT to Touch
+src/parser/
+src/audio/
+src/mutator/
+src/components/Mixer.tsx, src/components/DeviceChainDock.tsx, src/components/Inspector.tsx, src/components/SessionView.tsx, src/components/ArrangementView.tsx
+electron/main.cjs, vite.config.ts, vitest.config.ts
+Explicitly:
+Do NOT use the substring "Play" in any new button text or aria-label in Transport.tsx or SplitWorkspace.tsx (so screen.getByRole('button', { name: /Play/i }) in tests/transport_binding.test.tsx continues to match only the main Play/Pause button).
+Do NOT add the literal 'hidden' class to data-testid="code-editor-pane" when isCodeVisible is true (use max-md:hidden for mobile-only hiding so expect(codePane).not.toHaveClass('hidden') in tests/multi_view_shell.test.tsx passes).
+5. Acceptance Criteria
+npm run lint (tsc --noEmit) passes with zero TypeScript errors.
+npx vitest run tests/multi_view_shell.test.tsx tests/transport_binding.test.tsx tests/studio_engine_and_ui.test.tsx tests/documentation_integrity.test.ts passes 100%.
+npm run build (vite build) completes cleanly with zero errors.
+package.json and electron-builder.json both equal "version": "5.2.2".
+README.md documents v5.2.2, Fullscreen Studio Mode (tenuto-fullscreen-active), and the Responsive Mobile Web View (mobile-bottom-nav).
+Clicking ⛶ Fullscreen enters Fullscreen mode (both via the browser Fullscreen API and the .tenuto-fullscreen-active fixed viewport fallback), and mobile users get a single-pane responsive layout with a bottom navigation bar and touch drag/pinch gestures.
+6. Constraints
+Apply all file reads in parallel and all file edits in parallel in a single batched turn.
+Bump repository version to 5.2.2.
+Modify and append README.md to document Fullscreen Mode and the Responsive Mobile Web View.
+Do NOT install any new npm packages.
+7. Manual Steps
+None required.
+8. Rollback Plan
+Revert via git revert HEAD or restore package.json, electron-builder.json, index.html, src/index.css, src/components/Transport.tsx, src/components/SplitWorkspace.tsx, src/components/WebGPUCanvas.tsx, README.md, tests/multi_view_shell.test.tsx, and tests/documentation_integrity.test.ts.
+9. Deliverable
+A single commit containing:
+Modified file(s): package.json, electron-builder.json, index.html, src/index.css, src/components/Transport.tsx, src/components/SplitWorkspace.tsx, src/components/WebGPUCanvas.tsx, README.md, tests/multi_view_shell.test.tsx, tests/documentation_integrity.test.ts
+Commit message: feat(mobile-fullscreen): add Fullscreen studio mode, responsive mobile web view, and touch gestures (v5.2.2)
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+10. Observable Before/After Behavior
+Area	Previous Behavior (v5.2.0)	New Behavior (v5.2.2)
+Version (package.json & electron-builder.json)	5.2.0	5.2.2
+Fullscreen Mode (Transport.tsx & SplitWorkspace.tsx)	No Fullscreen button; h-screen w-screen overflowed mobile address bars	⛶ Fullscreen / ⤓ Exit Full button invokes requestFullscreen / webkitRequestFullscreen + .tenuto-fullscreen-active (100dvh fixed viewport) so fullscreen works in standalone browsers, iframes, and iOS Safari
+Mobile Website View (< 768px)	Hardcoded grid-cols-2 squeezed Code Editor and Piano Roll into ~185px side-by-side columns	Responsive single-pane mobile layout (grid-cols-1 md:grid-cols-2) with a dedicated mobile-bottom-nav bar (Code, Roll, Tab, Session, Arrange, Mixer, FX, Inspect) giving the active pane 100% of the mobile screen
+Mobile Touch Gestures (WebGPUCanvas.tsx)	Only supported mouse drag and desktop ctrlKey + wheel zoom	Supports 1-finger touch note dragging/resizing (touchstart/touchmove/touchend) and 2-finger touch pinch-to-zoom (20%–300%)
+README.md	Documented v5.2.0 features	Documents v5.2.2 Fullscreen Mode, Responsive Mobile Studio View, and mobile touch gestures
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-30
+Implementer: AI Agent
+code
+Code
+Citations
+
+https://velog.io/@tristanjung1006/Web-Apple-Liquid-Glass-UI-%ED%8C%A8%ED%84%B4

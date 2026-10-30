@@ -6,7 +6,7 @@
 
   [![Live Web Studio](https://img.shields.io/badge/Try_Live_Web_Studio-tenuto--studio--5--production.up.railway.app-10b981?style=for-the-badge)](https://tenuto-studio-5-production.up.railway.app/)
 
-  [![Release: v5.2.0](https://img.shields.io/badge/Release-v5.2.0-2563eb.svg)](./SPEC.md)
+  [![Release: v5.2.2](https://img.shields.io/badge/Release-v5.2.2-2563eb.svg)](./SPEC.md)
   [![Grammar Guide: TENUTO_GRAMMAR.md](https://img.shields.io/badge/Grammar_Guide-TENUTO__GRAMMAR.md-10b981.svg)](./TENUTO_GRAMMAR.md)
   [![Platform: macOS .pkg | Windows .exe | Web](https://img.shields.io/badge/Platform-macOS_.pkg_%7C_Windows_.exe_%7C_Web-8b5cf6.svg)](#installation--desktop-packaging)
   [![License: MIT](https://img.shields.io/badge/License-MIT-64748b.svg)](LICENSE)
@@ -24,7 +24,7 @@ Launch **Tenuto Studio 5** immediately in your browser with zero installation:
 
 ## Overview
 
-**Tenuto Studio 5** (`v5.2.0`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
+**Tenuto Studio 5** (`v5.2.2`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
 
 In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of Truth**:
 * **Code Projects the Entire Studio:** Writing or pasting `.ten` code (including raw Markdown blocks straight from Gemini, Claude, or ChatGPT) immediately compiles into four synchronized visual views (**Scrolling Piano Roll**, **Tab / Chord Flow**, **Session View Clip Matrix**, and **Arrangement View Timeline**), three interactive bottom studio docks (**Console Mixer**, **Device Chain & 8-Macro Rack**, and **Context Note/Score Inspector**), and a real-time WebAudio / PCM DSP engine.
@@ -49,6 +49,9 @@ In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of 
   * **Global Key & Scale Lock Selectors:** Live Root Key (`C` through `B`) and Scale Mode selectors synced bi-directionally with `meta @{ key, scale }`.
   * **4-Mode Main View Switcher:** Switch between **`Piano Roll`**, **`Tab / Chord Flow`**, **`Session`**, and **`Arrangement`** (or press `Tab` outside text inputs to cycle views).
   * **3-Mode Bottom Studio Dock Switcher:** Toggle **`Dock: Mixer`**, **`Dock: Devices`**, or **`Dock: Inspector`**.
+* **Fullscreen Studio Mode & Responsive Mobile Web View (`TDB-742`):**
+  * **Cross-Browser & Iframe Fullscreen (`Toggle Fullscreen`):** 1-click `⛶ Fullscreen` / `⤓ Exit Full` button in `Transport.tsx` combining the native Fullscreen API (`requestFullscreen` / `webkitRequestFullscreen`) with a fixed `100dvh` viewport-fill fallback (`tenuto-fullscreen-active`) for embedded webviews and iOS Safari.
+  * **Single-Pane Mobile Studio & Mobile Bottom Navigation Bar (`mobile-bottom-nav`):** On mobile phones and narrow viewports (`< 768px`), automatically switches from a side-by-side split to a full-width single-pane mobile layout with a dedicated bottom bar (`Code`, `Roll`, `Tab`, `Session`, `Arrange`, `Mixer`, `FX`, `Inspect`) and touch gestures (1-finger note drag/resize and 2-finger touch pinch-to-zoom).
 
 ---
 
@@ -77,6 +80,7 @@ In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of 
 * **Dedicated Per-Instrument 6-String Tab Staves (`instrument-tab-staff-<id>`):** In `All Instruments` mode, every instrument track renders on its own horizontal 6-string Guitar Tab Staff (`E4, B3, G3, D3, A2, E2`) with a sticky left header displaying that instrument's active chord symbol, live per-instrument 6-string fretboard diagram, and 1-click track focus toggle—preventing multi-track orb collisions.
 * **Piano-Roll-Parity Pinch-to-Zoom, `Fit All` & Auto-Scroll:** Supports two-finger trackpad pinch-to-zoom (`20%` to `300%`), `-` / `100%` / `+` zoom buttons, 1-click **`Fit All`** (scaling both measure width and staff lane height to fit the viewport), `◀` / `▶` track pill scroll buttons, and real-time horizontal playhead auto-scrolling.
 * **Detune/Glide-Only Voice Modulation & Proportional Beat Bars:** Standard notes render as flat, proportional beat-duration bars at their exact MIDI pitch height so every beat is 100% visible at any zoom level (`20%–300%`). Notes only slide or modulate their line when `.detune(...)` (rendering a dual-wave unison detune shimmer envelope across its `start..end` window), `.glide(...)`, or `.mpe(bend)` is explicitly attached.
+* **Customizable Guitar Scroll Color Themes & Live Hex Picker (`GUITAR_SCROLL_THEMES`):** Switch the guitar scroll canvas between 6 studio themes (`Sunset Amber`, `Midnight Indigo`, `Emerald Stage`, `Ultraviolet Nebula`, `Crimson Velvet`, `Obsidian Studio`) or pick any custom hex color (`buildCustomGuitarScrollPalette`) to dynamically re-theme the radial backdrop, sticky fretboard headers, and tab fret pills with automatic `localStorage` persistence.
 
 #### C. Ableton Session View Clip & Scene Matrix (`SessionView.tsx` & `FollowActionEngine.ts`)
 * **2D Track-by-Scene Launch Grid:** Launch individual clips (`▶`), launch full horizontal scene rows (`▶ Scene` with optional scene tempo changes), or stop tracks (`■ Stop`).
@@ -150,7 +154,7 @@ npm install
 npm run electron:build:mac
 
 # 3. Run the macOS installer
-open release/"Tenuto Studio 5-5.2.0-arm64.pkg"
+open release/"Tenuto Studio 5-5.2.2-arm64.pkg"
 ```
 
 ### Option 1B: Windows Desktop App (`.exe` NSIS Setup Installer)
@@ -167,7 +171,7 @@ npm install
 npm run electron:build:win
 
 # 3. Launch the generated Setup .exe inside the release/ folder
-start "" "release\Tenuto Studio 5 Setup 5.2.0.exe"
+start "" "release\Tenuto Studio 5 Setup 5.2.2.exe"
 ```
 
 ### Option 2: Local Web Development
@@ -317,9 +321,10 @@ npm run build
 
 ---
 
-## Release Notes (`v5.2.0`)
+## Release Notes (`v5.2.2`)
 
-* **`v5.2.0`:** Fixed `TabChordFlowView.tsx` so notes stay 100% flat unless `.detune(...)`, `.glide(...)`, or `.mpe(bend)` is present, added visual intra-note unison detune wave envelopes for `.detune(pct, start..end)`, replaced disappearing playhead pills with proportional beat-duration bars so every beat is visible at all zoom levels (`20%–300%`), and added the `⛶ Fullscreen` studio button and mobile `100dvh` touch pinch-to-zoom support.
+* **`v5.2.2`:** Added Fullscreen Studio Mode (`Toggle Fullscreen` with native Fullscreen API + `tenuto-fullscreen-active` iframe/iOS fallback), a responsive Mobile Web View (`100dvh` dynamic viewport, single-pane mobile switching, and `mobile-bottom-nav` bar), and mobile touch gestures (1-finger touch note dragging and 2-finger touch pinch-to-zoom) on the Piano Roll.
+* **`v5.2.0`:** Added customizable Guitar Scroll color themes (`GUITAR_SCROLL_THEMES`: `Sunset Amber`, `Midnight Indigo`, `Emerald Stage`, `Ultraviolet Nebula`, `Crimson Velvet`, `Obsidian Studio`) and a live custom hex color picker (`buildCustomGuitarScrollPalette`) in `TabChordFlowView.tsx` with `localStorage` persistence, alongside detune-only tab voice modulation, proportional beat-duration bars, and Fullscreen / mobile touch pinch-to-zoom support.
 * **`v5.1.8`:** Added `Shift + Click` and `Shift + Drag` beat-wide pitch transposition on the Piano Roll (`transposeBeatEventsInSource` in `TopologicalMutator.ts`, `WebGPUCanvas.tsx`, and `SplitWorkspace.tsx`), allowing users to repitch all notes and chords on a beat across all melodic tracks in one click or drag.
 * **`v5.1.6`:** Fixed `TabChordFlowView.tsx` so low-register instruments (`Bb0` sub-bass, `Bb1` cellos/violas) always render fretted dots on their fretboard diagrams (`computeGuitarVoicing` octave folding), mapped per-instrument trajectory lines to true continuous MIDI pitch (`trackMidiToY`) for 100% melodic accuracy, and eliminated text overlap at the playhead and sticky track headers.
 * **`v5.1.4`:** Added bi-directional Piano Roll click-and-drag note editing in `WebGPUCanvas.tsx`, `SplitWorkspace.tsx`, and `TopologicalMutator.ts`—supporting vertical semitone pitch dragging (for single notes, sticky-octave notes, and individual voices within chords), 1/16th-quantized horizontal duration resizing, live optimistic drag previews, and `CommandManager` Undo/Redo integration.

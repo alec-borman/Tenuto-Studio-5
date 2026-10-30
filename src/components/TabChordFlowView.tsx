@@ -64,6 +64,130 @@ export interface TabChordFlowViewProps {
   rootKey?: string;
 }
 
+export type GuitarScrollThemeId =
+  | 'sunset_amber'
+  | 'midnight_indigo'
+  | 'emerald_forest'
+  | 'violet_nebula'
+  | 'crimson_velvet'
+  | 'obsidian_slate'
+  | 'custom';
+
+export interface GuitarScrollPalette {
+  id: GuitarScrollThemeId;
+  label: string;
+  primaryHex: string;
+  backgroundGradient: string;
+  headerBg: string;
+  pillBg: string;
+  playedLineColor: string;
+}
+
+export const GUITAR_SCROLL_THEMES: Record<
+  Exclude<GuitarScrollThemeId, 'custom'>,
+  GuitarScrollPalette
+> = {
+  sunset_amber: {
+    id: 'sunset_amber',
+    label: 'Sunset Amber',
+    primaryHex: '#C85A17',
+    backgroundGradient:
+      'radial-gradient(circle at 38% 36%, #C85A17 0%, #8F390A 48%, #4A1B04 100%)',
+    headerBg: '#3B1503',
+    pillBg: '#3B1503',
+    playedLineColor: '#FFFFFF',
+  },
+  midnight_indigo: {
+    id: 'midnight_indigo',
+    label: 'Midnight Indigo',
+    primaryHex: '#1D4ED8',
+    backgroundGradient:
+      'radial-gradient(circle at 38% 36%, #1D4ED8 0%, #1E1B4B 52%, #090D16 100%)',
+    headerBg: '#0F172A',
+    pillBg: '#0F172A',
+    playedLineColor: '#38BDF8',
+  },
+  emerald_forest: {
+    id: 'emerald_forest',
+    label: 'Emerald Stage',
+    primaryHex: '#047857',
+    backgroundGradient:
+      'radial-gradient(circle at 38% 36%, #047857 0%, #064E3B 50%, #022C22 100%)',
+    headerBg: '#022C22',
+    pillBg: '#022C22',
+    playedLineColor: '#6EE7B7',
+  },
+  violet_nebula: {
+    id: 'violet_nebula',
+    label: 'Ultraviolet Nebula',
+    primaryHex: '#6D28D9',
+    backgroundGradient:
+      'radial-gradient(circle at 38% 36%, #6D28D9 0%, #4C1D95 50%, #1E1B4B 100%)',
+    headerBg: '#2E1065',
+    pillBg: '#2E1065',
+    playedLineColor: '#E9D5FF',
+  },
+  crimson_velvet: {
+    id: 'crimson_velvet',
+    label: 'Crimson Velvet',
+    primaryHex: '#BE123C',
+    backgroundGradient:
+      'radial-gradient(circle at 38% 36%, #BE123C 0%, #881337 50%, #4C0519 100%)',
+    headerBg: '#3B0714',
+    pillBg: '#3B0714',
+    playedLineColor: '#FDA4AF',
+  },
+  obsidian_slate: {
+    id: 'obsidian_slate',
+    label: 'Obsidian Studio',
+    primaryHex: '#334155',
+    backgroundGradient:
+      'radial-gradient(circle at 38% 36%, #334155 0%, #0F172A 52%, #020617 100%)',
+    headerBg: '#090D16',
+    pillBg: '#090D16',
+    playedLineColor: '#93C5FD',
+  },
+};
+
+function scaleHexBrightness(hex: string, factor: number): string {
+  const clean = (hex || '#C85A17').replace('#', '').trim();
+  const full =
+    clean.length === 3
+      ? clean
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : clean.padEnd(6, '0').slice(0, 6);
+  const num = parseInt(full, 16);
+  if (isNaN(num)) return '#3B1503';
+  const r = Math.max(0, Math.min(255, Math.round(((num >> 16) & 0xff) * factor)));
+  const g = Math.max(0, Math.min(255, Math.round(((num >> 8) & 0xff) * factor)));
+  const b = Math.max(0, Math.min(255, Math.round((num & 0xff) * factor)));
+  return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase()}`;
+}
+
+export function buildCustomGuitarScrollPalette(customHex: string): GuitarScrollPalette {
+  const safeHex = /^#[0-9a-fA-F]{6}$/.test((customHex || '').trim())
+    ? customHex.trim().toUpperCase()
+    : '#C85A17';
+  const midHex = scaleHexBrightness(safeHex, 0.65);
+  const deepHex = scaleHexBrightness(safeHex, 0.32);
+  const headerHex = scaleHexBrightness(safeHex, 0.24);
+
+  return {
+    id: 'custom',
+    label: `Custom (${safeHex})`,
+    primaryHex: safeHex,
+    backgroundGradient: `radial-gradient(circle at 38% 36%, ${safeHex} 0%, ${midHex} 48%, ${deepHex} 100%)`,
+    headerBg: headerHex,
+    pillBg: headerHex,
+    playedLineColor: '#FFFFFF',
+  };
+}
+
+const SCROLL_THEME_STORAGE_KEY = 'tenuto_guitar_scroll_theme_v1';
+const SCROLL_HEX_STORAGE_KEY = 'tenuto_guitar_scroll_custom_hex_v1';
+
 const FLAT_STEPS = [
   { letter: 'C', acc: '' },
   { letter: 'D', acc: '♭' },
@@ -732,6 +856,56 @@ export default function TabChordFlowView({
 }: TabChordFlowViewProps) {
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [zoomLevel, setZoomLevel] = useState<number>(1.0);
+  const [scrollThemeId, setScrollThemeId] = useState<GuitarScrollThemeId>(() => {
+    try {
+      const saved = window.localStorage?.getItem(SCROLL_THEME_STORAGE_KEY) as GuitarScrollThemeId | null;
+      if (saved && (saved === 'custom' || saved in GUITAR_SCROLL_THEMES)) {
+        return saved;
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+    return 'sunset_amber';
+  });
+
+  const [customScrollHex, setCustomScrollHex] = useState<string>(() => {
+    try {
+      const savedHex = window.localStorage?.getItem(SCROLL_HEX_STORAGE_KEY);
+      if (savedHex && /^#[0-9a-fA-F]{6}$/.test(savedHex)) {
+        return savedHex;
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+    return '#C85A17';
+  });
+
+  const activePalette = useMemo<GuitarScrollPalette>(() => {
+    if (scrollThemeId === 'custom') {
+      return buildCustomGuitarScrollPalette(customScrollHex);
+    }
+    return GUITAR_SCROLL_THEMES[scrollThemeId] || GUITAR_SCROLL_THEMES.sunset_amber;
+  }, [scrollThemeId, customScrollHex]);
+
+  const handleSelectScrollTheme = (nextTheme: GuitarScrollThemeId) => {
+    setScrollThemeId(nextTheme);
+    try {
+      window.localStorage?.setItem(SCROLL_THEME_STORAGE_KEY, nextTheme);
+    } catch {
+      // Ignore
+    }
+  };
+
+  const handleCustomHexChange = (nextHex: string) => {
+    setCustomScrollHex(nextHex);
+    setScrollThemeId('custom');
+    try {
+      window.localStorage?.setItem(SCROLL_THEME_STORAGE_KEY, 'custom');
+      window.localStorage?.setItem(SCROLL_HEX_STORAGE_KEY, nextHex);
+    } catch {
+      // Ignore
+    }
+  };
   const scrollViewportRef = useRef<HTMLDivElement>(null);
   const trackPillsRef = useRef<HTMLDivElement>(null);
 
@@ -987,9 +1161,9 @@ export default function TabChordFlowView({
   return (
     <div
       data-testid="tab-chord-flow-view"
+      data-scroll-theme={activePalette.id}
       style={{
-        background:
-          'radial-gradient(circle at 38% 36%, #C85A17 0%, #8F390A 48%, #4A1B04 100%)',
+        background: activePalette.backgroundGradient,
       }}
       className="w-full h-full flex flex-col justify-between text-amber-50 overflow-hidden relative select-none"
     >
@@ -1083,44 +1257,75 @@ export default function TabChordFlowView({
           )}
         </div>
 
-        <div className="flex items-center gap-1 shrink-0 bg-black/45 border border-amber-300/30 rounded px-1.5 py-0.5 font-mono">
-          <button
-            type="button"
-            aria-label="Tab Zoom Out"
-            onClick={() => setZoomLevel((z) => Math.max(0.4, Number((z - 0.15).toFixed(2))))}
-            className="text-amber-200 hover:text-white px-1.5 py-0.5 text-xs font-bold cursor-pointer"
-            title="Zoom Out (or Pinch In on Trackpad)"
-          >
-            -
-          </button>
-          <button
-            type="button"
-            aria-label="Tab Reset Zoom"
-            onClick={() => setZoomLevel(1.0)}
-            className="text-amber-100 hover:text-white px-1.5 py-0.5 text-[11px] cursor-pointer min-w-[44px] text-center"
-            title="Reset Zoom to 100%"
-          >
-            {Math.round(zoomLevel * 100)}%
-          </button>
-          <button
-            type="button"
-            aria-label="Tab Zoom In"
-            onClick={() => setZoomLevel((z) => Math.min(3.0, Number((z + 0.15).toFixed(2))))}
-            className="text-amber-200 hover:text-white px-1.5 py-0.5 text-xs font-bold cursor-pointer"
-            title="Zoom In (or Pinch Out on Trackpad)"
-          >
-            +
-          </button>
-          <div className="w-px h-3.5 bg-amber-300/25 mx-0.5" />
-          <button
-            type="button"
-            aria-label="Fit All Tab View"
-            onClick={handleFitAll}
-            className="text-emerald-300 hover:text-emerald-200 px-1.5 py-0.5 text-[11px] font-semibold cursor-pointer"
-            title="Fit all instrument tab staves and measures into view"
-          >
-            Fit All
-          </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {/* Guitar Scroll Color Theme Selector + Custom Hex Color Picker */}
+          <div className="flex items-center gap-1 bg-black/45 border border-amber-300/30 rounded px-2 py-0.5 font-mono">
+            <span className="text-[10px] text-amber-200/90 hidden sm:inline">Scroll Color:</span>
+            <select
+              aria-label="Guitar Scroll Color Theme"
+              value={scrollThemeId}
+              onChange={(e) =>
+                handleSelectScrollTheme(e.target.value as GuitarScrollThemeId)
+              }
+              className="bg-black/50 border border-amber-300/30 text-amber-100 text-[11px] rounded px-1.5 py-0.5 outline-none cursor-pointer"
+              title="Change Guitar Scroll Background & Staff Color Theme"
+            >
+              {Object.values(GUITAR_SCROLL_THEMES).map((thm) => (
+                <option key={thm.id} value={thm.id}>
+                  {thm.label}
+                </option>
+              ))}
+              <option value="custom">Custom Color ({customScrollHex})</option>
+            </select>
+            <input
+              type="color"
+              aria-label="Custom Guitar Scroll Color"
+              value={activePalette.primaryHex}
+              onChange={(e) => handleCustomHexChange(e.target.value)}
+              className="w-5 h-5 rounded border border-amber-200/40 bg-transparent cursor-pointer p-0"
+              title="Pick Custom Guitar Scroll Color"
+            />
+          </div>
+
+          <div className="flex items-center gap-1 shrink-0 bg-black/45 border border-amber-300/30 rounded px-1.5 py-0.5 font-mono">
+            <button
+              type="button"
+              aria-label="Tab Zoom Out"
+              onClick={() => setZoomLevel((z) => Math.max(0.2, Number((z - 0.15).toFixed(2))))}
+              className="text-amber-200 hover:text-white px-1.5 py-0.5 text-xs font-bold cursor-pointer"
+              title="Zoom Out (or Pinch In on Trackpad)"
+            >
+              -
+            </button>
+            <button
+              type="button"
+              aria-label="Tab Reset Zoom"
+              onClick={() => setZoomLevel(1.0)}
+              className="text-amber-100 hover:text-white px-1.5 py-0.5 text-[11px] cursor-pointer min-w-[44px] text-center"
+              title="Reset Zoom to 100%"
+            >
+              {Math.round(zoomLevel * 100)}%
+            </button>
+            <button
+              type="button"
+              aria-label="Tab Zoom In"
+              onClick={() => setZoomLevel((z) => Math.min(3.0, Number((z + 0.15).toFixed(2))))}
+              className="text-amber-200 hover:text-white px-1.5 py-0.5 text-xs font-bold cursor-pointer"
+              title="Zoom In (or Pinch Out on Trackpad)"
+            >
+              +
+            </button>
+            <div className="w-px h-3.5 bg-amber-300/25 mx-0.5" />
+            <button
+              type="button"
+              aria-label="Fit All Tab View"
+              onClick={handleFitAll}
+              className="text-emerald-300 hover:text-emerald-200 px-1.5 py-0.5 text-[11px] font-semibold cursor-pointer"
+              title="Fit all instrument tab staves and measures into view"
+            >
+              Fit All
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1271,9 +1476,12 @@ export default function TabChordFlowView({
           style={{ width: `${headerWidthPx + timelineWidthPx}px` }}
         >
           {/* Sticky Top Measure & Chord Ruler */}
-          <div className="flex sticky top-0 z-30 bg-[#3B1503] border-b border-amber-200/25 h-7 items-center">
+          <div
+            style={{ backgroundColor: activePalette.headerBg }}
+            className="flex sticky top-0 z-30 bg-[#3B1503] border-b border-amber-200/25 h-7 items-center"
+          >
             <div
-              style={{ width: `${headerWidthPx}px` }}
+              style={{ width: `${headerWidthPx}px`, backgroundColor: activePalette.headerBg }}
               className="sticky left-0 z-40 bg-[#3B1503] h-full px-3 border-r border-amber-200/25 flex items-center justify-between text-[10px] font-mono text-amber-200/90 uppercase tracking-wider shrink-0"
             >
               <span>Instrument / Fretboard</span>
@@ -1397,6 +1605,7 @@ export default function TabChordFlowView({
                   style={{
                     width: `${headerWidthPx}px`,
                     borderLeft: `4px solid ${track.color}`,
+                    backgroundColor: activePalette.headerBg,
                   }}
                   className="sticky left-0 z-20 bg-[#3B1503] shadow-[4px_0_12px_rgba(0,0,0,0.45)] border-r border-amber-200/25 px-2.5 py-1.5 flex flex-col justify-between shrink-0"
                 >
@@ -1630,7 +1839,7 @@ export default function TabChordFlowView({
                             <path
                               d={dPath}
                               fill="none"
-                              stroke="#FFFFFF"
+                              stroke={activePalette.playedLineColor}
                               strokeWidth={3.4}
                               strokeLinecap="butt"
                               style={{
@@ -1649,7 +1858,7 @@ export default function TabChordFlowView({
                             width={badgeW}
                             height={13}
                             rx={2.5}
-                            fill="#3B1503"
+                            fill={activePalette.pillBg}
                             stroke={track.color}
                             strokeWidth={1}
                           />

@@ -1,28 +1,49 @@
 {
-  "proposal_id": "tdb-741-detune-only-tab-sliding-fullscreen-mobile-v5.2.0",
-  "target_intent": "TDB-741: Detune-Only Tab Sliding, Zero-Missing-Beat Proportional Tab Bars, Fullscreen Toggle & Mobile Support (v5.2.0)",
-  "delta_before": 0.1450,
+  "proposal_id": "tdb-742-v5.2.2-mobile-fullscreen",
+  "target_intent": "TDB-742: Fullscreen API & Iframe Fallback, Responsive Mobile Studio View & Mobile Touch Gestures (v5.2.2)",
+  "delta_before": 0.14,
   "mutations": [
     {
-      "file": "src/components/TabChordFlowView.tsx",
-      "function": "buildTrueVoiceTrajectories & TabChordFlowView",
+      "file": "package.json",
+      "function": "version",
+      "ast_depth": 1,
+      "decay_weight": 0.95,
+      "patch": "@@ -4 +4 @@\n-  \"version\": \"5.2.0\",\n+  \"version\": \"5.2.2\","
+    },
+    {
+      "file": "electron-builder.json",
+      "function": "extraMetadata.version",
       "ast_depth": 2,
       "decay_weight": 0.90,
-      "patch": "--- a/src/components/TabChordFlowView.tsx\n+++ b/src/components/TabChordFlowView.tsx\n@@ -608,16 +608,21 @@\n-        let targetMidi = startMidi;\n-        const dstEv = sortedNext[Math.min(sortedNext.length - 1, vIdx)];\n-        if (dstEv) {\n-          targetMidi = Math.round(dstEv.pitch.midi);\n-        }\n+        const hasDetune = Boolean(ev.physics?.detune !== undefined || ev.physics?.detuneMod !== undefined);\n+        const hasExplicitSlide = hasDetune || (ev.physics?.glideMs ?? 0) > 0 || Boolean(bendArr && bendArr.length > 1);\n+        let targetMidi = startMidi;\n+        if (hasExplicitSlide && sortedNext.length > 0) {\n+          const dstEv = sortedNext[Math.min(sortedNext.length - 1, vIdx)];\n+          if (dstEv) targetMidi = Math.round(dstEv.pitch.midi);\n+        }"
+      "patch": "@@ -11 +11 @@\n-    \"version\": \"5.2.0\"\n+    \"version\": \"5.2.2\""
+    },
+    {
+      "file": "src/index.css",
+      "function": "tenuto-fullscreen-active",
+      "ast_depth": 1,
+      "decay_weight": 0.95,
+      "patch": "@@ -1,10 +1,22 @@\n+html, body, #root { height: 100dvh; }\n+.tenuto-fullscreen-active { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100dvh !important; z-index: 9999 !important; }"
     },
     {
       "file": "src/components/Transport.tsx",
       "function": "Transport",
       "ast_depth": 2,
       "decay_weight": 0.90,
-      "patch": "--- a/src/components/Transport.tsx\n+++ b/src/components/Transport.tsx\n@@ -249,0 +250,15 @@\n+          {onToggleFullscreen && (\n+            <button type=\"button\" aria-label={isFullscreen ? 'Exit Fullscreen' : 'Toggle Fullscreen'} onClick={onToggleFullscreen}>\n+              {isFullscreen ? '✕ Exit' : '⛶ Fullscreen'}\n+            </button>\n+          )}"
+      "patch": "@@ -254,15 +254,15 @@\n+aria-label=\"Toggle Fullscreen\"\n+{isFullscreen ? '⤓ Exit Full' : '⛶ Fullscreen'}"
+    },
+    {
+      "file": "src/components/WebGPUCanvas.tsx",
+      "function": "WebGPUCanvas",
+      "ast_depth": 3,
+      "decay_weight": 0.85,
+      "patch": "@@ -122 +122 @@\n+const touchPinchDistanceRef = useRef<number | null>(null);\n@@ -534 +534 @@\n+window.addEventListener('touchmove', handleTouchMove, { passive: true });\n+window.addEventListener('touchend', handleTouchEnd);"
     },
     {
       "file": "src/components/SplitWorkspace.tsx",
       "function": "SplitWorkspace",
       "ast_depth": 2,
       "decay_weight": 0.90,
-      "patch": "--- a/src/components/SplitWorkspace.tsx\n+++ b/src/components/SplitWorkspace.tsx\n@@ -140,0 +141,25 @@\n+  const handleToggleFullscreen = async () => { ... };"
+      "patch": "@@ -55 +55 @@\n+const [mobileFocusPane, setMobileFocusPane] = useState<'code' | 'visual'>('visual');\n@@ -797 +797 @@\n+data-testid=\"studio-workspace-root\"\n+<nav data-testid=\"mobile-bottom-nav\" aria-label=\"Mobile Studio Navigation\" ...>"
     }
   ]
 }

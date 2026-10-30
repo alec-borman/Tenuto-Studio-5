@@ -1,5 +1,28 @@
 @import "tailwindcss";
 
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: #020617;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Fullscreen Studio Shell (supports both native Fullscreen API and iframe/mobile fallback) */
+.tenuto-fullscreen-active {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100dvh !important;
+  z-index: 9999 !important;
+}
+
 /* Surgical Core-Note Playback Highlight in Monaco Editor (TDB-734) */
 .tenuto-karaoke-token-active {
   background-color: rgba(16, 185, 129, 0.38) !important;
@@ -18,22 +41,3 @@
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
-
-/* Mobile 100dvh Dynamic Viewport & Fullscreen Shell (TDB-741) */
-.tenuto-dvh-shell {
-  height: 100vh;
-  height: 100dvh;
-  width: 100vw;
-  max-width: 100%;
-  padding-bottom: env(safe-area-inset-bottom, 0px);
-  touch-action: manipulation;
-}
-
-.tenuto-fullscreen-active {
-  position: fixed !important;
-  inset: 0 !important;
-  width: 100vw !important;
-  height: 100dvh !important;
-  z-index: 9999 !important;
-}
-
