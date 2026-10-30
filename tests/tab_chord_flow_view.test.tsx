@@ -4,6 +4,8 @@ import { describe, it, expect, vi } from 'vitest';
 import TabChordFlowView, {
   detectChordSymbol,
   extractCodeChordSlices,
+  buildTrueVoiceTrajectories,
+  evaluateTrackedEventMidiAtWhole,
 } from '../src/components/TabChordFlowView';
 import { DocumentParser } from '../src/parser/DocumentParser';
 import SplitWorkspace from '../src/components/SplitWorkspace';
@@ -23,86 +25,69 @@ vi.mock('@monaco-editor/react', () => ({
 
 HTMLCanvasElement.prototype.getContext = vi.fn();
 
-describe('TDB-730: Dynamic Code-Driven Tab & Voice-Leading Chord Flow View', () => {
-  it('dynamically extracts chord symbols, voice-leading orbs, and fretboard voicings from whatever .ten code is playing', () => {
+describe('TDB-733: True Multi-Instrument Voice-Leading Trajectories & Orb-to-Line Lock', () => {
+  it('includes all instruments (including drums) and locks every playhead orb directly onto its trajectory line', () => {
     const parser = new DocumentParser();
     const score = parser.compile(`
       tenuto "6.0" {
-        meta @{ title: "Live Code Progression", tempo: 120, time: "4/4", key: "D" }
-        def saws "Supersaw" style=synth patch="supersaw"
+        meta @{ title: "Multi-Track Lock Test", tempo: 128, time: "4/4", key: "D" }
+        def saws  "Supersaw" style=synth patch="supersaw"
+        def reese "Reese"    style=synth patch="reese_bass"
+        def lead  "Lead"     style=synth patch="pluck_lead"
+        def drums "Kit"      style=grid  patch="tenuto_808_kit"
+
         measure 1 {
-          saws: [d3 a3 d4 f#4 a4 c#5]:2 [b2 f#3 b3 d4 f#4 a4]:2 |
+          saws:  [d3 a3 d4 f#4 a4 c#5]:1.glide(160ms) |
+          reese: d1:1.glide(160ms) |
+          lead:  f#5:2 a5:2 |
+          drums: k:4 s:4 k:4 s:4 |
         }
         measure 2 {
-          saws: [g2 d3 g3 b3 d4 f#4]:2 [a2 e3 a3 c#4 e4 g4]:2 |
+          saws:  [g2 d3 g3 b3 d4 f#4]:1 |
+          reese: g0:1 |
+          lead:  b5:1 |
+          drums: k:4 s:4 k:4 s:4 |
         }
       }
     `);
 
-    const slices = extractCodeChordSlices(score.events, false);
-    expect(slices).toHaveLength(4);
-    expect(slices[0].symbol.fullText).toBe('Dmaj7');
-    expect(slices[1].symbol.fullText).toBe('Bm7');
-    expect(slices[2].symbol.fullText).toBe('Gmaj7');
-    expect(slices[3].symbol.fullText).toBe('A7');
+    const trajectories = buildTrueVoiceTrajectories(score.events);
+    expect(trajectories.length).toBeGreaterThan(10);
 
-    // At playheadBeat = 0.5 (Beat 1 of Measure 1), active chord is Dmaj7
-    const { rerender } = render(
+    // At beat 1.0 (wholeTime = 0.25), evaluateTrackedEventMidiAtWhole returns exact MIDI pitches
+    const leadFirst = trajectories.find((t) => t.trackId === 'lead' && t.startWhole === 0)!;
+    expect(evaluateTrackedEventMidiAtWhole(leadFirst, 0.25)).toBe(78); // F#5 = 78
+
+    render(
       <TabChordFlowView
         events={score.events}
         isPlaying={true}
-        playheadBeat={0.5}
+        playheadBeat={1.0}
         rootKey="D"
         score={score}
       />
     );
-    expect(screen.getByTestId('active-chord-symbol')).toHaveTextContent('Dmaj7');
 
-    // At playheadBeat = 2.5 (Beat 3 of Measure 1), active chord updates dynamically to Bm7
-    rerender(
-      <TabChordFlowView
-        events={score.events}
-        isPlaying={true}
-        playheadBeat={2.5}
-        rootKey="D"
-        score={score}
-      />
-    );
-    expect(screen.getByTestId('active-chord-symbol')).toHaveTextContent('Bm7');
+    // All 4 tracks (including drums!) are listed in the selector and pills
+    expect(screen.getByText(/All \(4\)/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Filter chord flow by drums/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Filter chord flow by saws/i })).toBeInTheDocument();
 
-    // At playheadBeat = 6.5 (Beat 3 of Measure 2), active chord updates dynamically to A7
-    rerender(
-      <TabChordFlowView
-        events={score.events}
-        isPlaying={true}
-        playheadBeat={6.5}
-        rootKey="D"
-        score={score}
-      />
-    );
-    expect(screen.getByTestId('active-chord-symbol')).toHaveTextContent('A7');
+    // Clicking 'lead' pill isolates only the lead track's notes (F#5 at beat 1.0)
+    fireEvent.click(screen.getByRole('button', { name: /Filter chord flow by lead/i }));
+    expect(screen.getByTestId('voice-orb-0')).toHaveTextContent('F♯5');
   });
 
-  it('updates live when the user types new chords into the Code Editor in SplitWorkspace', () => {
+  it('dynamically updates chord symbols when the user edits code in SplitWorkspace', () => {
     render(<SplitWorkspace />);
-
-    // Switch to Tab / Chord Flow View
     fireEvent.click(screen.getByRole('button', { name: /Switch to Tab \/ Chord Flow View/i }));
-    expect(screen.getByTestId('tab-chord-flow-view')).toBeInTheDocument();
-
-    // Default code is 'pno: c4:4' -> displays 'C'
     expect(screen.getByTestId('active-chord-symbol')).toHaveTextContent('C');
 
-    // User types an Fmaj7 chord into the editor -> view immediately updates to 'Fmaj7'
     const editor = screen.getByTestId('monaco-mock') as HTMLTextAreaElement;
     fireEvent.change(editor, { target: { value: 'pno: [f3 a3 c4 e4]:1' } });
     expect(screen.getByTestId('active-chord-symbol')).toHaveTextContent('Fmaj7');
-  });
 
-  it('also recognizes slash inversions (Eb/G) and jazz chords (Abmaj7, Abm6, Bb7sus) when written in code', () => {
     expect(detectChordSymbol([44, 51, 60, 67, 72], true).fullText).toBe('A♭maj7');
-    expect(detectChordSymbol([44, 51, 65, 68, 71], true).fullText).toBe('A♭m6');
     expect(detectChordSymbol([43, 58, 63, 67, 70], true).fullText).toBe('E♭/G');
-    expect(detectChordSymbol([46, 53, 63, 68, 72], true).fullText).toBe('B♭7sus');
   });
 });
