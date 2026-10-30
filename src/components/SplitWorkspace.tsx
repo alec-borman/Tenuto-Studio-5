@@ -23,9 +23,13 @@ import {
   MidiTransformType,
   MidiGeneratorType,
 } from '../mutator/MidiTransformAndGeneratorEngine';
+import { DebouncedCodeMemory } from '../utils/DebouncedCodeMemory';
 
 export default function SplitWorkspace() {
-  const [sourceCode, setSourceCode] = useState<string>('pno: c4:4');
+  const codeMemory = useMemo(() => new DebouncedCodeMemory(), []);
+  const [sourceCode, setSourceCode] = useState<string>(() => codeMemory.load('pno: c4:4'));
+  const [memoryStatus, setMemoryStatus] = useState<'saved' | 'saving'>('saved');
+  const isInitialCodeMount = useRef<boolean>(true);
   const [activeSelection, setActiveSelection] = useState<any>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isLooping, setIsLooping] = useState<boolean>(false);
@@ -106,6 +110,34 @@ export default function SplitWorkspace() {
       studioAudio.stop();
     };
   }, [studioAudio]);
+
+  useEffect(() => {
+    if (isInitialCodeMount.current) {
+      isInitialCodeMount.current = false;
+      return;
+    }
+    setMemoryStatus('saving');
+    codeMemory.scheduleSave(sourceCode, () => {
+      setMemoryStatus('saved');
+    });
+  }, [sourceCode, codeMemory]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      codeMemory.flush();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      codeMemory.cancelPending();
+    };
+  }, [codeMemory]);
+
+  const handleResetCodeMemory = () => {
+    codeMemory.clear();
+    setMemoryStatus('saved');
+    setSourceCode('pno: c4:4');
+  };
 
   useEffect(() => {
     try {
@@ -714,12 +746,37 @@ export default function SplitWorkspace() {
           } h-full w-full border-r border-slate-800 bg-[#0B0F19] flex-col min-h-0 overflow-hidden`}
         >
           <div className="h-8 bg-slate-900 border-b border-slate-800 px-4 flex items-center justify-between shrink-0">
-            <span className="text-[11px] uppercase font-semibold tracking-wider text-slate-400">
-              Tenuto Source Code (.ten)
-            </span>
-            <span className="text-[11px] font-mono text-slate-500">
-              Single Source of Truth • Tab switches View
-            </span>
+            <div className="flex items-center gap-2.5">
+              <span className="text-[11px] uppercase font-semibold tracking-wider text-slate-400">
+                Tenuto Source Code (.ten)
+              </span>
+              <span
+                data-testid="code-memory-status"
+                className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+                  memoryStatus === 'saving'
+                    ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                    : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                }`}
+                title="Debounced LocalStorage Code Memory (500ms)"
+              >
+                {memoryStatus === 'saving' ? '● Saving...' : '✓ Saved'}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-mono text-slate-500 hidden sm:inline">
+                Single Source of Truth • Tab switches View
+              </span>
+              <button
+                type="button"
+                aria-label="Reset Code Memory"
+                onClick={handleResetCodeMemory}
+                className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-950 hover:bg-rose-950/50 border border-slate-800 hover:border-rose-500/40 text-slate-400 hover:text-rose-300 transition-colors cursor-pointer"
+                title="Clear saved code memory and restore default sketch"
+              >
+                Reset Memory
+              </button>
+            </div>
           </div>
           <div className="flex-1 overflow-hidden">
             <CodeEditor

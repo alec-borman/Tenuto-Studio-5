@@ -1,28 +1,42 @@
 {
-  "proposal_id": "tdb-731-theater-grade-karaoke-overhaul",
-  "target_intent": "TDB-731: Cinematic Theater-Grade Karaoke Playback & Highlighting Overhaul",
-  "delta_before": 0.18,
+  "proposal_id": "tdb-732-debounced-code-memory",
+  "target_intent": "TDB-732: Debounced Code Memory & Auto-Restore Across Page Refreshes (v5.0.2)",
+  "delta_before": 0.16,
   "mutations": [
     {
-      "file": "src/index.css",
-      "function": "Theater-Grade Karaoke CSS",
+      "file": "package.json",
+      "function": "version",
       "ast_depth": 1,
       "decay_weight": 0.95,
-      "patch": "@@ -1,24 +1,66 @@\n+.tenuto-karaoke-subdued { opacity: 0.28 !important; ... }\n+.tenuto-karaoke-measure-active { ... }\n+.tenuto-karaoke-line-active { ... }\n+.tenuto-karaoke-token-active { ... }"
+      "patch": "@@ -4,1 +4,1 @@\n-  \"version\": \"5.0.0\",\n+  \"version\": \"5.0.2\","
     },
     {
-      "file": "src/components/CodeEditor.tsx",
-      "function": "findMeasureLineRange & CodeEditor",
+      "file": "electron-builder.json",
+      "function": "extraMetadata.version",
+      "ast_depth": 1,
+      "decay_weight": 0.95,
+      "patch": "@@ -11,1 +11,1 @@\n-    \"version\": \"5.0.0\"\n+    \"version\": \"5.0.2\""
+    },
+    {
+      "file": "src/utils/DebouncedCodeMemory.ts",
+      "function": "DebouncedCodeMemory",
+      "ast_depth": 1,
+      "decay_weight": 0.95,
+      "patch": "@@ -0,0 +1,115 @@\n+export class DebouncedCodeMemory { load(...) {} scheduleSave(...) {} flush(...) {} cancelPending() {} clear() {} }"
+    },
+    {
+      "file": "src/components/SplitWorkspace.tsx",
+      "function": "SplitWorkspace",
       "ast_depth": 2,
       "decay_weight": 0.9,
-      "patch": "@@ -80,0 +80,35 @@\n+export function findMeasureLineRange(code: string, measureNumber: number) { ... }\n@@ -245,40 +280,85 @@\n+const mRange = findMeasureLineRange(code, measureNum);\n+// Apply tenuto-karaoke-measure-active, tenuto-karaoke-subdued, tenuto-karaoke-line-active, tenuto-karaoke-token-active"
+      "patch": "@@ -28,1 +28,4 @@\n-  const [sourceCode, setSourceCode] = useState<string>('pno: c4:4');\n+  const codeMemory = useMemo(() => new DebouncedCodeMemory(), []);\n+  const [sourceCode, setSourceCode] = useState<string>(() => codeMemory.load('pno: c4:4'));"
     },
     {
-      "file": "tests/code_editor_matrix.test.tsx",
-      "function": "TDB-731 Suite",
+      "file": "tests/debounced_code_memory.test.tsx",
+      "function": "TDB-732 Suite",
       "ast_depth": 1,
       "decay_weight": 0.95,
-      "patch": "@@ -48,45 +48,60 @@\n+it('correctly maps the line boundaries of any active measure with findMeasureLineRange', ...)"
+      "patch": "@@ -0,0 +1,98 @@\n+describe('TDB-732: Debounced Code Memory & Auto-Restore Across Refreshes', () => { ... });"
     }
   ]
 }
