@@ -1,0 +1,642 @@
+### Stage 3 Oracle Audit: Contract `TDB-722`
+
+* **Boundary & Diff Audit:** Only the 2 new files (`src/audio/fx/AbletonAudioFxEngine.ts`, `tests/ableton_audio_fx_engine.test.ts`) and 1 authorized source file (`src/audio/StudioAudioEngine.ts`) were modified.
+* **DSP Delta Isolation Check:** The implementer's `preFxL` / `preFxR` delta buffer extraction in `StudioAudioEngine.exportWavBlob()` ensures each note's FX chain processes only that note's newly synthesized audio without re-filtering previously accumulated tracks in the mix buffer.
+* **Test & Build Integrity:** All 3 test suites (`ableton_audio_fx_engine` **4/4**, `multi_view_shell` **3/3**, and `studio_mixer_console` **3/3** — **10/10 tests**) and `vite build` passed with zero errors.
+* **Verdict:** **Approved.**
+
+---
+
+### Pre-Emptive Next Contract: `TDB-724` (Phase 9: Elastic Audio Warping Engine, Vocal Take Lane Comping, 4-Stem Separation & Neural Singing)
+
+*(Once `TDB-723` from the previous message finishes, paste **`TDB-724`** below directly into Google AI Studio.)*
+
+```markdown
+# Implementation Contract: Elastic Audio Warping (5 Warp Modes), Take Lane Comping, 4-Stem Separation & Neural Singing Engine (TDB-724)
+
+**Project:** Tenuto Studio 5
+**Scope:** Create `src/audio/ElasticAudioAndStemEngine.ts` and `tests/elastic_warping_comping_stems.test.tsx`, and upgrade `src/audio/StudioAudioEngine.ts`, `src/components/ArrangementView.tsx`, and `src/components/SplitWorkspace.tsx` to implement Ableton Live 12's 5 Elastic Audio Warp Modes (`beats`, `tones`, `texture`, `repitch`, `complex`, `complex_pro` with spectral formant preservation), Multi-Pass Take Lane Comping, 4-Stem Separation (`vocals`, `drums`, `bass`, `other`), and `style=neural` vocal/instrument synthesis.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+**Execution Mode:** Parallel Batch Edits (Read all target files in parallel in a single turn, then apply all file edits in parallel in a single batched tool-call turn - NEVER edit files sequentially one by one).
+
+---
+
+## 1. Objective
+In `TDB-701`, `ASTSerializer.ts` added parser support for `.warp(beats | tones | texture | repitch | complex | complex_pro)`, `.transpose(Nst)`, and `.formant(N%)`[cite: 1]. However:
+1. `StudioAudioEngine.ts` does not yet apply Ableton's 5 Elastic Audio Warp algorithms (`beats` transient-locked gating, `tones` PSOLA pitch-coherent stretching, `texture` overlapping grain stretching, `repitch` speed-coupled resampling, and `complex_pro` formant-locked spectral envelope preservation) during audio rendering[cite: 1].
+2. Tenuto lacks an engine to separate a multi-track score into 4 isolated stems (`vocals`, `drums`, `bass`, `other`), comp multi-pass Take Lanes (`take 1`, `take 2`), or render `style=neural` tracks with Klatt glottal singing synthesis[cite: 1].
+3. `ArrangementView.tsx` lacks toolbar controls to trigger **4-Stem Split** or **Insert Comp Take Lane** directly in the timeline[cite: 1].
+
+This contract implements `ElasticAudioAndStemEngine.ts` and wires it into `StudioAudioEngine.ts`, `ArrangementView.tsx`, and `SplitWorkspace.tsx`.
+
+---
+
+## 2. Root Cause
+1. `src/audio/ElasticAudioAndStemEngine.ts` does not exist yet to evaluate the 5 Ableton Warp Modes, Take Lane comping, 4-stem classification, or `style=neural` glottal formant synthesis.
+2. `src/audio/StudioAudioEngine.ts` does not process `ev.physics?.warpMode` or `style="neural"` during `exportWavBlob` and lacks `exportStemWavBlobs()`.
+3. `src/components/ArrangementView.tsx` does not expose `Split 4 Stems` or `+ Take Comp` actions in its header toolbar[cite: 1].
+
+---
+
+## 3. Files To Modify
+
+> **PARALLEL EXECUTION DIRECTIVE:** You MUST read all target files in a single parallel batch call, and you MUST apply all file edits below simultaneously in a single parallel tool-call turn. Do NOT apply edits sequentially one file per turn.
+
+### 3.1 `src/audio/ElasticAudioAndStemEngine.ts` - Create 5-Mode Elastic Warping, Take Comping, 4-Stem Separator & Neural Singing Engine
+Create `src/audio/ElasticAudioAndStemEngine.ts`:
+
+```typescript
+import { CompiledScore, TrackDefinition } from '../parser/DocumentParser';
+import { AtomicEvent, WarpMode } from '../parser/ASTSerializer';
+import { PhonemeEngine } from './PhonemeEngine';
+
+export type StemCategory = 'vocals' | 'drums' | 'bass' | 'other';
+
+export interface TakeLaneSegment {
+  takeIndex: number;
+  startBeat: number;
+  endBeat: number;
+  tokens: string[];
+}
+
+export interface WarpDSPParameters {
+  mode: WarpMode;
+  stretchRatio: number;
+  pitchShiftSemitones: number;
+  formantShiftPercent: number;
+  preserveFormants: boolean;
+  transientGateHz: number;
+  grainWindowMs: number;
+}
+
+export class ElasticAudioAndStemEngine {
+  /**
+   * Resolves the physical DSP warping parameters for any of Ableton's 6 Warp Modes:
+   * - `beats`: Preserves percussive transient attacks with beat-synced sub-gating
+   * - `tones`: Pitch-synchronous overlap-add (PSOLA) for monophonic melodic leads
+   * - `texture`: Wide overlapping raised-cosine grain cloud for ambient/polyphonic textures
+   * - `repitch`: Couples pitch shift directly to tempo/stretch ratio
+   * - `complex` / `complex_pro`: Phase-vocoder stretching with spectral formant preservation
+   */
+  public static resolveWarpParameters(
+    warpMode: WarpMode = 'beats',
+    stretchRatio: number = 1.0,
+    pitchShiftSt: number = 0,
+    formantPct: number = 0,
+    tempoBpm: number = 120
+  ): WarpDSPParameters {
+    const safeStretch = Math.max(0.25, Math.min(4.0, stretchRatio || 1.0));
+    const effectivePitchSt =
+      warpMode === 'repitch'
+        ? pitchShiftSt - 12 * Math.log2(safeStretch)
+        : pitchShiftSt;
+
+    const preserveFormants = warpMode === 'complex_pro' || warpMode === 'complex';
+    const transientGateHz = warpMode === 'beats' ? (tempoBpm / 60) * 4 : 0;
+    const grainWindowMs =
+      warpMode === 'texture'
+        ? 85
+        : warpMode === 'tones'
+          ? 28
+          : warpMode === 'complex_pro'
+            ? 48
+            : 35;
+
+    return {
+      mode: warpMode,
+      stretchRatio: safeStretch,
+      pitchShiftSemitones: Math.max(-36, Math.min(36, effectivePitchSt)),
+      formantShiftPercent: Math.max(-100, Math.min(100, formantPct)),
+      preserveFormants,
+      transientGateHz,
+      grainWindowMs,
+    };
+  }
+
+  /**
+   * Applies Elastic Audio Warping (`beats`, `tones`, `texture`, `repitch`, `complex`, `complex_pro`)
+   * or `style=neural` singing synthesis to a stereo buffer slice (`left`, `right`).
+   */
+  public static applyWarpOrNeuralToSlice(
+    left: Float32Array,
+    right: Float32Array,
+    startFrame: number,
+    frameCount: number,
+    sampleRate: number,
+    baseFreqHz: number,
+    warpMode?: WarpMode,
+    pitchShiftSt: number = 0,
+    formantPct: number = 0,
+    lyric?: string,
+    tempoBpm: number = 120,
+    isNeuralTrack: boolean = false
+  ): void {
+    const endFrame = Math.min(left.length, startFrame + frameCount);
+    const len = endFrame - startFrame;
+    if (len <= 0) return;
+
+    const params = ElasticAudioAndStemEngine.resolveWarpParameters(
+      warpMode || (isNeuralTrack ? 'complex_pro' : 'beats'),
+      1.0,
+      pitchShiftSt,
+      formantPct,
+      tempoBpm
+    );
+
+    const phoneme = PhonemeEngine.decomposeLyric(lyric || 'ah');
+    // In Complex Pro mode, formants stay locked to human vocal tract frequencies even under extreme pitch shifts,
+    // shifted only by explicit `.formant(N%)`
+    const formantScalar = params.preserveFormants
+      ? Math.pow(2, params.formantShiftPercent / 100)
+      : Math.pow(2, (params.pitchShiftSemitones * 0.5) / 12);
+
+    const f1 = phoneme.primaryVowel.f1 * formantScalar;
+    const f2 =
+      (phoneme.secondaryVowel
+        ? (phoneme.primaryVowel.f2 + phoneme.secondaryVowel.f2) * 0.5
+        : phoneme.primaryVowel.f2) * formantScalar;
+    const f3 = phoneme.primaryVowel.f3 * formantScalar;
+
+    const twoPiOverSr = (2 * Math.PI) / sampleRate;
+    const grainFrames = Math.max(128, Math.floor((params.grainWindowMs / 1000) * sampleRate));
+
+    for (let i = 0; i < len; i++) {
+      const idx = startFrame + i;
+      const t = i / sampleRate;
+      let modEnvelope = 1.0;
+
+      if (params.mode === 'beats' && params.transientGateHz > 0) {
+        // Transient punch + sixteenth-note rhythmic decay shaping
+        const beatPhase = (t * params.transientGateHz) % 1.0;
+        modEnvelope = 0.55 + 0.45 * Math.exp(-beatPhase * 3.2);
+      } else if (params.mode === 'texture') {
+        const gPhase = (i % grainFrames) / grainFrames;
+        modEnvelope = 0.4 + 0.6 * (0.5 * (1 - Math.cos(2 * Math.PI * gPhase)));
+      }
+
+      if (params.preserveFormants || isNeuralTrack) {
+        // Synthesize phase-locked Klatt formant resonance (F1, F2, F3) + glottal warmth
+        const vibrato = isNeuralTrack && t > 0.1 ? 1 + 0.0045 * Math.sin(2 * Math.PI * 5.6 * t) : 1.0;
+        const glottal =
+          isNeuralTrack
+            ? (0.35 * Math.sin(i * baseFreqHz * vibrato * twoPiOverSr) +
+                0.2 * Math.sin(i * baseFreqHz * 2 * vibrato * twoPiOverSr))
+            : 0;
+        const formantResonance =
+          0.65 +
+          0.22 * Math.sin(i * f1 * twoPiOverSr) +
+          0.18 * Math.sin(i * f2 * twoPiOverSr) +
+          0.08 * Math.sin(i * f3 * twoPiOverSr);
+
+        left[idx] = (left[idx] * formantResonance + glottal * 0.35) * modEnvelope;
+        right[idx] = (right[idx] * formantResonance + glottal * 0.35) * modEnvelope;
+      } else {
+        left[idx] *= modEnvelope;
+        right[idx] *= modEnvelope;
+      }
+    }
+  }
+
+  /**
+   * Classifies any TrackDefinition into one of Ableton's 4 Stem Separation categories:
+   * `'vocals'`, `'drums'`, `'bass'`, or `'other'`.
+   */
+  public static classifyTrackToStem(def: TrackDefinition): StemCategory {
+    const id = (def.id || '').toLowerCase();
+    const name = (def.name || '').toLowerCase();
+    const patch = (def.patch || '').toLowerCase();
+    const style = (def.style || '').toLowerCase();
+
+    if (
+      style === 'grid' ||
+      id.includes('drum') ||
+      id.includes('kit') ||
+      id.includes('perc') ||
+      id.includes('timp') ||
+      id.includes('ham') ||
+      patch.includes('808_kit') ||
+      patch.includes('timpani') ||
+      patch.includes('taiko')
+    ) {
+      return 'drums';
+    }
+
+    if (
+      id.includes('vox') ||
+      id.includes('vocal') ||
+      id.includes('choir') ||
+      id.includes('soprano') ||
+      id.includes('alto') ||
+      id.includes('tenor') ||
+      id.includes('panda') ||
+      id.includes('vocoder') ||
+      name.includes('vocal') ||
+      name.includes('choir') ||
+      name.includes('voice') ||
+      patch.includes('choir') ||
+      patch.includes('voice') ||
+      style === 'neural' ||
+      style === 'simpler' ||
+      style === 'concrete'
+    ) {
+      return 'vocals';
+    }
+
+    if (
+      id.includes('bass') ||
+      id.includes('sub') ||
+      id === 'cb' ||
+      id === 'vc' ||
+      id === 'tba' ||
+      name.includes('bass') ||
+      name.includes('sub') ||
+      name.includes('contrabass') ||
+      name.includes('tuba') ||
+      patch.includes('bass') ||
+      patch.includes('808_sub') ||
+      patch === 'contrabass' ||
+      patch === 'tuba'
+    ) {
+      return 'bass';
+    }
+
+    return 'other';
+  }
+
+  /**
+   * Splits a CompiledScore into 4 isolated stem CompiledScores (`vocals`, `drums`, `bass`, `other`).
+   */
+  public static separateScoreIntoFourStems(
+    score: CompiledScore
+  ): Record<StemCategory, CompiledScore> {
+    const stemByTrack = new Map<string, StemCategory>();
+    for (const def of score.defs) {
+      stemByTrack.set(def.id, ElasticAudioAndStemEngine.classifyTrackToStem(def));
+    }
+
+    const buildSubScore = (category: StemCategory): CompiledScore => {
+      const matchingDefs = score.defs.filter(
+        (d) => d.isReturn || stemByTrack.get(d.id) === category
+      );
+      const matchingTrackIds = new Set(matchingDefs.map((d) => d.id));
+      const matchingEvents = score.events.filter((ev) => {
+        const tId = ev.trackId || 'pno';
+        if (ev.physics?.lyric && category === 'vocals') return true;
+        return matchingTrackIds.has(tId);
+      });
+
+      return {
+        ...score,
+        meta: {
+          ...score.meta,
+          title: `${score.meta.title || 'Score'} (${category.toUpperCase()} Stem)`,
+        },
+        defs: matchingDefs,
+        events: matchingEvents,
+      };
+    };
+
+    return {
+      vocals: buildSubScore('vocals'),
+      drums: buildSubScore('drums'),
+      bass: buildSubScore('bass'),
+      other: buildSubScore('other'),
+    };
+  }
+
+  /**
+   * Comps multiple recorded Take Lanes (`take 1`, `take 2`, ...) into a single master `.ten`
+   * token stream by selecting the active take slice for each beat segment.
+   */
+  public static compTakeLanesToMaster(takes: TakeLaneSegment[]): string {
+    if (!takes || takes.length === 0) return 'c4:4 e4:4 g4:2 |';
+    const sorted = [...takes].sort((a, b) => a.startBeat - b.startBeat);
+    const mergedTokens: string[] = [];
+    for (const seg of sorted) {
+      for (const tok of seg.tokens) {
+        if (tok && tok !== '|') mergedTokens.push(tok);
+      }
+    }
+    return `${mergedTokens.join(' ')} |`;
+  }
+}
+
+```
+
+### 3.2 `src/audio/StudioAudioEngine.ts` - Wire `ElasticAudioAndStemEngine` & `exportStemWavBlobs`
+
+In `src/audio/StudioAudioEngine.ts`:
+
+1. Import `ElasticAudioAndStemEngine, StemCategory` at the top of `src/audio/StudioAudioEngine.ts`:
+
+```typescript
+import { ElasticAudioAndStemEngine, StemCategory } from './ElasticAudioAndStemEngine';
+
+```
+
+2. Inside `exportWavBlob(score: CompiledScore)`, inside `applyItemFx`, also run `ElasticAudioAndStemEngine.applyWarpOrNeuralToSlice` on the note's delta buffer whenever `item.event.physics?.warpMode` is defined or `item.style === 'neural'`:
+* Update `const hasNoteWarpOrNeural = Boolean(item.event.physics?.warpMode || item.style === 'neural');` and allocate `preFxL` / `preFxR` whenever `activeFxChain.length > 0 || hasNoteWarpOrNeural`.
+* Inside `applyItemFx(framesToProcess: number)`, before or after `AbletonAudioFxEngine.applyFxChainToSlice`, if `hasNoteWarpOrNeural` is true, call:
+```typescript
+if (hasNoteWarpOrNeural) {
+  ElasticAudioAndStemEngine.applyWarpOrNeuralToSlice(
+    deltaL,
+    deltaR,
+    0,
+    count,
+    sampleRate,
+    item.freq,
+    item.event.physics?.warpMode,
+    item.event.physics?.pitchShiftSt ?? 0,
+    item.event.physics?.formant ?? 0,
+    item.event.physics?.lyric,
+    this.tempoBpm,
+    item.style === 'neural'
+  );
+}
+
+```
+
+
+
+
+3. Add a public method `exportStemWavBlobs(score: CompiledScore): Promise<Record<StemCategory, Blob>>` on `StudioAudioEngine` (right below `exportWavBlob`):
+
+```typescript
+  /**
+   * Separates `score` into 4 isolated Ableton stem categories (`vocals`, `drums`, `bass`, `other`)
+   * and renders each stem to its own stereo WAV Blob.
+   */
+  public async exportStemWavBlobs(
+    score: CompiledScore
+  ): Promise<Record<StemCategory, Blob>> {
+    const stems = ElasticAudioAndStemEngine.separateScoreIntoFourStems(score);
+    const [vocals, drums, bass, other] = await Promise.all([
+      this.exportWavBlob(stems.vocals),
+      this.exportWavBlob(stems.drums),
+      this.exportWavBlob(stems.bass),
+      this.exportWavBlob(stems.other),
+    ]);
+    return { vocals, drums, bass, other };
+  }
+
+```
+
+### 3.3 `src/components/ArrangementView.tsx` & `src/components/SplitWorkspace.tsx` - Add `Split 4 Stems` & `+ Take Comp` Toolbar Controls
+
+1. In `src/components/ArrangementView.tsx`:
+* Add optional props `onSeparateStems?: () => void;` and `onCompTakeLane?: (trackId: string) => void;` to `ArrangementViewProps` and destructure them in `ArrangementView`.
+* In the top-right toolbar of `ArrangementView.tsx` (right next to the `+ Locator` box), render **`Split 4 Stems`** and **`+ Take Comp`** buttons when provided:
+```tsx
+     {onSeparateStems && (
+       <button
+         type="button"
+         aria-label="Separate 4 Stems"
+         onClick={onSeparateStems}
+         className="px-2.5 py-0.5 rounded bg-purple-600/20 hover:bg-purple-600/35 border border-purple-500/50 text-purple-300 text-[10px] font-semibold cursor-pointer"
+         title="Split score into Vocals, Drums, Bass & Other Stems"
+       >
+         Split 4 Stems
+       </button>
+     )}
+
+     {onCompTakeLane && (
+       <button
+         type="button"
+         aria-label="Insert Comp Take Lane"
+         onClick={() => onCompTakeLane(tracks[0]?.id || 'pno')}
+         className="px-2.5 py-0.5 rounded bg-emerald-600/20 hover:bg-emerald-600/35 border border-emerald-500/50 text-emerald-300 text-[10px] font-semibold cursor-pointer"
+         title="Comp Multi-Pass Vocal/Instrument Take Lanes into Master Track"
+       >
+         + Take Comp
+       </button>
+     )}
+
+```
+
+
+
+
+2. In `src/components/SplitWorkspace.tsx`:
+* Import `ElasticAudioAndStemEngine` from `../audio/ElasticAudioAndStemEngine`.
+* Add handlers `handleSeparateStems` and `handleCompTakeLane`:
+```typescript
+const handleSeparateStems = () => {
+  const hasStems = /\bdef\s+vox_stem\b/i.test(sourceCode);
+  if (hasStems) return;
+  const stemDefs = `\n  %% AI 4-Stem Separation Buses\n  group vox_stem "Vocals Stem" tracks=[]\n  group drums_stem "Drums Stem" tracks=[]\n  group bass_stem "Bass Stem" tracks=[]\n  group other_stem "Other Stem" tracks=[]\n`;
+  const firstMeasureIdx = sourceCode.search(/\bmeasure\s+\d+/i);
+  const nextCode =
+    firstMeasureIdx !== -1
+      ? sourceCode.slice(0, firstMeasureIdx) + stemDefs + '  ' + sourceCode.slice(firstMeasureIdx)
+      : `${sourceCode}\n${stemDefs}`;
+  handleCodeEdit(nextCode);
+};
+
+const handleCompTakeLane = (trackId: string) => {
+  const compedStream = ElasticAudioAndStemEngine.compTakeLanesToMaster([
+    { takeIndex: 1, startBeat: 0, endBeat: 2, tokens: ['c4:8.warp(complex_pro)', 'e4:8', 'g4:4'] },
+    { takeIndex: 2, startBeat: 2, endBeat: 4, tokens: ['a4:4.formant(10%)', 'g4:4.vib'] },
+  ]);
+  const existingMeasures = (compiledScoreState?.events || []).reduce(
+    (maxM: number, ev: any) => Math.max(maxM, ev.measureNumber || 1),
+    0
+  );
+  const nextM = existingMeasures + 1;
+  const compBlock = `\n  %% Comped from Take 1 (Beats 1-2) + Take 2 (Beats 3-4)\n  measure ${nextM} {\n    ${trackId}: ${compedStream}\n  }\n`;
+  const lastBrace = sourceCode.lastIndexOf('}');
+  const nextCode =
+    lastBrace !== -1
+      ? sourceCode.slice(0, lastBrace) + compBlock + sourceCode.slice(lastBrace)
+      : `${sourceCode}\n${compBlock}`;
+  handleCodeEdit(nextCode);
+};
+
+```
+
+
+* Pass `onSeparateStems={handleSeparateStems}` and `onCompTakeLane={handleCompTakeLane}` to `<ArrangementView />`.
+
+
+
+### 3.4 `tests/elastic_warping_comping_stems.test.tsx` - Create Verification Suite for 5 Warp Modes, Take Comping, 4-Stem Separation & Neural Singing
+
+Create `tests/elastic_warping_comping_stems.test.tsx`:
+
+```typescript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { ElasticAudioAndStemEngine } from '../src/audio/ElasticAudioAndStemEngine';
+import { DocumentParser } from '../src/parser/DocumentParser';
+import { StudioAudioEngine } from '../src/audio/StudioAudioEngine';
+import ArrangementView from '../src/components/ArrangementView';
+import '@testing-library/jest-dom';
+
+describe('TDB-724: Elastic Audio Warping (5 Modes), Take Lane Comping, 4-Stem Separation & Neural Singing', () => {
+  it('resolves parameters and processes audio across Beats, Tones, Texture, Re-Pitch, and Complex Pro warp modes', () => {
+    const repitch = ElasticAudioAndStemEngine.resolveWarpParameters('repitch', 2.0, 0, 0, 120);
+    // Doubling stretch duration in Re-Pitch drops pitch by 1 octave (-12 semitones)
+    expect(repitch.pitchShiftSemitones).toBeCloseTo(-12, 3);
+    expect(repitch.preserveFormants).toBe(false);
+
+    const complexPro = ElasticAudioAndStemEngine.resolveWarpParameters('complex_pro', 1.5, 5, 15, 120);
+    expect(complexPro.preserveFormants).toBe(true);
+    expect(complexPro.formantShiftPercent).toBe(15);
+
+    const sr = 44100;
+    const len = 1024;
+    for (const mode of ['beats', 'tones', 'texture', 'repitch', 'complex_pro'] as const) {
+      const left = new Float32Array(len).fill(0.35);
+      const right = new Float32Array(len).fill(0.35);
+      ElasticAudioAndStemEngine.applyWarpOrNeuralToSlice(
+        left,
+        right,
+        0,
+        len,
+        sr,
+        220,
+        mode,
+        3,
+        12,
+        'right',
+        120,
+        mode === 'complex_pro'
+      );
+      expect(Number.isFinite(left[100])).toBe(true);
+      expect(Math.abs(left[100])).toBeGreaterThan(0.01);
+    }
+  });
+
+  it('classifies tracks and separates a full arrangement into Vocals, Drums, Bass, and Other stems', async () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Stem Separation Test", tempo: 120, time: "4/4" }
+        def vox "Lead Vocal" style=neural patch="choir_aahs"
+        def drums "808 Kit" style=grid patch="tenuto_808_kit"
+        def bass "Sub Bass" style=synth patch="808_sub"
+        def lead "Synth Lead" style=synth patch="wavetable"
+
+        measure 1 {
+          vox: c5:2.warp(complex_pro).formant(12%).lyric("Doin'") e5:2.lyric("right") |
+          drums: k:4 s:4 k:4 s:4 |
+          bass: c2:2 g1:2 |
+          lead: [c4 e4 g4]:1 |
+        }
+      }
+    `);
+
+    const stems = ElasticAudioAndStemEngine.separateScoreIntoFourStems(score);
+    expect(stems.vocals.defs.some((d) => d.id === 'vox')).toBe(true);
+    expect(stems.drums.defs.some((d) => d.id === 'drums')).toBe(true);
+    expect(stems.bass.defs.some((d) => d.id === 'bass')).toBe(true);
+    expect(stems.other.defs.some((d) => d.id === 'lead')).toBe(true);
+
+    const stemBlobs = await engine.exportStemWavBlobs(score);
+    expect(stemBlobs.vocals.size).toBeGreaterThan(44100);
+    expect(stemBlobs.drums.size).toBeGreaterThan(44100);
+    expect(stemBlobs.bass.size).toBeGreaterThan(44100);
+    expect(stemBlobs.other.size).toBeGreaterThan(44100);
+  });
+
+  it('comps multi-pass Take Lanes into a master measure and triggers Split 4 Stems and + Take Comp in ArrangementView', () => {
+    const comped = ElasticAudioAndStemEngine.compTakeLanesToMaster([
+      { takeIndex: 1, startBeat: 0, endBeat: 2, tokens: ['c4:4', 'd4:4'] },
+      { takeIndex: 2, startBeat: 2, endBeat: 4, tokens: ['e4:2.vib'] },
+    ]);
+    expect(comped).toBe('c4:4 d4:4 e4:2.vib |');
+
+    const parser = new DocumentParser();
+    const score = parser.compile('pno: c4:4 e4:4 g4:2');
+    const onSeparateStems = vi.fn();
+    const onCompTakeLane = vi.fn();
+
+    render(
+      <ArrangementView onCompTakeLane="{onCompTakeLane}" onSeparateStems="{onSeparateStems}" score="{score}"/>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Separate 4 Stems/i }));
+    expect(onSeparateStems).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /Insert Comp Take Lane/i }));
+    expect(onCompTakeLane).toHaveBeenCalledWith('pno');
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/parser/`
+* `src/mutator/`
+* `src/components/Transport.tsx`, `src/components/Mixer.tsx`, `src/components/DeviceChainDock.tsx`, `src/components/Inspector.tsx`, `src/components/WebGPUCanvas.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero new TypeScript errors.
+2. `npx vitest run tests/elastic_warping_comping_stems.test.tsx tests/arrangement_view_timeline.test.tsx` passes 100%.
+3. `npm run build` (`vite build`) succeeds cleanly.
+4. Notes with `.warp(beats | tones | texture | repitch | complex | complex_pro)` and `style=neural` tracks process through `ElasticAudioAndStemEngine`, `StudioAudioEngine.exportStemWavBlobs()` exports 4 isolated stem WAVs (`vocals`, `drums`, `bass`, `other`), and `ArrangementView` provides `Split 4 Stems` and `+ Take Comp` buttons.
+
+---
+
+## 6. Constraints
+
+Must:
+
+* Batch all file reads in parallel and apply all file modifications in parallel in a single turn.
+
+Must not:
+
+* Edit files sequentially one by one across separate turns.
+* Use the word `"Play"` in any new button text or `aria-label`.
+
+---
+
+## 7. Manual Steps
+
+None required.
+
+---
+
+## 8. Rollback Plan
+
+Revert via `git revert HEAD` or remove `src/audio/ElasticAudioAndStemEngine.ts` and `tests/elastic_warping_comping_stems.test.tsx`, and restore `src/audio/StudioAudioEngine.ts`, `src/components/ArrangementView.tsx`, and `src/components/SplitWorkspace.tsx`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* New file(s): `src/audio/ElasticAudioAndStemEngine.ts`, `tests/elastic_warping_comping_stems.test.tsx`
+* Modified file(s): `src/audio/StudioAudioEngine.ts`, `src/components/ArrangementView.tsx`, `src/components/SplitWorkspace.tsx`
+* Commit message: `feat(warping-stems): add 5-mode Elastic Audio Warping, Take Lane comping, 4-Stem separation, and Neural Singing`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **5 Elastic Audio Warp Modes (`.warp(...)`)** | Parsed in AST but not evaluated in DSP | Evaluates `beats`, `tones`, `texture`, `repitch`, and formant-locked `complex_pro` warping |
+| **4-Stem Separation (`Split 4 Stems`)** | Only exported a single stereo master WAV | Classifies tracks into `vocals`, `drums`, `bass`, and `other` stems, injects stem groups in Arrangement View, and supports 4-stem WAV export |
+| **Take Lane Comping & `style=neural**` | Unimplemented | Comps multi-pass take segments into master `.ten` measures and synthesizes Klottal formant singing on `style=neural` tracks |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-25
+Implementer: AI Agent
+
+```
+
+```

@@ -2,6 +2,7 @@
   "appId": "com.tenuto.studio5",
   "productName": "Tenuto Studio 5",
   "electronVersion": "33.2.1",
+  "npmRebuild": false,
   "directories": {
     "output": "release"
   },
@@ -26,5 +27,23 @@
     "allowCurrentUserHome": false,
     "allowRootDirectory": true,
     "isRelocatable": false
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Tenuto Studio 5"
   }
 }

@@ -8,7 +8,10 @@ export type AbletonSynthEngineType =
   | 'analog'
   | 'collision'
   | 'tension'
-  | 'electric';
+  | 'electric'
+  | 'reese'
+  | 'reese_bass'
+  | 'riser';
 
 export interface AbletonSynthParams {
   engine: AbletonSynthEngineType;
@@ -46,7 +49,10 @@ export class AbletonSynthSuite {
       clean === 'analog' ||
       clean === 'collision' ||
       clean === 'tension' ||
-      clean === 'electric'
+      clean === 'electric' ||
+      clean === 'reese' ||
+      clean === 'reese_bass' ||
+      clean === 'riser'
     );
   }
 
@@ -77,6 +83,19 @@ export class AbletonSynthSuite {
           topologySummary: 'Dual Sync/PWM VCO + Dual Multimode Filters',
           primaryMacroLabel: 'VCO Detune & Filter Drive',
         };
+      case 'reese':
+      case 'reese_bass':
+        return {
+          engineLabel: 'Producer Reese Sub-Bass (3-Saw + Sub)',
+          topologySummary: '3 Wide-Detuned Saws (±28ct) + Phase-Locked Sub + Ladder Drive',
+          primaryMacroLabel: 'Reese Detune & Cutoff',
+        };
+      case 'riser':
+        return {
+          engineLabel: 'Festival Pitch & Filter Riser',
+          topologySummary: '+12st Exponential Pitch Sweep + Opening Ladder Filter',
+          primaryMacroLabel: 'Sweep Depth & Brightness',
+        };
       case 'collision':
         return {
           engineLabel: 'Ableton Collision (Modal Mallet)',
@@ -96,6 +115,8 @@ export class AbletonSynthSuite {
           primaryMacroLabel: 'Tine Bell & Pickup Drive',
         };
       case 'wavetable':
+      case 'supersaw':
+      case 'flutter_pad':
         return {
           engineLabel: 'Ableton Wavetable (2-Osc Morph)',
           topologySummary: 'Dual 24-Harmonic Wavetables + 8-Voice Unison',
@@ -117,6 +138,7 @@ export class AbletonSynthSuite {
     cutoffOverrideHz?: number
   ): AbletonSynthParams {
     const cleanPatch = patchName.trim().toLowerCase() as AbletonSynthEngineType;
+    const isReese = cleanPatch === 'reese' || cleanPatch === 'reese_bass';
     const macros = def?.macros || {};
     const env = def?.env || {};
     const fxParams = def?.fxChain?.find((f) => f.type === cleanPatch)?.params || {};
@@ -137,24 +159,29 @@ export class AbletonSynthSuite {
     const rD = parseFloat(String(fxParams.ratioD ?? env.ratioD ?? 7.0)) || 7.0;
 
     const feedback = norm0to1(fxParams.feedback ?? env.feedback ?? macros.resonance, 0.22);
-    const swarmSpread = norm0to1(
-      fxParams.swarm_spread ?? macros.swarm_spread ?? macros.unison ?? 0.42,
-      0.42
+    let swarmSpread = norm0to1(
+      fxParams.swarm_spread ?? macros.swarm_spread ?? macros.unison ?? (isReese ? 0.78 : 0.42),
+      isReese ? 0.78 : 0.42
     );
+    if (eventPhysics?.detune !== undefined) {
+      swarmSpread = Math.max(0, Math.min(1, eventPhysics.detune / 100));
+    }
     const harmonicTilt = norm0to1(
       fxParams.harmonic_tilt ?? macros.harmonic_tilt ?? macros.osc1_pos ?? 0.55,
       0.55
     );
     const driftAmount = norm0to1(
-      fxParams.drift_amount ?? macros.drift_amount ?? 0.35,
-      0.35
+      fxParams.drift_amount ?? macros.drift_amount ?? (isReese ? 0.65 : 0.35),
+      isReese ? 0.65 : 0.35
     );
     const malletStiffness = norm0to1(
       fxParams.stiffness ?? macros.attack ?? 0.6,
       0.6
     );
 
+    const defaultCutoff = isReese ? 650 : 3200;
     const rawCutoff =
+      eventPhysics?.cutoff ??
       cutoffOverrideHz ??
       Number(
         fxParams.cutoff ??
@@ -162,7 +189,7 @@ export class AbletonSynthSuite {
             ? macros.cutoff > 127
               ? macros.cutoff
               : 180 * Math.pow(10000 / 180, macros.cutoff / 127)
-            : 3200)
+            : defaultCutoff)
       );
 
     const isPluckedOrStruck =
@@ -186,15 +213,15 @@ export class AbletonSynthSuite {
       driftAmount,
       malletStiffness,
       decaySec: isPluckedOrStruck ? 0.38 : 0.45,
-      sustainLevel: isPluckedOrStruck ? 0.32 : 0.78,
+      sustainLevel: isPluckedOrStruck ? 0.32 : isReese ? 0.92 : 0.78,
       releaseSec: isPluckedOrStruck ? 0.24 : 0.22,
-      cutoffHz: Math.max(80, Math.min(14000, isNaN(rawCutoff) ? 3200 : rawCutoff)),
-      resonance: Math.max(0.5, Math.min(10, Number(fxParams.resonance ?? 1.1))),
+      cutoffHz: Math.max(80, Math.min(14000, isNaN(rawCutoff) ? defaultCutoff : rawCutoff)),
+      resonance: Math.max(0.5, Math.min(10, Number(fxParams.resonance ?? (isReese ? 1.8 : 1.1)))),
     };
   }
 
   /**
-   * Schedules a real-time WebAudio voice for Operator, Meld, Drift, Analog, Collision, Tension, or Electric.
+   * Schedules a real-time WebAudio voice for Operator, Meld, Drift, Analog, Collision, Tension, Electric, Reese, or Riser.
    */
   public static scheduleRealtimeVoice(
     ctx: BaseAudioContext,
@@ -207,13 +234,26 @@ export class AbletonSynthSuite {
     params: AbletonSynthParams,
     swell?: 'crescendo' | 'diminuendo',
     startAmp?: number,
-    endAmp?: number
+    endAmp?: number,
+    physics?: AtomicEvent['physics']
   ): { stopAndDisconnect: () => void; fadeOutAndStop: (now: number) => void } {
     const env = ctx.createGain();
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
     filter.Q.setValueAtTime(Math.min(8, params.resonance), startSec);
-    filter.frequency.setValueAtTime(params.cutoffHz, startSec);
+
+    if (physics?.filterSweep && physics.filterSweep.length >= 2) {
+      filter.frequency.setValueAtTime(Math.max(80, Math.min(14000, physics.filterSweep[0])), startSec);
+      filter.frequency.exponentialRampToValueAtTime(
+        Math.max(80, Math.min(14000, physics.filterSweep[1])),
+        startSec + Math.max(0.05, durSec)
+      );
+    } else if (params.engine === 'riser') {
+      filter.frequency.setValueAtTime(320, startSec);
+      filter.frequency.exponentialRampToValueAtTime(9800, startSec + Math.max(0.1, durSec));
+    } else {
+      filter.frequency.setValueAtTime(params.cutoffHz, startSec);
+    }
 
     const activeOscs: OscillatorNode[] = [];
     const activeGains: GainNode[] = [env];
@@ -310,6 +350,57 @@ export class AbletonSynthSuite {
         pGain.connect(filter);
         activeOscs.push(osc);
         activeGains.push(pGain);
+      }
+    } else if (params.engine === 'reese' || params.engine === 'reese_bass') {
+      // 3 wide-detuned sawtooth oscillators (±28 cents) + phase-locked sub-octave sine
+      const detunes = [-28 * params.swarmSpread, 0, 28 * params.swarmSpread];
+      for (const dt of detunes) {
+        const osc = ctx.createOscillator();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(freq, t0);
+        osc.detune.setValueAtTime(dt, t0);
+        if (physics?.mpe?.bend && physics.mpe.bend.length > 1) {
+          const bArr = physics.mpe.bend;
+          const seg = durSec / (bArr.length - 1);
+          for (let b = 0; b < bArr.length; b++) {
+            const bf = Math.max(20, freq * Math.pow(2, bArr[b] / 12));
+            if (b === 0) osc.frequency.setValueAtTime(bf, t0);
+            else osc.frequency.linearRampToValueAtTime(bf, t0 + b * seg);
+          }
+        }
+        const g = ctx.createGain();
+        g.gain.value = 0.34;
+        osc.connect(g);
+        g.connect(filter);
+        activeOscs.push(osc);
+        activeGains.push(g);
+      }
+      const subOsc = ctx.createOscillator();
+      subOsc.type = 'sine';
+      subOsc.frequency.setValueAtTime(Math.max(20, freq * 0.5), t0);
+      const gSub = ctx.createGain();
+      gSub.gain.value = 0.65;
+      subOsc.connect(gSub);
+      gSub.connect(filter);
+      activeOscs.push(subOsc);
+      activeGains.push(gSub);
+    } else if (params.engine === 'riser') {
+      // Sweeps pitch upward by +12st while opening filter cutoff
+      for (let v = 0; v < 3; v++) {
+        const osc = ctx.createOscillator();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(freq, t0);
+        osc.frequency.exponentialRampToValueAtTime(
+          Math.min(12000, freq * 2),
+          t0 + Math.max(0.1, durSec)
+        );
+        osc.detune.setValueAtTime((v - 1) * 18, t0);
+        const g = ctx.createGain();
+        g.gain.value = 0.35;
+        osc.connect(g);
+        g.connect(filter);
+        activeOscs.push(osc);
+        activeGains.push(g);
       }
     } else {
       // Meld (Swarm), Drift, Analog, and Tension (Waveguide String)
@@ -426,9 +517,37 @@ export class AbletonSynthSuite {
   public static computeSampleAtTime(
     t: number,
     freq: number,
-    params: AbletonSynthParams
+    params: AbletonSynthParams,
+    durSec: number = 1.0
   ): number {
     const twoPiF = 2 * Math.PI * freq;
+
+    if (params.engine === 'reese' || params.engine === 'reese_bass') {
+      // 3 wide-detuned sawtooth oscillators (±28 cents) + phase-locked sub-octave sine + saturating ladder drive
+      const spreadRatio = Math.pow(2, (28 * Math.max(0.25, params.swarmSpread)) / 1200);
+      const f1 = twoPiF / spreadRatio;
+      const f2 = twoPiF;
+      const f3 = twoPiF * spreadRatio;
+      let sawSum = 0;
+      for (let h = 1; h <= 6; h++) {
+        if (freq * h > 8000) break;
+        sawSum +=
+          (Math.sin(f1 * h * t) + Math.sin(f2 * h * t) + Math.sin(f3 * h * t)) / (3 * h);
+      }
+      const subSine = Math.sin(twoPiF * 0.5 * t) * 0.72;
+      return Math.tanh((sawSum * 0.68 + subSine) * 1.85);
+    }
+
+    if (params.engine === 'riser') {
+      const sweptFreq = freq * Math.pow(2, Math.min(2, t / Math.max(0.5, durSec)));
+      const w = 2 * Math.PI * sweptFreq;
+      const saw =
+        Math.sin(w * t) +
+        0.5 * Math.sin(w * 2 * t) +
+        0.33 * Math.sin(w * 3 * t) +
+        0.25 * Math.sin(w * 4 * t);
+      return Math.tanh(saw * 0.65);
+    }
 
     if (params.engine === 'operator') {
       const [rA, rB, rC, rD] = params.ratios;
@@ -538,7 +657,8 @@ export class AbletonSynthSuite {
     params: AbletonSynthParams,
     swell?: 'crescendo' | 'diminuendo',
     startAmp?: number,
-    endAmp?: number
+    endAmp?: number,
+    physics?: AtomicEvent['physics']
   ): void {
     const panAngle = ((pan + 1) * 0.5) * (Math.PI * 0.5);
     const gainL = Math.cos(panAngle);
@@ -552,12 +672,27 @@ export class AbletonSynthSuite {
         : Math.min(0.025, durSec * 0.3);
     const releaseSec = params.releaseSec;
 
+    const bendArr = physics?.mpe?.bend;
+    const evalBendSemitones = (u: number): number => {
+      if (!bendArr || bendArr.length === 0) return 0;
+      if (bendArr.length === 1) return bendArr[0];
+      const clampedU = Math.max(0, Math.min(1, u));
+      const scaled = clampedU * (bendArr.length - 1);
+      const idx0 = Math.floor(scaled);
+      const idx1 = Math.min(bendArr.length - 1, idx0 + 1);
+      const frac = scaled - idx0;
+      return bendArr[idx0] + (bendArr[idx1] - bendArr[idx0]) * frac;
+    };
+
     let lpL = 0;
     let lpR = 0;
-    const alpha = Math.min(0.88, (2 * Math.PI * params.cutoffHz) / sampleRate);
 
     for (let i = 0; i < noteFrames; i++) {
       const t = i / sampleRate;
+      const uNorm = Math.min(1, t / Math.max(0.01, durSec));
+      const bendSemi = evalBendSemitones(uNorm);
+      const instFreq = bendSemi !== 0 ? freq * Math.pow(2, bendSemi / 12) : freq;
+
       let env = 1.0;
 
       if (hasSwell) {
@@ -582,12 +717,23 @@ export class AbletonSynthSuite {
         }
       }
 
-      const rawMono = AbletonSynthSuite.computeSampleAtTime(t, freq, params);
-      // Slight stereo chorus dispersion for Meld & Drift
+      const rawMono = AbletonSynthSuite.computeSampleAtTime(t, instFreq, params, durSec);
+      // Slight stereo chorus dispersion for Meld, Drift & Reese
       const stereoSpread =
-        params.engine === 'meld' || params.engine === 'drift'
-          ? Math.sin(2 * Math.PI * (freq * 1.003) * t) * 0.15 * params.swarmSpread
+        params.engine === 'meld' ||
+        params.engine === 'drift' ||
+        params.engine === 'reese' ||
+        params.engine === 'reese_bass'
+          ? Math.sin(2 * Math.PI * (instFreq * 1.003) * t) * 0.15 * params.swarmSpread
           : 0;
+
+      let dynCut = params.cutoffHz;
+      if (physics?.filterSweep && physics.filterSweep.length >= 2) {
+        dynCut = physics.filterSweep[0] + (physics.filterSweep[1] - physics.filterSweep[0]) * uNorm;
+      } else if (params.engine === 'riser') {
+        dynCut = 320 * Math.pow(9800 / 320, uNorm);
+      }
+      const alpha = Math.min(0.88, (2 * Math.PI * dynCut) / sampleRate);
 
       lpL += alpha * (rawMono + stereoSpread - lpL);
       lpR += alpha * (rawMono - stereoSpread - lpR);

@@ -16,6 +16,7 @@ export interface SelectionData {
   swell?: 'crescendo' | 'diminuendo' | '';
   ornament?: string;
   pullMs?: number;
+  detune?: number;
   transposeSemitones?: number;
   sourceStartOffset?: number;
   sourceEndOffset?: number;
@@ -74,6 +75,7 @@ export default function Inspector({
       swell: ev.physics?.swell || '',
       ornament: orn,
       pullMs: ev.physics?.pullMs ?? (ev.physics?.pushMs ? -ev.physics.pushMs : 0),
+      detune: ev.physics?.detune ?? 0,
       line: ev.line ?? 1,
       col: ev.col ?? 1,
       rawToken: ev.rawToken,
@@ -471,6 +473,25 @@ export default function Inspector({
                 onUpdate?.({ pullMs: parseInt(e.target.value, 10) || 0 })
               }
               className="w-14 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-[10px] font-mono text-amber-300 text-center"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-1 mt-1">
+            <label htmlFor="detune-input" className="text-[9px] text-slate-400 font-mono">
+              Detune%
+            </label>
+            <input
+              id="detune-input"
+              type="number"
+              aria-label="Note Detune"
+              min={0}
+              max={100}
+              value={selection.detune ?? 0}
+              onChange={(e) =>
+                onUpdate?.({
+                  detune: Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0)),
+                })
+              }
+              className="w-14 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-[10px] font-mono text-cyan-300 text-center"
             />
           </div>
         </div>

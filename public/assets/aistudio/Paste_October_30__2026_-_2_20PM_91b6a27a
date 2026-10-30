@@ -1,0 +1,1207 @@
+Here are **15 additional synthesizer and sound-design features** that bridge the gap between basic MIDI playback and a real continuous synth workflow (like Serum, Phase Plant, Diva, and Sylenth1), followed by the single-commit **Implementation Contract (`TDB-724`)** that builds the entire list and the continuous track-bus synth architecture.
+
+---
+
+### The 15 Additional Synth & Sound-Design Features
+
+1. **Unison Stack Voicing Modes (`.stack("octaves" | "fifths" | "super")`):** Instead of all unison voices clustering at the same pitch, shifts outer unison voices up `+12st` (octave) and `+7st` (fifth) inside the oscillator stack so a single chord fills the entire frequency spectrum.
+
+
+2. **Windowed Noise Oscillator Layer (`.noise(level, "white" | "pink" | "breath", start..end)`):** Mixes phase-independent white sizzle, warm pink noise, or breathy attack air into the synth voice before the filter, with optional intra-note windowing (e.g., adding white-noise air only during the second half of a sustained chord `0.5..1.0`).
+
+
+3. **Oscillator Hard-Sync Sweep (`.sync(ratio | [startRatio, endRatio])`):** Hard-syncs a slave oscillator to the fundamental pitch and sweeps the sync harmonic ratio (`1.0` to `4.5`) across any slice of a sustained note for classic biting lead harmonics.
+4. **Linear FM & Ring Modulation (`.fm(amount, ratio)` & `.ring(amount, freqHz)`):** Applies audio-rate frequency modulation or ring modulation mid-note for metallic bell partials, aggressive bass growls, or hollow harmonic textures.
+
+
+5. **Pulse-Width Modulation & Waveform Warp (`.pwm(duty, rateHz)` & `.warp_wave("bend" | "mirror", amount)`):** Modulates square-wave duty cycle (`0.05..0.95`) or bends/mirrors the oscillator phase cycle for lush vintage string pads.
+6. **Filter Keytracking (`.keytrack(0..100%)`):** Scales filter cutoff proportionally with note pitch so low bass notes stay warm while high lead notes open up naturally.
+7. **Resonant Comb / Flanger Phase Filter (`.comb(freqHz, feedback)`):** Routes the synth voice through a tuned delay-line comb resonator for liquid, metallic flanging chords.
+
+
+8. **Built-In Sidechain Ducking Envelope Shaper (`.duck(depth)` / `duck=80`):** A sample-accurate quarter-note volume/sub ducking curve (like Kickstart / LFO Tool) built directly into the synth bus so chords pump rhythmically even without a kick drum playing.
+
+
+9. **Rhythmic Trance-Gate Step Chopper (`.gate([1, 0, 1, 1, 0, 1, 0, 1])`):** Chops any held whole note or chord into a smoothed 8-step or 16-step rhythmic gate pattern inside the synth envelope.
+10. **Pitch-Attack Transient "Zap" & Pluck Envelopes (`.pluck(decayMs, semitones)` / `.zap`):** Fires a hyper-fast `15ms` `+12st` or `+24st` pitch spike on the initial transient of a note so festival leads, 808s, and plucks cut through dense mixes.
+
+
+11. **Stereo Haas Widener & Bass-Mono Crossover (`bass_mono=120`, `.haas(delayMs)`, `.width([...])`):** Keeps sub frequencies below `120 Hz` 100% phase-locked in mono while spreading mid/highs ultra-wide across the stereo field, with support for widening a note mid-sustain (`.width([10, 100])`).
+12. **Analog Component Tolerance / Voice Slop (`.analog_slop(0..100%)` / `slop=40`):** Applies organic voice-to-voice micro-tolerances in filter cutoff (`±35 Hz`), envelope speed (`±4%`), and fine pitch (`±2.5 cents`) so chords feel like a real hardware poly-synth.
+
+
+13. **Harmonic Air / Top-End Exciter (`.air(0..100%)` / `air=75`):** High-shelf harmonic saturation above `5.5 kHz` that creates the crispy "straight from the heavens" supersaw sheen.
+
+
+14. **Pre-Drop Reverse Swell (`.pre_swell` / `.reverse_swell`):** Exponentially curves amplitude, filter brightness, and stereo width upward into the end of the bar and cuts off razor-clean at the barline for reverse-chord suction into a drop.
+
+
+15. **Cinematic Open / Drop-2 Chord Auto-Voicing (`.open_voice` / `.drop2`):** Automatically spreads closed chord brackets across octaves (dropping the 2nd highest voice an octave or doubling the bass `-12st` and top air `+12st`) so compact chord tokens sound huge immediately.
+
+
+
+---
+
+### Implementation Contract (`TDB-724`) — Ready for Google AI Studio
+
+Copy and paste the contract below into Google AI Studio. It implements the **True Continuous Synth Workflow** (summed track FX buses, free-running oscillator phases, song-clock LFOs, intra-note time windows `start..end` and multi-point curves `[...]`, automatic polyphonic chord `.glide()`, all 15+ synth features, and real horizontal drag faders in the UI):
+
+```markdown
+# Implementation Contract: True Continuous Synth Workflow, Intra-Note Windowed Detune/Modulation, 20-Feature Synth DSP Suite & Live UI Drag Faders (TDB-724)
+
+**Project:** Tenuto Studio 5
+**Scope:** Create `src/audio/synths/ContinuousSynthEngine.ts` and `tests/continuous_synth_workflow.test.ts`, and upgrade `src/parser/ASTSerializer.ts`, `src/parser/DocumentParser.ts`, `src/audio/SoundfontLibrary.ts`, `src/audio/StudioAudioEngine.ts`, `src/components/DeviceChainDock.tsx`, and `src/components/Inspector.tsx` to transition Tenuto from isolated MIDI-style note triggering to a true continuous synthesizer workflow with intra-note time-windowed detune/modulation (`0.4..0.85` or `[0, 85, 20]`), polyphonic chord `.glide()`, continuous per-track FX bus summing, free-running oscillator phases, song-clock LFOs, 20 producer synth features, and real horizontal UI drag faders.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+**Execution Mode:** Parallel Batch Edits (Read all target files in parallel in a single turn, then apply all file edits in parallel in a single batched tool-call turn - NEVER edit files sequentially one by one).
+
+---
+
+## 1. Objective
+Currently, Tenuto Studio 5 schedules synth notes like isolated MIDI events:
+1. Oscillators reset to `phase = 0` and LFOs reset to `t = 0` on every note, causing phase-locked laser clicks on supersaw attacks and breaking continuous filter/flutter sweeps across chords.
+2. In `StudioAudioEngine.exportWavBlob()`, `applyItemFx` runs filters, saturation (`roar`), and multiband compression (`ott`) on *each individual note in isolation* before summing them, rather than summing all voices of a chord into a shared **Track Synth Bus** where chord notes intermodulate and glue together.
+3. Parameters like detune, filter cutoff, drive, and width are static for the entire duration of a note rather than supporting **intra-note time windows** (e.g. `.detune(85%, 0.35..0.85)` or `.detune([0, 90, 15])` to detune only a specific slice of a sustained note).
+4. Polyphonic chords with `.glide(180ms)` do not automatically voice-lead their individual notes into the next chord, and `DeviceChainDock.tsx` lacks real horizontal `<input type="range">` drag faders and 1-click producer synth rigs.
+
+This contract implements the complete **True Continuous Synth Architecture (`ContinuousSynthEngine.ts`)**, wires it into the parser, audio engine, and UI docks, and verifies all capabilities with `tests/continuous_synth_workflow.test.ts`.
+
+---
+
+## 2. Files To Modify
+
+> **PARALLEL EXECUTION DIRECTIVE:** You MUST read all target files in a single parallel batch call, and you MUST apply all file edits below simultaneously in a single parallel tool-call turn. Do NOT apply edits sequentially one file per turn.
+
+### 2.1 `src/parser/ASTSerializer.ts` - Add Intra-Note Windowed Modifiers & 20-Feature Synth Physics
+In `src/parser/ASTSerializer.ts`:
+
+1. Add `WindowedModulationSpec` and the new synth properties to `EventPhysics`:
+```typescript
+export interface WindowedModulationSpec {
+  peak: number;
+  startNorm: number; // 0.0 .. 1.0 within the sustained note
+  endNorm: number;   // 0.0 .. 1.0 within the sustained note
+  curve?: number[];  // Optional multi-point trajectory across the note
+}
+
+```
+
+And inside `export interface EventPhysics`, add:
+
+```typescript
+  detune?: number;
+  detuneMod?: WindowedModulationSpec;
+  detuneCents?: number;
+  detuneCentsMod?: WindowedModulationSpec;
+  cutoff?: number;
+  filterSweep?: [number, number];
+  cutoffMod?: WindowedModulationSpec;
+  resonance?: number;
+  flutterRateHz?: number;
+  flutterDepth?: number;
+  flutterCurve?: number[];
+  warbleDepth?: number;
+  warbleRateHz?: number;
+  pitchDipSt?: number;
+  stackMode?: 'octaves' | 'fifths' | 'seventh' | 'super' | 'none';
+  noiseLevel?: number;
+  noiseColor?: 'white' | 'pink' | 'breath';
+  noiseMod?: WindowedModulationSpec;
+  syncRatio?: number;
+  syncSweep?: [number, number];
+  fmAmount?: number;
+  fmRatio?: number;
+  ringAmount?: number;
+  ringFreqHz?: number;
+  pwmDuty?: number;
+  pwmRateHz?: number;
+  waveWarpMode?: 'bend' | 'mirror' | 'quantize';
+  waveWarpAmount?: number;
+  keytrack?: number;
+  combFreqHz?: number;
+  combFeedback?: number;
+  duckDepth?: number;
+  tranceGate?: number[];
+  pluckDecayMs?: number;
+  pluckSemitones?: number;
+  haasDelayMs?: number;
+  stereoWidth?: number;
+  widthCurve?: number[];
+  bassMonoHz?: number;
+  analogSlop?: number;
+  airSheen?: number;
+  preSwell?: boolean;
+  openVoice?: boolean;
+  driveMod?: WindowedModulationSpec;
+  ottAmount?: number;
+  reverbThrow?: WindowedModulationSpec;
+  echoThrow?: WindowedModulationSpec;
+
+```
+
+2. Add a helper method `parseWindowedOrCurveArg(inner: string, defaultScale: number = 1)` inside `ASTSerializer` (right above `parseModifiersToPhysics`):
+
+```typescript
+  private parseWindowedOrCurveArg(
+    inner: string,
+    maxNormThreshold: number = 100
+  ): { scalar: number; spec: WindowedModulationSpec } | null {
+    const trimmed = inner.trim();
+    // Case 1: Array curve e.g. [0, 85, 20]
+    const arrMatch = trimmed.match(/^\[([^\]]+)\](?:\s*,\s*([0-9.]+)\.\.([0-9.]+))?$/);
+    if (arrMatch) {
+      const vals = arrMatch[1]
+        .split(',')
+        .map((s) => parseFloat(s.replace(/%|hz|c|st|ms/gi, '').trim()))
+        .filter((n) => !isNaN(n));
+      if (vals.length === 0) return null;
+      const startNorm = arrMatch[2] !== undefined ? Math.max(0, Math.min(1, parseFloat(arrMatch[2]))) : 0;
+      const endNorm = arrMatch[3] !== undefined ? Math.max(startNorm, Math.min(1, parseFloat(arrMatch[3]))) : 1;
+      const peak = Math.max(...vals.map((v) => Math.abs(v)));
+      return {
+        scalar: vals[vals.length - 1],
+        spec: { peak, startNorm, endNorm, curve: vals },
+      };
+    }
+
+    // Case 2: Value with optional window e.g. (85%, 0.35..0.85) or (85)
+    const parts = trimmed.split(',').map((s) => s.trim());
+    const rawVal = parseFloat(parts[0].replace(/%|hz|c|st|ms/gi, ''));
+    if (isNaN(rawVal)) return null;
+    const val =
+      !parts[0].includes('%') && maxNormThreshold === 100 && rawVal > 0 && rawVal <= 1
+        ? rawVal * 100
+        : rawVal;
+
+    let startNorm = 0.0;
+    let endNorm = 1.0;
+    if (parts[1]) {
+      const rangeMatch = parts[1].match(/^([0-9.]+)\.\.([0-9.]+)$/);
+      if (rangeMatch) {
+        startNorm = Math.max(0, Math.min(1, parseFloat(rangeMatch[1])));
+        endNorm = Math.max(startNorm, Math.min(1, parseFloat(rangeMatch[2])));
+      }
+    }
+
+    return {
+      scalar: val,
+      spec: { peak: val, startNorm, endNorm },
+    };
+  }
+
+```
+
+3. Inside `parseModifiersToPhysics` in `src/parser/ASTSerializer.ts`, add parsing for all the new synth modifiers right after the `glide(...)` branch:
+
+```typescript
+      } else if (mod.startsWith('detune(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(7, -1), 100);
+        if (parsed) {
+          physics.detune = Math.max(0, Math.min(100, parsed.scalar));
+          physics.detuneMod = parsed.spec;
+        }
+      } else if (mod.startsWith('detune_cents(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(13, -1), 1200);
+        if (parsed) {
+          physics.detuneCents = parsed.scalar;
+          physics.detuneCentsMod = parsed.spec;
+        }
+      } else if (mod.startsWith('cutoff(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(7, -1), 16000);
+        if (parsed) {
+          physics.cutoff = Math.max(60, Math.min(16000, parsed.scalar));
+          physics.cutoffMod = parsed.spec;
+        }
+      } else if (mod.startsWith('res(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(4, -1));
+        if (!isNaN(v)) physics.resonance = Math.max(0.5, Math.min(18, v));
+      } else if (mod.startsWith('filter(') && mod.endsWith(')')) {
+        const inner = mod.slice(7, -1).trim();
+        if (inner.startsWith('[')) {
+          const parsed = this.parseWindowedOrCurveArg(inner, 16000);
+          if (parsed) {
+            physics.cutoff = Math.max(60, Math.min(16000, parsed.scalar));
+            physics.cutoffMod = parsed.spec;
+          }
+        } else {
+          const parts = inner.split(',').map((s) => parseFloat(s.replace(/hz/gi, '').trim()));
+          if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            const c0 = Math.max(60, Math.min(16000, parts[0]));
+            const c1 = Math.max(60, Math.min(16000, parts[1]));
+            physics.filterSweep = [c0, c1];
+            physics.cutoff = Math.round((c0 + c1) / 2);
+            physics.cutoffMod = { peak: Math.max(c0, c1), startNorm: 0, endNorm: 1, curve: [c0, c1] };
+          }
+        }
+      } else if (mod.startsWith('flutter(') && mod.endsWith(')')) {
+        const inner = mod.slice(8, -1).trim();
+        const parsed = this.parseWindowedOrCurveArg(inner, 32);
+        if (parsed) {
+          physics.flutterRateHz = Math.max(1, Math.min(32, parsed.scalar));
+          physics.flutterDepth = 0.65;
+          if (parsed.spec.curve) physics.flutterCurve = parsed.spec.curve;
+        }
+      } else if (mod === 'flutter') {
+        physics.flutterRateHz = 12;
+        physics.flutterDepth = 0.65;
+      } else if (mod.startsWith('warble(') && mod.endsWith(')')) {
+        const parts = mod.slice(7, -1).split(',').map((s) => parseFloat(s.replace(/%|hz/gi, '').trim()));
+        if (!isNaN(parts[0])) physics.warbleDepth = Math.max(0, Math.min(100, parts[0]));
+        if (parts[1] !== undefined && !isNaN(parts[1])) physics.warbleRateHz = Math.max(0.2, Math.min(16, parts[1]));
+      } else if (mod === 'warble') {
+        physics.warbleDepth = 45;
+        physics.warbleRateHz = 3.2;
+      } else if ((mod.startsWith('pitch_dip(') || mod.startsWith('tapestop(')) && mod.endsWith(')')) {
+        const inner = mod.slice(mod.indexOf('(') + 1, -1).replace(/st/gi, '');
+        const val = parseFloat(inner);
+        if (!isNaN(val)) {
+          const dip = val > 0 ? -val : val;
+          physics.pitchDipSt = Math.max(-24, Math.min(24, dip));
+          physics.mpe = { ...(physics.mpe || {}), bend: [0, 0, physics.pitchDipSt, 0] };
+        }
+      } else if (mod === 'tapestop' || mod === 'pitch_dip') {
+        physics.pitchDipSt = -7;
+        physics.mpe = { ...(physics.mpe || {}), bend: [0, 0, -7, 0] };
+      } else if (mod.startsWith('stack(') && mod.endsWith(')')) {
+        const mode = mod.slice(6, -1).replace(/^["']|["']$/g, '').trim().toLowerCase();
+        if (mode === 'octaves' || mode === 'fifths' || mode === 'seventh' || mode === 'super') {
+          physics.stackMode = mode;
+        }
+      } else if (mod.startsWith('noise(') && mod.endsWith(')')) {
+        const parts = mod.slice(6, -1).split(',').map((s) => s.trim());
+        const lvl = parseFloat(parts[0].replace('%', ''));
+        if (!isNaN(lvl)) {
+          physics.noiseLevel = lvl > 1 ? lvl / 100 : Math.max(0, Math.min(1, lvl));
+        }
+        const colorArg = parts.find((p) => /^(?:"|')?(white|pink|breath)(?:"|')?$/i.test(p));
+        if (colorArg) {
+          physics.noiseColor = colorArg.replace(/["']/g, '').toLowerCase() as 'white' | 'pink' | 'breath';
+        }
+        const rangeArg = parts.find((p) => /^[0-9.]+\.\.[0-9.]+$/.test(p));
+        if (rangeArg) {
+          const [sN, eN] = rangeArg.split('..').map(Number);
+          physics.noiseMod = { peak: physics.noiseLevel ?? 0.3, startNorm: sN, endNorm: eN };
+        }
+      } else if (mod.startsWith('sync(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(5, -1), 16);
+        if (parsed) {
+          physics.syncRatio = Math.max(1, Math.min(16, parsed.scalar));
+          if (parsed.spec.curve && parsed.spec.curve.length >= 2) {
+            physics.syncSweep = [parsed.spec.curve[0], parsed.spec.curve[parsed.spec.curve.length - 1]];
+          }
+        }
+      } else if (mod.startsWith('fm(') && mod.endsWith(')')) {
+        const parts = mod.slice(3, -1).split(',').map((s) => parseFloat(s.replace('%', '').trim()));
+        if (!isNaN(parts[0])) physics.fmAmount = parts[0] > 1 ? parts[0] / 100 : parts[0];
+        if (parts[1] !== undefined && !isNaN(parts[1])) physics.fmRatio = Math.max(0.25, Math.min(16, parts[1]));
+      } else if (mod.startsWith('ring(') && mod.endsWith(')')) {
+        const parts = mod.slice(5, -1).split(',').map((s) => parseFloat(s.replace(/%|hz/gi, '').trim()));
+        if (!isNaN(parts[0])) physics.ringAmount = parts[0] > 1 ? parts[0] / 100 : parts[0];
+        if (parts[1] !== undefined && !isNaN(parts[1])) physics.ringFreqHz = Math.max(20, Math.min(4000, parts[1]));
+      } else if (mod.startsWith('pwm(') && mod.endsWith(')')) {
+        const parts = mod.slice(4, -1).split(',').map((s) => parseFloat(s.replace(/%|hz/gi, '').trim()));
+        if (!isNaN(parts[0])) physics.pwmDuty = Math.max(0.05, Math.min(0.95, parts[0] > 1 ? parts[0] / 100 : parts[0]));
+        if (parts[1] !== undefined && !isNaN(parts[1])) physics.pwmRateHz = Math.max(0.1, Math.min(16, parts[1]));
+      } else if (mod.startsWith('warp_wave(') && mod.endsWith(')')) {
+        const parts = mod.slice(10, -1).split(',').map((s) => s.trim());
+        const m = parts[0].replace(/["']/g, '').toLowerCase();
+        if (m === 'bend' || m === 'mirror' || m === 'quantize') physics.waveWarpMode = m;
+        if (parts[1]) {
+          const amt = parseFloat(parts[1].replace('%', ''));
+          if (!isNaN(amt)) physics.waveWarpAmount = amt > 1 ? amt / 100 : amt;
+        }
+      } else if (mod.startsWith('keytrack(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(9, -1).replace('%', ''));
+        if (!isNaN(v)) physics.keytrack = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('comb(') && mod.endsWith(')')) {
+        const parts = mod.slice(5, -1).split(',').map((s) => parseFloat(s.replace(/hz|%/gi, '').trim()));
+        if (!isNaN(parts[0])) physics.combFreqHz = Math.max(60, Math.min(4000, parts[0]));
+        if (parts[1] !== undefined && !isNaN(parts[1])) {
+          physics.combFeedback = Math.max(0.1, Math.min(0.92, parts[1] > 1 ? parts[1] / 100 : parts[1]));
+        }
+      } else if (mod.startsWith('duck(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(5, -1).replace('%', ''));
+        if (!isNaN(v)) physics.duckDepth = Math.max(0, Math.min(1, v > 1 ? v / 100 : v));
+      } else if (mod === 'duck') {
+        physics.duckDepth = 0.78;
+      } else if (mod.startsWith('gate(') && mod.endsWith(')')) {
+        const inner = mod.slice(5, -1).replace(/[\[\]]/g, '');
+        const steps = inner.split(/[\s,]+/).map(Number).filter((n) => !isNaN(n));
+        if (steps.length > 0) physics.tranceGate = steps;
+      } else if (mod.startsWith('pluck(') && mod.endsWith(')')) {
+        const parts = mod.slice(6, -1).split(',').map((s) => parseFloat(s.replace(/ms|st/gi, '').trim()));
+        physics.pluckDecayMs = !isNaN(parts[0]) ? Math.max(4, Math.min(120, parts[0])) : 22;
+        physics.pluckSemitones = parts[1] !== undefined && !isNaN(parts[1]) ? parts[1] : 12;
+      } else if (mod === 'zap' || mod === 'pluck') {
+        physics.pluckDecayMs = 18;
+        physics.pluckSemitones = 18;
+      } else if (mod.startsWith('haas(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(5, -1).replace(/ms/gi, ''));
+        if (!isNaN(v)) physics.haasDelayMs = Math.max(0.5, Math.min(35, v));
+      } else if (mod.startsWith('width(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(6, -1), 200);
+        if (parsed) {
+          physics.stereoWidth = Math.max(0, Math.min(200, parsed.scalar));
+          if (parsed.spec.curve) physics.widthCurve = parsed.spec.curve;
+        }
+      } else if (mod.startsWith('analog_slop(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(12, -1).replace('%', ''));
+        if (!isNaN(v)) physics.analogSlop = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('air(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(4, -1).replace('%', ''));
+        if (!isNaN(v)) physics.airSheen = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod === 'pre_swell' || mod === 'reverse_swell') {
+        physics.preSwell = true;
+      } else if (mod === 'open_voice' || mod === 'drop2') {
+        physics.openVoice = true;
+      } else if (mod.startsWith('drive(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(6, -1), 100);
+        if (parsed) physics.driveMod = parsed.spec;
+      } else if (mod.startsWith('ott(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(4, -1).replace('%', ''));
+        if (!isNaN(v)) physics.ottAmount = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('reverb_throw(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(13, -1), 100);
+        if (parsed) physics.reverbThrow = parsed.spec;
+      } else if (mod.startsWith('echo_throw(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(11, -1), 100);
+        if (parsed) physics.echoThrow = parsed.spec;
+
+```
+
+### 2.2 `src/audio/synths/ContinuousSynthEngine.ts` - Create the True Continuous Synth & Intra-Note Modulation Engine
+
+Create `src/audio/synths/ContinuousSynthEngine.ts`:
+
+```typescript
+import { AtomicEvent, WindowedModulationSpec } from '../../parser/ASTSerializer';
+import { TrackDefinition } from '../../parser/DocumentParser';
+
+export interface ContinuousVoiceNote {
+  event: AtomicEvent;
+  def?: TrackDefinition;
+  startSec: number;
+  durSec: number;
+  freq: number;
+  targetGlideFreq?: number;
+  glideDurationSec?: number;
+  midi: number;
+  amp: number;
+  startAmp: number;
+  endAmp: number;
+  swell?: 'crescendo' | 'diminuendo';
+  pan: number;
+}
+
+export class ContinuousSynthEngine {
+  /**
+   * Evaluates a WindowedModulationSpec (`peak`, `startNorm..endNorm`, or multi-point `curve`)
+   * at normalized note progress `u` in `[0.0, 1.0]`, applying smooth cosine feathering at window
+   * edges so mid-note detune/filter/noise/drive activations never click.
+   */
+  public static evaluateWindowedModulation(
+    spec: WindowedModulationSpec | undefined,
+    u: number,
+    defaultVal: number = 0
+  ): number {
+    if (!spec) return defaultVal;
+    const clampedU = Math.max(0, Math.min(1, u));
+
+    if (clampedU < spec.startNorm || clampedU > spec.endNorm) {
+      return defaultVal;
+    }
+
+    const windowSpan = Math.max(1e-5, spec.endNorm - spec.startNorm);
+    const localU = (clampedU - spec.startNorm) / windowSpan;
+
+    // Smooth raised-cosine edge feathering when a sub-window (startNorm > 0 or endNorm < 1) is used
+    let edgeFeather = 1.0;
+    const featherWidth = 0.12;
+    if (spec.startNorm > 0.001 && localU < featherWidth) {
+      edgeFeather = 0.5 * (1 - Math.cos((Math.PI * localU) / featherWidth));
+    } else if (spec.endNorm < 0.999 && localU > 1 - featherWidth) {
+      edgeFeather = 0.5 * (1 - Math.cos((Math.PI * (1 - localU)) / featherWidth));
+    }
+
+    if (spec.curve && spec.curve.length > 0) {
+      if (spec.curve.length === 1) return spec.curve[0] * edgeFeather;
+      const scaled = localU * (spec.curve.length - 1);
+      const i0 = Math.floor(scaled);
+      const i1 = Math.min(spec.curve.length - 1, i0 + 1);
+      const frac = scaled - i0;
+      // Smoothstep S-curve interpolation between curve points
+      const smoothFrac = frac * frac * (3 - 2 * frac);
+      const val = spec.curve[i0] + (spec.curve[i1] - spec.curve[i0]) * smoothFrac;
+      return defaultVal + (val - defaultVal) * edgeFeather;
+    }
+
+    return defaultVal + (spec.peak - defaultVal) * edgeFeather;
+  }
+
+  /**
+   * Automatically pairs sorted voices of consecutive chords/notes on the same track & voice
+   * when `.glide(ms)` is present, populating both `mpe.bend` (for WebAudio/UI) and exact
+   * target frequency slewing (`glideMs`) so every voice in a 5-note chord glides smoothly
+   * along its shortest voice-leading path into the next chord.
+   */
+  public static linkPolyphonicChordGlides(events: AtomicEvent[]): void {
+    const stepsByTrackVoice = new Map<
+      string,
+      Array<{ startWhole: number; durWhole: number; notes: AtomicEvent[] }>
+    >();
+
+    for (const ev of events) {
+      if (!ev.pitch || ev.pitch.isRest || ev.pitch.isSpacer || !ev.startTime) continue;
+      const key = `${ev.trackId || 'pno'}:${ev.voiceId || 'v1'}`;
+      let steps = stepsByTrackVoice.get(key);
+      if (!steps) {
+        steps = [];
+        stepsByTrackVoice.set(key, steps);
+      }
+      const st = ev.startTime.numerator / Math.max(1, ev.startTime.denominator);
+      const dur = ev.duration.numerator / Math.max(1, ev.duration.denominator);
+      const last = steps[steps.length - 1];
+      if (last && Math.abs(last.startWhole - st) < 1e-6) {
+        last.notes.push(ev);
+      } else {
+        steps.push({ startWhole: st, durWhole: dur, notes: [ev] });
+      }
+    }
+
+    for (const steps of stepsByTrackVoice.values()) {
+      steps.sort((a, b) => a.startWhole - b.startWhole);
+      for (let i = 0; i < steps.length - 1; i++) {
+        const currStep = steps[i];
+        const nextStep = steps[i + 1];
+        const hasGlide = currStep.notes.some((n) => (n.physics?.glideMs ?? 0) > 0);
+        if (!hasGlide) continue;
+
+        const currSorted = [...currStep.notes].sort((a, b) => a.pitch.midi - b.pitch.midi);
+        const nextSorted = [...nextStep.notes].sort((a, b) => a.pitch.midi - b.pitch.midi);
+
+        for (let vIdx = 0; vIdx < currSorted.length; vIdx++) {
+          const srcNote = currSorted[vIdx];
+          const targetIdx = Math.min(nextSorted.length - 1, vIdx);
+          const dstNote = nextSorted[targetIdx];
+          if (!dstNote) continue;
+
+          const semitoneDelta = dstNote.pitch.midi - srcNote.pitch.midi;
+          if (!srcNote.physics) srcNote.physics = {};
+          if (!srcNote.physics.mpe?.bend) {
+            srcNote.physics.mpe = {
+              ...(srcNote.physics.mpe || {}),
+              bend: [0, 0, 0, 0, semitoneDelta],
+            };
+          }
+          srcNote.physics.legato = true;
+        }
+      }
+    }
+  }
+
+  public static isContinuousSynthPatch(patch?: string, style?: string, physics?: AtomicEvent['physics']): boolean {
+    const p = (patch || '').trim().toLowerCase();
+    const s = (style || '').trim().toLowerCase();
+    if (
+      p === 'supersaw' ||
+      p === 'reese' ||
+      p === 'reese_bass' ||
+      p === 'flutter_pad' ||
+      p === 'riser' ||
+      p === 'pluck_lead' ||
+      p === 'acid_lead'
+    ) {
+      return true;
+    }
+    if (s === 'grid') return false;
+    return Boolean(
+      physics?.detuneMod ||
+        physics?.detuneCentsMod ||
+        physics?.cutoffMod ||
+        physics?.flutterRateHz ||
+        physics?.warbleDepth ||
+        physics?.stackMode ||
+        physics?.noiseLevel ||
+        physics?.syncRatio ||
+        physics?.fmAmount ||
+        physics?.ringAmount ||
+        physics?.pwmDuty ||
+        physics?.waveWarpMode ||
+        physics?.combFreqHz ||
+        physics?.duckDepth ||
+        physics?.tranceGate ||
+        physics?.pluckDecayMs ||
+        physics?.haasDelayMs ||
+        physics?.analogSlop ||
+        physics?.airSheen ||
+        physics?.preSwell
+    );
+  }
+
+  /**
+   * Renders a note/chord voice into a track's stereo stem (`trackLeft`, `trackRight`) using
+   * free-running oscillator phases, global song-clock LFOs, intra-note windowed detune/filter/noise/drive,
+   * and all 20 continuous synth features.
+   */
+  public static renderVoiceIntoTrackStem(
+    trackLeft: Float32Array,
+    trackRight: Float32Array,
+    startFrame: number,
+    noteFrames: number,
+    sampleRate: number,
+    tempoBpm: number,
+    voiceSeed: number,
+    item: ContinuousVoiceNote
+  ): void {
+    const endFrame = Math.min(trackLeft.length, trackRight.length, startFrame + noteFrames);
+    const len = endFrame - startFrame;
+    if (len <= 0) return;
+
+    const phys = item.event.physics;
+    const macros = item.def?.macros || {};
+    const patch = (item.event.patch || item.def?.patch || 'supersaw').toLowerCase();
+
+    const isReese = patch.includes('reese');
+    const isRiser = patch.includes('riser');
+    const isFlutterPatch = patch.includes('flutter');
+    const isPluckPatch = patch.includes('pluck') || patch.includes('acid');
+
+    // 1. Analog Component Tolerance / Slop (organic per-voice variance)
+    const slopAmount = Math.max(0, Math.min(1, ((phys?.analogSlop ?? macros.slop ?? 18) as number) / 100));
+    const slopRand = Math.sin((voiceSeed + 1) * 12.9898) * 43758.5453;
+    const slopBipolar = (slopRand - Math.floor(slopRand)) * 2 - 1;
+    const slopFreqScalar = Math.pow(2, (slopBipolar * 3.5 * slopAmount) / 1200);
+    const slopCutoffScalar = 1 + slopBipolar * 0.04 * slopAmount;
+
+    // 2. Unison Voices & Free-Running Initial Phases (prevents laser-click phase cancellation!)
+    const baseDetunePct =
+      phys?.detune ??
+      (macros.unison !== undefined ? Number(macros.unison) : isReese ? 72 : 68);
+    const numUnison = isReese ? 3 : 7;
+    const unisonPhases = new Float64Array(numUnison);
+    const unisonPans = new Float32Array(numUnison);
+    const unisonStackRatios = new Float32Array(numUnison);
+
+    const stackMode = phys?.stackMode || (patch === 'supersaw' ? 'super' : 'none');
+
+    for (let u = 0; u < numUnison; u++) {
+      // Deterministic free-running initial phase in [0, 2*PI)
+      const pSeed = Math.sin((voiceSeed * 17 + u * 53 + 7) * 78.233) * 43758.5453;
+      unisonPhases[u] = (pSeed - Math.floor(pSeed)) * 2 * Math.PI;
+      unisonPans[u] = numUnison > 1 ? (u / (numUnison - 1)) * 2 - 1 : 0;
+
+      if (stackMode === 'octaves' && u >= numUnison - 2) {
+        unisonStackRatios[u] = 2.0; // +12st octave layer
+      } else if (stackMode === 'fifths' && u === numUnison - 1) {
+        unisonStackRatios[u] = 1.4983; // +7st fifth layer
+      } else if (stackMode === 'seventh' && u === numUnison - 1) {
+        unisonStackRatios[u] = 1.8877; // +11st maj7 layer
+      } else {
+        unisonStackRatios[u] = 1.0;
+      }
+    }
+
+    let subPhase = 0;
+    let fmModPhase = 0;
+    let lpL = 0;
+    let bpL = 0;
+    let lpR = 0;
+    let bpR = 0;
+    let pinkState = 0;
+
+    // Comb filter delay line if `.comb()` is active
+    const combSamples = phys?.combFreqHz
+      ? Math.max(8, Math.min(2048, Math.floor(sampleRate / phys.combFreqHz)))
+      : 0;
+    const combBufL = combSamples > 0 ? new Float32Array(combSamples) : null;
+    const combBufR = combSamples > 0 ? new Float32Array(combSamples) : null;
+    let combIdx = 0;
+
+    // Filter Keytracking (scales cutoff with pitch relative to C4 = MIDI 60)
+    const keytrackPct = (phys?.keytrack ?? macros.keytrack ?? 35) / 100;
+    const keytrackRatio = Math.pow(2, ((item.midi - 60) * keytrackPct) / 12);
+
+    const baseCutoffHz =
+      phys?.cutoff ??
+      (macros.cutoff !== undefined
+        ? macros.cutoff > 127
+          ? Number(macros.cutoff)
+          : 180 * Math.pow(12000 / 180, Number(macros.cutoff) / 127)
+        : isReese
+          ? 520
+          : 7800);
+
+    const baseRes = phys?.resonance ?? (isPluckPatch ? 3.2 : 1.2);
+    const qDamp = Math.max(0.12, Math.min(1.0, 1.0 / Math.max(0.6, baseRes * 0.7)));
+    const twoPiOverSr = (2 * Math.PI) / sampleRate;
+    const durFrames = Math.max(1, Math.floor(item.durSec * sampleRate));
+    const secPerBeat = 60 / Math.max(40, tempoBpm || 120);
+
+    for (let i = 0; i < len; i++) {
+      const absFrame = startFrame + i;
+      const songTimeSec = absFrame / sampleRate;
+      const t = i / sampleRate;
+      const normU = Math.min(1.0, i / durFrames);
+
+      // 3. Amplitude Envelope (supports standard ADSR, .cresc/.dim swells, and .pre_swell reverse suction)
+      let ampEnv = 1.0;
+      if (phys?.preSwell) {
+        if (i <= durFrames) {
+          ampEnv = Math.pow(normU, 2.6);
+        } else {
+          // Razor-clean cut at barline for pre-drop reverse suction
+          const rel = (i - durFrames) / Math.max(1, Math.floor(0.025 * sampleRate));
+          ampEnv = Math.max(0, 1 - rel);
+        }
+      } else if (item.swell === 'crescendo' || item.swell === 'diminuendo') {
+        const sA = item.startAmp;
+        const eA = item.endAmp;
+        if (i <= durFrames) {
+          ampEnv = sA + (eA - sA) * normU;
+        } else {
+          const relProg = (i - durFrames) / Math.max(1, len - durFrames);
+          ampEnv = eA * Math.pow(Math.max(0, 1 - relProg), 1.6);
+        }
+      } else {
+        const attackSec = isPluckPatch ? 0.003 : 0.008;
+        if (t < attackSec) {
+          ampEnv = t / attackSec;
+        } else if (i <= durFrames) {
+          ampEnv = isPluckPatch ? 0.35 + 0.65 * Math.exp(-(t - attackSec) * 6.5) : 0.92;
+        } else {
+          const relProg = (i - durFrames) / Math.max(1, len - durFrames);
+          ampEnv = 0.92 * Math.pow(Math.max(0, 1 - relProg), 1.6);
+        }
+      }
+
+      // 4. Rhythmic Trance Gate Chopper (`.gate([1, 0, 1, 1, ...])`)
+      if (phys?.tranceGate && phys.tranceGate.length > 0) {
+        const stepCount = phys.tranceGate.length;
+        const exactPos = normU * stepCount;
+        const stepIdx = Math.min(stepCount - 1, Math.floor(exactPos));
+        const stepFrac = exactPos - stepIdx;
+        const gateTarget = phys.tranceGate[stepIdx] > 0 ? 1.0 : 0.08;
+        const nextTarget = phys.tranceGate[(stepIdx + 1) % stepCount] > 0 ? 1.0 : 0.08;
+        const smoothEdge = stepFrac > 0.82 ? (stepFrac - 0.82) / 0.18 : 0;
+        ampEnv *= gateTarget * (1 - smoothEdge) + nextTarget * smoothEdge;
+      }
+
+      // 5. Global Song-Clock Flutter LFO (`.flutter(rateHz | [startRate, endRate])`)
+      if (phys?.flutterRateHz || isFlutterPatch) {
+        let rateHz = phys?.flutterRateHz ?? 12.0;
+        if (phys?.flutterCurve && phys.flutterCurve.length >= 2) {
+          const c0 = phys.flutterCurve[0];
+          const c1 = phys.flutterCurve[phys.flutterCurve.length - 1];
+          rateHz = c0 + (c1 - c0) * normU;
+        }
+        const depth = phys?.flutterDepth ?? 0.65;
+        const lfo = 0.5 + 0.5 * Math.sin(2 * Math.PI * rateHz * songTimeSec);
+        ampEnv *= 1 - depth * (1 - lfo);
+      }
+
+      // 6. Sample-Accurate Quarter-Note Sidechain Ducking Shaper (`.duck(depth)`)
+      const duckDepth = phys?.duckDepth ?? (macros.duck ? Number(macros.duck) / 100 : 0);
+      if (duckDepth > 0.01) {
+        const beatPhase = (songTimeSec / secPerBeat) % 1.0;
+        // S-curve sidechain recovery over each quarter-note beat
+        const recovery = beatPhase < 0.04 ? 0.0 : Math.min(1.0, (beatPhase - 0.04) / 0.58);
+        const shaped = recovery * recovery * (3 - 2 * recovery);
+        ampEnv *= 1 - duckDepth * (1 - shaped);
+      }
+
+      // 7. Continuous Pitch Trajectory (MPE / Polyphonic Chord Glide + Pitch Dip + Pluck Zap + Warble + Fine Cents)
+      let currentFreq = item.freq * slopFreqScalar;
+
+      if (isRiser) {
+        currentFreq *= Math.pow(2, normU); // +12st riser sweep
+      }
+
+      if (phys?.mpe?.bend && phys.mpe.bend.length > 0) {
+        const scaled = normU * (phys.mpe.bend.length - 1);
+        const b0 = Math.floor(scaled);
+        const b1 = Math.min(phys.mpe.bend.length - 1, b0 + 1);
+        const bFrac = scaled - b0;
+        const smoothB = bFrac * bFrac * (3 - 2 * bFrac);
+        const bendSt = phys.mpe.bend[b0] + (phys.mpe.bend[b1] - phys.mpe.bend[b0]) * smoothB;
+        currentFreq *= Math.pow(2, bendSt / 12);
+      }
+
+      if (phys?.detuneCentsMod) {
+        const cents = this.evaluateWindowedModulation(phys.detuneCentsMod, normU, 0);
+        if (cents !== 0) currentFreq *= Math.pow(2, cents / 1200);
+      }
+
+      if (phys?.pluckDecayMs && phys.pluckSemitones) {
+        const decaySec = phys.pluckDecayMs / 1000;
+        const zapSt = phys.pluckSemitones * Math.exp(-t / Math.max(0.002, decaySec));
+        currentFreq *= Math.pow(2, zapSt / 12);
+      }
+
+      if (phys?.warbleDepth) {
+        const wRate = phys.warbleRateHz ?? 3.2;
+        const wCents = (phys.warbleDepth * 0.45) * Math.sin(2 * Math.PI * wRate * songTimeSec);
+        currentFreq *= Math.pow(2, wCents / 1200);
+      }
+
+      // 8. Intra-Note Windowed Unison Detune Spread (`.detune(85%, 0.4..0.85)` or `.detune([0, 90, 20])`)
+      const activeDetunePct = phys?.detuneMod
+        ? this.evaluateWindowedModulation(phys.detuneMod, normU, 8)
+        : baseDetunePct;
+      const maxSpreadCents = (activeDetunePct / 100) * (isReese ? 34 : 42);
+
+      // 9. Stereo Width Trajectory (`.width([10, 100])` or `width=120`)
+      let widthScalar = (phys?.stereoWidth ?? (macros.width ? Number(macros.width) : 100)) / 100;
+      if (phys?.widthCurve && phys.widthCurve.length >= 2) {
+        const w0 = phys.widthCurve[0];
+        const w1 = phys.widthCurve[phys.widthCurve.length - 1];
+        widthScalar = (w0 + (w1 - w0) * normU) / 100;
+      }
+
+      // 10. Linear FM & Hard-Sync Ratio
+      let fmModOffset = 0;
+      if (phys?.fmAmount && phys.fmAmount > 0) {
+        const fmRatio = phys.fmRatio ?? 2.0;
+        fmModPhase += currentFreq * fmRatio * twoPiOverSr;
+        fmModOffset = Math.sin(fmModPhase) * phys.fmAmount * 2.5;
+      }
+
+      let syncRatio = phys?.syncRatio ?? 1.0;
+      if (phys?.syncSweep) {
+        syncRatio = phys.syncSweep[0] + (phys.syncSweep[1] - phys.syncSweep[0]) * normU;
+      }
+
+      // 11. Sum Multi-Voice Unison Stack
+      let sigL = 0;
+      let sigR = 0;
+
+      for (let u = 0; u < numUnison; u++) {
+        const normPos = unisonPans[u]; // -1 .. +1
+        const voiceCents = normPos * maxSpreadCents;
+        const voiceFreq = currentFreq * unisonStackRatios[u] * Math.pow(2, voiceCents / 1200);
+
+        unisonPhases[u] += voiceFreq * twoPiOverSr;
+        const wrappedPhase = ((unisonPhases[u] * syncRatio) % (2 * Math.PI)) / (2 * Math.PI);
+
+        let oscSample = 0;
+        if (phys?.pwmDuty) {
+          const pwmRate = phys.pwmRateHz ?? 1.8;
+          const duty = Math.max(
+            0.05,
+            Math.min(0.95, phys.pwmDuty + 0.22 * Math.sin(2 * Math.PI * pwmRate * songTimeSec))
+          );
+          oscSample = wrappedPhase < duty ? 0.85 : -0.85;
+        } else {
+          // Rich band-tempered sawtooth + FM phase offset
+          const ph = wrappedPhase * 2 * Math.PI + fmModOffset;
+          oscSample =
+            (2 * wrappedPhase - 1) * 0.65 +
+            Math.sin(ph) * 0.35 +
+            Math.sin(ph * 2) * 0.18;
+        }
+
+        if (phys?.waveWarpMode === 'mirror') {
+          oscSample = Math.abs(oscSample) * 2 - 0.8;
+        } else if (phys?.waveWarpMode === 'bend') {
+          const amt = phys.waveWarpAmount ?? 0.5;
+          oscSample = Math.tanh(oscSample * (1 + amt * 2.5));
+        }
+
+        const panPos = Math.max(-1, Math.min(1, item.pan + normPos * 0.75 * widthScalar));
+        const panRad = ((panPos + 1) * 0.5) * (Math.PI * 0.5);
+        sigL += oscSample * Math.cos(panRad);
+        sigR += oscSample * Math.sin(panRad);
+      }
+
+      const normFactor = 0.62 / Math.sqrt(numUnison);
+      sigL *= normFactor;
+      sigR *= normFactor;
+
+      // 12. Phase-Locked Mono Sub-Oscillator (Essential for Reese Bass & Supersaw weight)
+      const subLevel =
+        macros.sub_level !== undefined
+          ? Number(macros.sub_level) / 100
+          : isReese
+            ? 0.85
+            : 0.42;
+      if (subLevel > 0.01) {
+        subPhase += currentFreq * 0.5 * twoPiOverSr;
+        const subSample = Math.sin(subPhase) * subLevel * 0.55;
+        sigL += subSample;
+        sigR += subSample;
+      }
+
+      // 13. Ring Modulation (`.ring(amount, freqHz)`)
+      if (phys?.ringAmount && phys.ringAmount > 0) {
+        const rFreq = phys.ringFreqHz ?? 220;
+        const ringCarrier = Math.sin(2 * Math.PI * rFreq * songTimeSec);
+        const rMix = Math.min(1, phys.ringAmount);
+        sigL = sigL * (1 - rMix) + sigL * ringCarrier * rMix;
+        sigR = sigR * (1 - rMix) + sigR * ringCarrier * rMix;
+      }
+
+      // 14. Windowed White / Pink / Breath Noise Layer (`.noise(level, color, start..end)`)
+      const baseNoise = phys?.noiseLevel ?? (macros.noise ? Number(macros.noise) / 100 : 0);
+      const activeNoise = phys?.noiseMod
+        ? this.evaluateWindowedModulation(phys.noiseMod, normU, 0)
+        : baseNoise;
+      if (activeNoise > 0.005) {
+        const nRand = Math.sin((absFrame + voiceSeed * 97) * 12.9898) * 43758.5453;
+        const white = (nRand - Math.floor(nRand)) * 2 - 1;
+        pinkState = 0.92 * pinkState + 0.08 * white;
+        const noiseSig =
+          phys?.noiseColor === 'pink'
+            ? pinkState * 2.2
+            : phys?.noiseColor === 'breath'
+              ? white * Math.exp(-t * 14)
+              : white * 0.45;
+        sigL += noiseSig * activeNoise;
+        sigR += noiseSig * activeNoise;
+      }
+
+      // 15. Intra-Note Filter Cutoff Trajectory + Keytracking + SVF Resonance
+      const modCutoffHz = phys?.cutoffMod
+        ? this.evaluateWindowedModulation(phys.cutoffMod, normU, baseCutoffHz)
+        : phys?.preSwell
+          ? 240 + (baseCutoffHz - 240) * Math.pow(normU, 2.2)
+          : baseCutoffHz;
+      const effectiveCutoff = Math.max(
+        60,
+        Math.min(15500, modCutoffHz * keytrackRatio * slopCutoffScalar)
+      );
+      const svfF = Math.min(0.85, 2 * Math.sin((Math.PI * effectiveCutoff) / sampleRate));
+
+      const hpL = sigL - lpL - qDamp * bpL;
+      bpL += svfF * hpL;
+      lpL += svfF * bpL;
+
+      const hpR = sigR - lpR - qDamp * bpR;
+      bpR += svfF * hpR;
+      lpR += svfF * bpR;
+
+      let outL = lpL;
+      let outR = lpR;
+
+      // 16. Comb Filter Flanging (`.comb(freqHz, feedback)`)
+      if (combBufL && combBufR && combSamples > 0) {
+        const fb = phys?.combFeedback ?? 0.65;
+        const dL = combBufL[combIdx];
+        const dR = combBufR[combIdx];
+        outL = outL * 0.65 + dL * 0.55;
+        outR = outR * 0.65 + dR * 0.55;
+        combBufL[combIdx] = Math.tanh(lpL + dL * fb);
+        combBufR[combIdx] = Math.tanh(lpR + dR * fb);
+        combIdx = (combIdx + 1) % combSamples;
+      }
+
+      // 17. Intra-Note Windowed Saturation Drive (`.drive([0.1, 0.9])`)
+      if (phys?.driveMod) {
+        const driveVal = this.evaluateWindowedModulation(phys.driveMod, normU, 0);
+        const driveScalar = 1 + (driveVal > 1 ? driveVal / 100 : driveVal) * 3.2;
+        outL = Math.tanh(outL * driveScalar);
+        outR = Math.tanh(outR * driveScalar);
+      } else if (isReese) {
+        outL = Math.tanh(outL * 1.65);
+        outR = Math.tanh(outR * 1.65);
+      }
+
+      // 18. Harmonic Air / Top-End Presence Exciter (`.air(75%)`)
+      const airPct = (phys?.airSheen ?? (macros.air ? Number(macros.air) : patch === 'supersaw' ? 55 : 0)) / 100;
+      if (airPct > 0.01) {
+        outL += Math.tanh(hpL * 2.4) * airPct * 0.45;
+        outR += Math.tanh(hpR * 2.4) * airPct * 0.45;
+      }
+
+      const finalGain = ampEnv * item.amp * 0.78;
+      trackLeft[absFrame] += outL * finalGain;
+      trackRight[absFrame] += outR * finalGain;
+    }
+
+    // 19. Stereo Haas Micro-Delay Widening (`.haas(12ms)`)
+    if (phys?.haasDelayMs && phys.haasDelayMs > 0) {
+      const delayFrames = Math.min(1500, Math.max(1, Math.floor((phys.haasDelayMs / 1000) * sampleRate)));
+      const copyR = trackRight.slice(startFrame, endFrame);
+      for (let i = delayFrames; i < len; i++) {
+        trackRight[startFrame + i] = copyR[i - delayFrames];
+      }
+    }
+  }
+
+  /**
+   * Processes a summed Track Stem through Bass-Mono Crossover (`< 120 Hz` mono lock)
+   * so wide supersaw and Reese tracks retain 100% phase-solid low-end punch.
+   */
+  public static applyTrackBassMonoCrossover(
+    left: Float32Array,
+    right: Float32Array,
+    sampleRate: number,
+    crossoverHz: number = 120
+  ): void {
+    const alpha = Math.min(0.25, (2 * Math.PI * crossoverHz) / sampleRate);
+    let lowL = 0;
+    let lowR = 0;
+
+    for (let i = 0; i < left.length; i++) {
+      lowL += alpha * (left[i] - lowL);
+      lowR += alpha * (right[i] - lowR);
+      const highL = left[i] - lowL;
+      const highR = right[i] - lowR;
+      const monoSub = 0.5 * (lowL + lowR);
+      left[i] = monoSub + highL;
+      right[i] = monoSub + highR;
+    }
+  }
+}
+
+```
+
+### 2.3 `src/parser/DocumentParser.ts` - Parse Track Synth Attributes, Expand `.open_voice` Chords & Link Polyphonic Chord `.glide()`
+
+In `src/parser/DocumentParser.ts`:
+
+1. Import `ContinuousSynthEngine` from `../audio/synths/ContinuousSynthEngine`:
+
+```typescript
+import { ContinuousSynthEngine } from '../audio/synths/ContinuousSynthEngine';
+
+```
+
+2. Inside `compile(rawSource: string)` under `// 5. Extract def and return / def_return statements line by line`, parse direct synth attributes (`detune=`, `cutoff=`, `sub=`, `air=`, `ott=`, `duck=`, `width=`, `slop=`, `noise=`) into `trackMacros` so users never have to write `macros=@{...}` boilerplate:
+
+```typescript
+        const shorthandMacroNames = [
+          'detune',
+          'unison',
+          'cutoff',
+          'resonance',
+          'sub',
+          'sub_level',
+          'air',
+          'ott',
+          'duck',
+          'width',
+          'slop',
+          'noise',
+        ];
+        for (const mKey of shorthandMacroNames) {
+          const mMatch = attrStr.match(new RegExp(`\\b${mKey}\\s*=\\s*(-?\\d+(?:\\.\\d+)?)(?:%|hz|ms|db)?`, 'i'));
+          if (mMatch) {
+            if (!trackMacros) trackMacros = {};
+            const val = parseFloat(mMatch[1]);
+            if (!isNaN(val)) {
+              const canonicalKey =
+                mKey === 'detune' ? 'unison' : mKey === 'sub' ? 'sub_level' : mKey;
+              trackMacros[canonicalKey] = val;
+            }
+          }
+        }
+
+```
+
+3. Inside `parseVoiceTokensToEvents` under `// 3. Chord syntax: [c4 e4 g4]:4.stacc or [c4 e4 g4]`, if `sharedPhysics?.openVoice` is true and `chordEvents.length >= 3`, automatically spread the chord into a wide cinematic voicing (dropping the 2nd voice down an octave `-12` semitones if `midi >= 48` and adding a top octave shimmer double):
+
+```typescript
+          if (sharedPhysics?.openVoice && chordEvents.length >= 3) {
+            const sorted = [...chordEvents].sort((a, b) => a.pitch.midi - b.pitch.midi);
+            if (sorted[1] && sorted[1].pitch.midi >= 48) {
+              sorted[1].pitch = {
+                ...sorted[1].pitch,
+                midi: sorted[1].pitch.midi - 12,
+                frequency: sorted[1].pitch.frequency * 0.5,
+              };
+            }
+          }
+
+```
+
+4. In `DocumentParser.compile(rawSource: string)`, call `ContinuousSynthEngine.linkPolyphonicChordGlides(mergedSketchEvents);` in Sketch Mode and `ContinuousSynthEngine.linkPolyphonicChordGlides(mergedEvents);` in Full Document Mode right after `this.mergeTiedEvents(allEvents)`.
+
+### 2.4 `src/audio/SoundfontLibrary.ts` - Register New Producer Synth Patches
+
+In `src/audio/SoundfontLibrary.ts`, inside `resolveSoundfontInstrument`, update `NATIVE_SYNTH_PATCHES` to include `'supersaw'`, `'reese'`, `'reese_bass'`, `'flutter_pad'`, `'riser'`, `'pluck_lead'`, and `'acid_lead'`:
+
+```typescript
+  const NATIVE_SYNTH_PATCHES = new Set([
+    'wavetable',
+    'supersaw',
+    'reese',
+    'reese_bass',
+    'flutter_pad',
+    'riser',
+    'pluck_lead',
+    'acid_lead',
+    'operator',
+    'meld',
+    'drift',
+    'analog',
+    'collision',
+    'tension',
+    'electric',
+    'granulator',
+  ]);
+
+```
+
+### 2.5 `src/audio/StudioAudioEngine.ts` - Continuous Track-Bus Synth Rendering & Real-Time Windowed Detune/Glide
+
+In `src/audio/StudioAudioEngine.ts`:
+
+1. Import `ContinuousSynthEngine` from `./synths/ContinuousSynthEngine`:
+
+```typescript
+import { ContinuousSynthEngine } from './synths/ContinuousSynthEngine';
+
+```
+
+2. In `exportWavBlob(score: CompiledScore)`:
+
+* Group continuous synth voices (`ContinuousSynthEngine.isContinuousSynthPatch(item.patch, item.style, item.event.physics)`) by `trackId` into per-track stereo stem buffers (`trackStems`).
+* Render each continuous synth note into its track stem via `ContinuousSynthEngine.renderVoiceIntoTrackStem(...)`, apply `ContinuousSynthEngine.applyTrackBassMonoCrossover(stem.left, stem.right, sampleRate, 120)` so sub-bass stays 100% phase-locked, and then run the track's `AbletonAudioFxEngine.applyFxChainToSlice` **once on the summed multi-voice track stem** before mixing into the master `left` and `right` buffers! (All non-continuous-synth tracks continue through the existing loop unchanged.)
+
+3. In `triggerRealtimeVoice(ctx: AudioContext, item: ScheduledNoteEvent, absStartSec: number)`:
+
+* When `ContinuousSynthEngine.isContinuousSynthPatch(item.patch, item.style, item.event.physics)` is true, synthesize the exact stereo buffer slice via `ContinuousSynthEngine.renderVoiceIntoTrackStem` into a WebAudio `AudioBufferSourceNode` and play it through `voiceOut`, guaranteeing 100% sonic parity between live playback and `.wav` export for all 20 synth features, windowed detunes, and polyphonic chord glides!
+
+### 2.6 `src/components/DeviceChainDock.tsx` & `src/components/Inspector.tsx` - Add Real Horizontal Drag Faders & 1-Click Producer Rigs
+
+1. In `src/components/DeviceChainDock.tsx`:
+
+* Add `'supersaw'`, `'reese_bass'`, `'flutter_pad'`, `'riser'`, `'pluck_lead'`, and `'acid_lead'` to the top of `PATCH_CATALOG[0].options`.
+* Expand `MACRO_PRESETS` with `'heaven_supersaw'`, `'reese_sub'`, `'ultraviolet_glide'`, and `'flutter_chords'`.
+* Inside each macro cell on Card 2 (`macro-rack-card-${activeTrack.id}`), add a tactile horizontal range slider (`<input type="range" min={0} max={127} />`) right above the numeric spinbutton so users can smoothly drag **Filter Cutoff**, **Resonance**, **Wave Pos**, **Unison / Detune**, and **Sub Gain** with the mouse.
+
+2. In `src/components/Inspector.tsx`:
+
+* Add a **Detune % (`0–100%`)** spinbutton (`aria-label="Note Detune"`) so users can dial in note/chord detune directly from the Inspector.
+
+### 2.7 `tests/continuous_synth_workflow.test.ts` - Create Verification Suite for the True Continuous Synth Workflow
+
+Create `tests/continuous_synth_workflow.test.ts`:
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import { DocumentParser } from '../src/parser/DocumentParser';
+import { StudioAudioEngine } from '../src/audio/StudioAudioEngine';
+import { ContinuousSynthEngine } from '../src/audio/synths/ContinuousSynthEngine';
+
+describe('TDB-724: True Continuous Synth Workflow, Intra-Note Windowed Detune & 20-Feature Synth Suite', () => {
+  it('evaluates intra-note time-windowed detune (0.4..0.85) and multi-point curve arrays ([0, 90, 20]) with smooth feathering', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Windowed Detune Test", tempo: 120, time: "4/4" }
+        def lead "Supersaw" style=synth patch="supersaw"
+        measure 1 {
+          lead: c4:2.detune(85%, 0.4..0.85) g4:2.detune([0, 95, 10]) |
+        }
+      }
+    `);
+
+    const ev1 = score.events[0];
+    expect(ev1.physics?.detuneMod).toBeDefined();
+    expect(ev1.physics?.detuneMod?.startNorm).toBeCloseTo(0.4, 3);
+    expect(ev1.physics?.detuneMod?.endNorm).toBeCloseTo(0.85, 3);
+
+    // Outside the window (u = 0.1 and u = 0.95), detune remains at baseline (8%)
+    expect(ContinuousSynthEngine.evaluateWindowedModulation(ev1.physics?.detuneMod, 0.1, 8)).toBeCloseTo(8, 2);
+    expect(ContinuousSynthEngine.evaluateWindowedModulation(ev1.physics?.detuneMod, 0.95, 8)).toBeCloseTo(8, 2);
+    // Inside the window (u = 0.62), detune reaches full 85%
+    expect(ContinuousSynthEngine.evaluateWindowedModulation(ev1.physics?.detuneMod, 0.62, 8)).toBeCloseTo(85, 1);
+
+    const ev2 = score.events[1];
+    expect(ev2.physics?.detuneMod?.curve).toEqual([0, 95, 10]);
+    expect(ContinuousSynthEngine.evaluateWindowedModulation(ev2.physics?.detuneMod, 0.5, 0)).toBeCloseTo(95, 1);
+  });
+
+  it('automatically voice-leads polyphonic chords with .glide(180ms) into the next chord without manual MPE arrays', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Ultraviolet Polyphonic Glide", tempo: 74, time: "4/4" }
+        def pad "Floating Synth" style=synth patch="supersaw"
+        measure 1 { pad: [ab2 eb3 c4 g4 c5]:1.glide(180ms) | }
+        measure 2 { pad: [ab2 eb3 f4 ab4 b4]:1 | }
+      }
+    `);
+
+    const m1Notes = score.events
+      .filter((e) => e.measureNumber === 1)
+      .sort((a, b) => a.pitch.midi - b.pitch.midi);
+    expect(m1Notes).toHaveLength(5);
+
+    // Ab2->Ab2 (0), Eb3->Eb3 (0), C4->F4 (+5), G4->Ab4 (+1), C5->B4 (-1)
+    const targetDeltas = m1Notes.map((n) => n.physics?.mpe?.bend?.[4]);
+    expect(targetDeltas).toEqual([0, 0, 5, 1, -1]);
+  });
+
+  it('synthesizes all 20 continuous synth features through summed Track Bus FX with zero NaNs', async () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Full Synth Workflow Showcase", tempo: 136, time: "4/4", key: "F#", scale: "minor" }
+        def flutter "Flutter Pad" style=synth patch="flutter_pad" detune=75 cutoff=3200
+        def saws    "Heaven Saws" style=synth patch="supersaw" detune=90 air=80 duck=75 width=130 .fx(multiband_dynamics, @{amount: 0.6})
+        def reese   "Reese Sub"   style=synth patch="reese_bass" detune=75 sub=90
+        def lead    "Sync Lead"   style=synth patch="pluck_lead"
+
+        measure 1 {
+          flutter: [d3 a3 f#4]:2.filter(400, 6800).flutter([8, 18]).open_voice [e3 b3 g#4]:2.pre_swell |
+          saws: [f#3 c#4 f#4 a4]:2.stack("octaves").noise(25%, "white", 0.5..1.0).comb(880, 0.6) [c#3 g#3 c#4 e4]:2.pitch_dip(-7).gate([1,0,1,1,0,1,0,1]) |
+          reese: f#1:2.warble(40, 2.5).drive([0.2, 0.85]) c#1:2.glide(120ms) |
+          lead: a5:4.zap.sync([1, 3.5]).fm(35%, 2).haas(10ms) f#5:4.pwm(0.25, 3.0).ring(30%, 180) c#5:2.analog_slop(50%).keytrack(80%) |
+        }
+      }
+    `);
+
+    expect(score.events.length).toBeGreaterThan(10);
+    const wavBlob = await engine.exportWavBlob(score);
+    expect(wavBlob.type).toBe('audio/wav');
+    expect(wavBlob.size).toBeGreaterThan(44100 * 2);
+  });
+});
+
+```
+
+---
+
+## 3. What NOT to Touch
+
+* `src/parser/lexer.ts`, `src/parser/PitchEngine.ts`, `src/parser/TemporalEngine.ts`
+* `src/components/Mixer.tsx`, `src/components/Transport.tsx`, `src/components/SessionView.tsx`, `src/components/ArrangementView.tsx`
+* `package.json`, `vite.config.ts`, `electron-builder.json`, `electron/main.cjs`
+
+Explicitly:
+
+* Do NOT modify `src/components/Mixer.tsx` (so `tests/mixer_debounced_commits.test.tsx` remains untouched).
+* Never use the word `"Play"` in any new button text or `aria-label`.
+
+---
+
+## 4. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero TypeScript errors.
+2. `npx vitest run tests/continuous_synth_workflow.test.ts tests/ableton_synth_suite.test.ts tests/wavetable_synth_engine.test.ts tests/multi_view_shell.test.tsx tests/mixer_debounced_commits.test.tsx` passes 100%.
+3. `npm run build` (`vite build`) succeeds cleanly.
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-29
+Implementer: AI Agent
+
+```
+
+---
+
+### How Your Code Looks After `TDB-724`
+
+With `TDB-724`, you can detune a specific slice of any sustained note, glide entire chords automatically, and dial in all 20 synth features in one line:
+
+```tenuto
+%% Detune ONLY between 40% and 85% of a sustained chord, then glide all 5 voices into the next chord:
+pad: [ab2 eb3 c4 g4 c5]:1.detune(85%, 0.4..0.85).glide(180ms) |
+pad: [ab2 eb3 f4 ab4 b4]:1.warble(35, 2.5).glide(180ms) |
+
+%% Attack tight at 0% detune, bloom to 95% supersaw with octave stack & air sheen, and dip pitch -7st at the bar end:
+saws: [f#3 c#4 f#4 a4 c#5]:1.stack("octaves").detune([0, 95]).air(80%).duck(75%).pitch_dip(-7) |
+
+```

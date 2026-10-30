@@ -10,6 +10,13 @@ export interface AutomationEnvelopeSpec {
   curve: string;
 }
 
+export interface WindowedModulationSpec {
+  peak: number;
+  startNorm: number; // 0.0 .. 1.0 within the sustained note
+  endNorm: number;   // 0.0 .. 1.0 within the sustained note
+  curve?: number[];  // Optional multi-point trajectory across the note
+}
+
 export interface EventPhysics {
   articulation?: string;
   modifiers?: string[];
@@ -45,6 +52,53 @@ export interface EventPhysics {
   fx?: Array<{ type: string; params: Record<string, any> }>;
   cc?: { controller: number; values: number[]; curve: string };
   automations?: AutomationEnvelopeSpec[];
+  detune?: number;
+  detuneMod?: WindowedModulationSpec;
+  detuneCents?: number;
+  detuneCentsMod?: WindowedModulationSpec;
+  cutoff?: number;
+  filterSweep?: [number, number];
+  cutoffMod?: WindowedModulationSpec;
+  resonance?: number;
+  flutterRateHz?: number;
+  flutterDepth?: number;
+  flutterCurve?: number[];
+  warbleDepth?: number;
+  warbleRateHz?: number;
+  pitchDipSt?: number;
+  stackMode?: 'octaves' | 'fifths' | 'seventh' | 'super' | 'none';
+  noiseLevel?: number;
+  noiseColor?: 'white' | 'pink' | 'breath';
+  noiseMod?: WindowedModulationSpec;
+  syncRatio?: number;
+  syncSweep?: [number, number];
+  fmAmount?: number;
+  fmRatio?: number;
+  ringAmount?: number;
+  ringFreqHz?: number;
+  pwmDuty?: number;
+  pwmRateHz?: number;
+  waveWarpMode?: 'bend' | 'mirror' | 'quantize';
+  waveWarpAmount?: number;
+  keytrack?: number;
+  combFreqHz?: number;
+  combFeedback?: number;
+  duckDepth?: number;
+  tranceGate?: number[];
+  pluckDecayMs?: number;
+  pluckSemitones?: number;
+  haasDelayMs?: number;
+  stereoWidth?: number;
+  widthCurve?: number[];
+  bassMonoHz?: number;
+  analogSlop?: number;
+  airSheen?: number;
+  preSwell?: boolean;
+  openVoice?: boolean;
+  driveMod?: WindowedModulationSpec;
+  ottAmount?: number;
+  reverbThrow?: WindowedModulationSpec;
+  echoThrow?: WindowedModulationSpec;
   lyric?: string;
 }
 
@@ -148,6 +202,53 @@ export class ASTSerializer {
     }
 
     return { core, modifiers };
+  }
+
+  private parseWindowedOrCurveArg(
+    inner: string,
+    maxNormThreshold: number = 100
+  ): { scalar: number; spec: WindowedModulationSpec } | null {
+    const trimmed = inner.trim();
+    // Case 1: Array curve e.g. [0, 85, 20]
+    const arrMatch = trimmed.match(/^\[([^\]]+)\](?:\s*,\s*([0-9.]+)\.\.([0-9.]+))?$/);
+    if (arrMatch) {
+      const vals = arrMatch[1]
+        .split(',')
+        .map((s) => parseFloat(s.replace(/%|hz|c|st|ms/gi, '').trim()))
+        .filter((n) => !isNaN(n));
+      if (vals.length === 0) return null;
+      const startNorm = arrMatch[2] !== undefined ? Math.max(0, Math.min(1, parseFloat(arrMatch[2]))) : 0;
+      const endNorm = arrMatch[3] !== undefined ? Math.max(startNorm, Math.min(1, parseFloat(arrMatch[3]))) : 1;
+      const peak = Math.max(...vals.map((v) => Math.abs(v)));
+      return {
+        scalar: vals[vals.length - 1],
+        spec: { peak, startNorm, endNorm, curve: vals },
+      };
+    }
+
+    // Case 2: Value with optional window e.g. (85%, 0.35..0.85) or (85)
+    const parts = trimmed.split(',').map((s) => s.trim());
+    const rawVal = parseFloat(parts[0].replace(/%|hz|c|st|ms/gi, ''));
+    if (isNaN(rawVal)) return null;
+    const val =
+      !parts[0].includes('%') && maxNormThreshold === 100 && rawVal > 0 && rawVal <= 1
+        ? rawVal * 100
+        : rawVal;
+
+    let startNorm = 0.0;
+    let endNorm = 1.0;
+    if (parts[1]) {
+      const rangeMatch = parts[1].match(/^([0-9.]+)\.\.([0-9.]+)$/);
+      if (rangeMatch) {
+        startNorm = Math.max(0, Math.min(1, parseFloat(rangeMatch[1])));
+        endNorm = Math.max(startNorm, Math.min(1, parseFloat(rangeMatch[2])));
+      }
+    }
+
+    return {
+      scalar: val,
+      spec: { peak: val, startNorm, endNorm },
+    };
   }
 
   public parseModifiersToPhysics(modifiers: string[], defaultVelocity: number = 80): EventPhysics | undefined {
@@ -385,6 +486,180 @@ export class ASTSerializer {
         if (!isNaN(val)) {
           physics.glideMs = inner.endsWith('s') && !inner.endsWith('ms') ? val * 1000 : val;
         }
+      } else if (mod.startsWith('detune(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(7, -1), 100);
+        if (parsed) {
+          physics.detune = Math.max(0, Math.min(100, parsed.scalar));
+          physics.detuneMod = parsed.spec;
+        }
+      } else if (mod.startsWith('detune_cents(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(13, -1), 1200);
+        if (parsed) {
+          physics.detuneCents = parsed.scalar;
+          physics.detuneCentsMod = parsed.spec;
+        }
+      } else if (mod.startsWith('cutoff(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(7, -1), 16000);
+        if (parsed) {
+          physics.cutoff = Math.max(60, Math.min(16000, parsed.scalar));
+          physics.cutoffMod = parsed.spec;
+        }
+      } else if (mod.startsWith('res(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(4, -1));
+        if (!isNaN(v)) physics.resonance = Math.max(0.5, Math.min(18, v));
+      } else if (mod.startsWith('filter(') && mod.endsWith(')')) {
+        const inner = mod.slice(7, -1).trim();
+        if (inner.startsWith('[')) {
+          const parsed = this.parseWindowedOrCurveArg(inner, 16000);
+          if (parsed) {
+            physics.cutoff = Math.max(60, Math.min(16000, parsed.scalar));
+            physics.cutoffMod = parsed.spec;
+          }
+        } else {
+          const parts = inner.split(',').map((s) => parseFloat(s.replace(/hz/gi, '').trim()));
+          if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            const c0 = Math.max(60, Math.min(16000, parts[0]));
+            const c1 = Math.max(60, Math.min(16000, parts[1]));
+            physics.filterSweep = [c0, c1];
+            physics.cutoff = Math.round((c0 + c1) / 2);
+            physics.cutoffMod = { peak: Math.max(c0, c1), startNorm: 0, endNorm: 1, curve: [c0, c1] };
+          } else if (parts.length === 1 && !isNaN(parts[0])) {
+            physics.cutoff = Math.max(60, Math.min(16000, parts[0]));
+          }
+        }
+      } else if (mod.startsWith('flutter(') && mod.endsWith(')')) {
+        const inner = mod.slice(8, -1).trim();
+        const parsed = this.parseWindowedOrCurveArg(inner, 32);
+        if (parsed) {
+          physics.flutterRateHz = Math.max(1, Math.min(32, parsed.scalar));
+          physics.flutterDepth = 0.65;
+          if (parsed.spec.curve) physics.flutterCurve = parsed.spec.curve;
+        }
+      } else if (mod === 'flutter') {
+        physics.flutterRateHz = 12;
+        physics.flutterDepth = 0.65;
+      } else if (mod.startsWith('warble(') && mod.endsWith(')')) {
+        const parts = mod.slice(7, -1).split(',').map((s) => parseFloat(s.replace(/%|hz/gi, '').trim()));
+        if (!isNaN(parts[0])) physics.warbleDepth = Math.max(0, Math.min(100, parts[0]));
+        if (parts[1] !== undefined && !isNaN(parts[1])) physics.warbleRateHz = Math.max(0.2, Math.min(16, parts[1]));
+      } else if (mod === 'warble') {
+        physics.warbleDepth = 45;
+        physics.warbleRateHz = 3.2;
+      } else if ((mod.startsWith('pitch_dip(') || mod.startsWith('tapestop(')) && mod.endsWith(')')) {
+        const inner = mod.slice(mod.indexOf('(') + 1, -1).replace(/st/gi, '');
+        const val = parseFloat(inner);
+        if (!isNaN(val)) {
+          const dip = val > 0 ? -val : val;
+          physics.pitchDipSt = Math.max(-24, Math.min(24, dip));
+          physics.mpe = { ...(physics.mpe || {}), bend: [0, 0, physics.pitchDipSt, 0] };
+        }
+      } else if (mod === 'tapestop' || mod === 'pitch_dip') {
+        physics.pitchDipSt = -7;
+        physics.mpe = { ...(physics.mpe || {}), bend: [0, 0, -7, 0] };
+      } else if (mod.startsWith('stack(') && mod.endsWith(')')) {
+        const mode = mod.slice(6, -1).replace(/^["']|["']$/g, '').trim().toLowerCase();
+        if (mode === 'octaves' || mode === 'fifths' || mode === 'seventh' || mode === 'super') {
+          physics.stackMode = mode;
+        }
+      } else if (mod.startsWith('noise(') && mod.endsWith(')')) {
+        const parts = mod.slice(6, -1).split(',').map((s) => s.trim());
+        const lvl = parseFloat(parts[0].replace('%', ''));
+        if (!isNaN(lvl)) {
+          physics.noiseLevel = lvl > 1 ? lvl / 100 : Math.max(0, Math.min(1, lvl));
+        }
+        const colorArg = parts.find((p) => /^(?:"|')?(white|pink|breath)(?:"|')?$/i.test(p));
+        if (colorArg) {
+          physics.noiseColor = colorArg.replace(/["']/g, '').toLowerCase() as 'white' | 'pink' | 'breath';
+        }
+        const rangeArg = parts.find((p) => /^[0-9.]+\.\.[0-9.]+$/.test(p));
+        if (rangeArg) {
+          const [sN, eN] = rangeArg.split('..').map(Number);
+          physics.noiseMod = { peak: physics.noiseLevel ?? 0.3, startNorm: sN, endNorm: eN };
+        }
+      } else if (mod.startsWith('sync(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(5, -1), 16);
+        if (parsed) {
+          physics.syncRatio = Math.max(1, Math.min(16, parsed.scalar));
+          if (parsed.spec.curve && parsed.spec.curve.length >= 2) {
+            physics.syncSweep = [parsed.spec.curve[0], parsed.spec.curve[parsed.spec.curve.length - 1]];
+          }
+        }
+      } else if (mod.startsWith('fm(') && mod.endsWith(')')) {
+        const parts = mod.slice(3, -1).split(',').map((s) => parseFloat(s.replace('%', '').trim()));
+        if (!isNaN(parts[0])) physics.fmAmount = parts[0] > 1 ? parts[0] / 100 : parts[0];
+        if (parts[1] !== undefined && !isNaN(parts[1])) physics.fmRatio = Math.max(0.25, Math.min(16, parts[1]));
+      } else if (mod.startsWith('ring(') && mod.endsWith(')')) {
+        const parts = mod.slice(5, -1).split(',').map((s) => parseFloat(s.replace(/%|hz/gi, '').trim()));
+        if (!isNaN(parts[0])) physics.ringAmount = parts[0] > 1 ? parts[0] / 100 : parts[0];
+        if (parts[1] !== undefined && !isNaN(parts[1])) physics.ringFreqHz = Math.max(20, Math.min(4000, parts[1]));
+      } else if (mod.startsWith('pwm(') && mod.endsWith(')')) {
+        const parts = mod.slice(4, -1).split(',').map((s) => parseFloat(s.replace(/%|hz/gi, '').trim()));
+        if (!isNaN(parts[0])) physics.pwmDuty = Math.max(0.05, Math.min(0.95, parts[0] > 1 ? parts[0] / 100 : parts[0]));
+        if (parts[1] !== undefined && !isNaN(parts[1])) physics.pwmRateHz = Math.max(0.1, Math.min(16, parts[1]));
+      } else if (mod.startsWith('warp_wave(') && mod.endsWith(')')) {
+        const parts = mod.slice(10, -1).split(',').map((s) => s.trim());
+        const m = parts[0].replace(/["']/g, '').toLowerCase();
+        if (m === 'bend' || m === 'mirror' || m === 'quantize') physics.waveWarpMode = m;
+        if (parts[1]) {
+          const amt = parseFloat(parts[1].replace('%', ''));
+          if (!isNaN(amt)) physics.waveWarpAmount = amt > 1 ? amt / 100 : amt;
+        }
+      } else if (mod.startsWith('keytrack(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(9, -1).replace('%', ''));
+        if (!isNaN(v)) physics.keytrack = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('comb(') && mod.endsWith(')')) {
+        const parts = mod.slice(5, -1).split(',').map((s) => parseFloat(s.replace(/hz|%/gi, '').trim()));
+        if (!isNaN(parts[0])) physics.combFreqHz = Math.max(60, Math.min(4000, parts[0]));
+        if (parts[1] !== undefined && !isNaN(parts[1])) {
+          physics.combFeedback = Math.max(0.1, Math.min(0.92, parts[1] > 1 ? parts[1] / 100 : parts[1]));
+        }
+      } else if (mod.startsWith('duck(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(5, -1).replace('%', ''));
+        if (!isNaN(v)) physics.duckDepth = Math.max(0, Math.min(1, v > 1 ? v / 100 : v));
+      } else if (mod === 'duck') {
+        physics.duckDepth = 0.78;
+      } else if (mod.startsWith('gate(') && mod.endsWith(')')) {
+        const inner = mod.slice(5, -1).replace(/[\[\]]/g, '');
+        const steps = inner.split(/[\s,]+/).map(Number).filter((n) => !isNaN(n));
+        if (steps.length > 0) physics.tranceGate = steps;
+      } else if (mod.startsWith('pluck(') && mod.endsWith(')')) {
+        const parts = mod.slice(6, -1).split(',').map((s) => parseFloat(s.replace(/ms|st/gi, '').trim()));
+        physics.pluckDecayMs = !isNaN(parts[0]) ? Math.max(4, Math.min(120, parts[0])) : 22;
+        physics.pluckSemitones = parts[1] !== undefined && !isNaN(parts[1]) ? parts[1] : 12;
+      } else if (mod === 'zap' || mod === 'pluck') {
+        physics.pluckDecayMs = 18;
+        physics.pluckSemitones = 18;
+      } else if (mod.startsWith('haas(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(5, -1).replace(/ms/gi, ''));
+        if (!isNaN(v)) physics.haasDelayMs = Math.max(0.5, Math.min(35, v));
+      } else if (mod.startsWith('width(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(6, -1), 200);
+        if (parsed) {
+          physics.stereoWidth = Math.max(0, Math.min(200, parsed.scalar));
+          if (parsed.spec.curve) physics.widthCurve = parsed.spec.curve;
+        }
+      } else if (mod.startsWith('analog_slop(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(12, -1).replace('%', ''));
+        if (!isNaN(v)) physics.analogSlop = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('air(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(4, -1).replace('%', ''));
+        if (!isNaN(v)) physics.airSheen = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod === 'pre_swell' || mod === 'reverse_swell') {
+        physics.preSwell = true;
+      } else if (mod === 'open_voice' || mod === 'drop2') {
+        physics.openVoice = true;
+      } else if (mod.startsWith('drive(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(6, -1), 100);
+        if (parsed) physics.driveMod = parsed.spec;
+      } else if (mod.startsWith('ott(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(4, -1).replace('%', ''));
+        if (!isNaN(v)) physics.ottAmount = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('reverb_throw(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(13, -1), 100);
+        if (parsed) physics.reverbThrow = parsed.spec;
+      } else if (mod.startsWith('echo_throw(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(11, -1), 100);
+        if (parsed) physics.echoThrow = parsed.spec;
       } else if (mod.startsWith('slice(') && mod.endsWith(')')) {
         const val = parseInt(mod.slice(6, -1), 10);
         if (!isNaN(val)) physics.slice = val;

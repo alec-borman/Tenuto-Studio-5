@@ -1,6 +1,7 @@
 import { ASTSerializer, AtomicEvent, WarpMode } from './ASTSerializer';
 import { TemporalResult } from './TemporalEngine';
 import { AutomationLane, compileAutomationLanes } from '../audio/AutomationEngine';
+import { ContinuousSynthEngine } from '../audio/synths/ContinuousSynthEngine';
 
 export interface FXChainItem {
   type: string;
@@ -556,6 +557,17 @@ export class DocumentParser {
             }
           }
 
+          if (sharedPhysics?.openVoice && chordEvents.length >= 3) {
+            const sorted = [...chordEvents].sort((a, b) => a.pitch.midi - b.pitch.midi);
+            if (sorted[1] && sorted[1].pitch.midi >= 48) {
+              sorted[1].pitch = {
+                ...sorted[1].pitch,
+                midi: sorted[1].pitch.midi - 12,
+                frequency: sorted[1].pitch.frequency * 0.5,
+              };
+            }
+          }
+
           if (sharedPhysics?.arp && chordEvents.length > 1) {
             const sortedByPitch = [...chordEvents].sort((a, b) => a.pitch.midi - b.pitch.midi);
             sortedByPitch.forEach((cev, rollIdx) => {
@@ -807,6 +819,7 @@ export class DocumentParser {
       }
 
       const mergedSketchEvents = this.mergeTiedEvents(allEvents);
+      ContinuousSynthEngine.linkPolyphonicChordGlides(mergedSketchEvents);
       this.attachSourceLocations(rawSource, mergedSketchEvents);
       const automationLanes = compileAutomationLanes(mergedSketchEvents);
 
@@ -939,6 +952,39 @@ export class DocumentParser {
           trackMacros = {};
           for (const [k, v] of Object.entries(parsedMacros)) {
             if (typeof v === 'number') trackMacros[k] = v;
+          }
+        }
+
+        const shorthandMacroNames = [
+          'detune',
+          'unison',
+          'cutoff',
+          'resonance',
+          'sub',
+          'sub_level',
+          'air',
+          'ott',
+          'duck',
+          'width',
+          'slop',
+          'noise',
+        ];
+        for (const mKey of shorthandMacroNames) {
+          const mMatch = attrStr.match(
+            new RegExp(`\\b${mKey}\\s*=\\s*(-?\\d+(?:\\.\\d+)?)(?:%|hz|ms|db)?`, 'i')
+          );
+          if (mMatch) {
+            if (!trackMacros) trackMacros = {};
+            const val = parseFloat(mMatch[1]);
+            if (!isNaN(val)) {
+              const canonicalKey =
+                mKey === 'detune' ? 'unison' : mKey === 'sub' ? 'sub_level' : mKey;
+              trackMacros[canonicalKey] = val;
+              if (canonicalKey === 'unison') {
+                trackMacros.swarm_spread = val;
+                trackMacros.drift_amount = val;
+              }
+            }
           }
         }
 
@@ -1504,6 +1550,7 @@ export class DocumentParser {
     locators.sort((a, b) => a.startWhole - b.startWhole);
 
     const mergedEvents = this.mergeTiedEvents(allEvents);
+    ContinuousSynthEngine.linkPolyphonicChordGlides(mergedEvents);
     this.attachSourceLocations(rawSource, mergedEvents);
     const automationLanes = compileAutomationLanes(mergedEvents);
 
@@ -1617,6 +1664,67 @@ export class DocumentParser {
         lastFoundStart = foundIdx;
         lastFoundEnd = foundIdx + tokenStr.length;
         searchCursor = foundIdx + tokenStr.length;
+      }
+    }
+  }
+
+  /**
+   * Automatically links polyphonic chords (and single notes) carrying `.glide(ms)` to the
+   * immediately following chord/note on the same track & voice, generating per-voice MPE
+   * pitch-bend trajectories so every voice in a chord glides smoothly to its target voice.
+   */
+  private applyPolyphonicChordGlides(events: AtomicEvent[]): void {
+    const groupsByTrackVoice = new Map<
+      string,
+      Array<{ startWhole: number; durWhole: number; notes: AtomicEvent[] }>
+    >();
+
+    for (const ev of events) {
+      if (!ev.pitch || ev.pitch.isRest || ev.pitch.isSpacer || !ev.startTime) continue;
+      const key = `${ev.trackId || 'pno'}:${ev.voiceId || 'v1'}`;
+      let steps = groupsByTrackVoice.get(key);
+      if (!steps) {
+        steps = [];
+        groupsByTrackVoice.set(key, steps);
+      }
+      const st = ev.startTime.numerator / Math.max(1, ev.startTime.denominator);
+      const dur = ev.duration.numerator / Math.max(1, ev.duration.denominator);
+      const last = steps[steps.length - 1];
+      if (last && Math.abs(last.startWhole - st) < 1e-6) {
+        last.notes.push(ev);
+      } else {
+        steps.push({ startWhole: st, durWhole: dur, notes: [ev] });
+      }
+    }
+
+    for (const steps of groupsByTrackVoice.values()) {
+      steps.sort((a, b) => a.startWhole - b.startWhole);
+      for (let i = 0; i < steps.length - 1; i++) {
+        const currStep = steps[i];
+        const nextStep = steps[i + 1];
+        const hasGlide = currStep.notes.some((n) => (n.physics?.glideMs ?? 0) > 0);
+        if (!hasGlide) continue;
+
+        const currSorted = [...currStep.notes].sort((a, b) => a.pitch.midi - b.pitch.midi);
+        const nextSorted = [...nextStep.notes].sort((a, b) => a.pitch.midi - b.pitch.midi);
+
+        for (let vIdx = 0; vIdx < currSorted.length; vIdx++) {
+          const srcNote = currSorted[vIdx];
+          const targetIdx = Math.min(nextSorted.length - 1, vIdx);
+          const dstNote = nextSorted[targetIdx];
+          if (!dstNote) continue;
+
+          const semitoneDelta = dstNote.pitch.midi - srcNote.pitch.midi;
+          if (!srcNote.physics) srcNote.physics = {};
+          // Hold pitch steady for first 75% of the note, then glide smoothly to target pitch
+          if (!srcNote.physics.mpe?.bend) {
+            srcNote.physics.mpe = {
+              ...(srcNote.physics.mpe || {}),
+              bend: [0, 0, 0, 0, semitoneDelta],
+            };
+          }
+          srcNote.physics.legato = true;
+        }
       }
     }
   }

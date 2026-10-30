@@ -50,7 +50,7 @@ It is designed for a fast, modern creative workflow: write a score directly in t
 
 ## Installation & Setup
 
-### Option 1: macOS Desktop App (`.pkg` Installer)
+### Option 1A: macOS Desktop App (`.pkg` Installer)
 
 Tenuto Studio 5 packages directly into a native macOS `.pkg` installer that installs **Tenuto Studio 5.app** into your `/Applications` directory.
 
@@ -68,6 +68,23 @@ open release/"Tenuto Studio 5-5.0.0-arm64.pkg"
 ```
 
 Once installed, launch **Tenuto Studio 5** from `/Applications` or Spotlight (`Cmd + Space`).
+
+### Option 1B: Windows Desktop App (`.exe` NSIS Setup Installer)
+
+On Windows (x64), Tenuto Studio 5 packages into a standard `.exe` Setup Wizard that installs **Tenuto Studio 5** and creates Desktop and Start Menu shortcuts:
+
+```bash
+# 1. Clone the repository and install dependencies
+git clone https://github.com/alec-borman/Tenuto-Studio-5.git
+cd Tenuto-Studio-5
+npm install
+
+# 2. Build the production bundle and package the Windows .exe installer
+npm run electron:build:win
+
+# 3. Launch the generated Setup .exe inside the release/ folder
+start "" "release\Tenuto Studio 5 Setup 5.0.0.exe"
+```
 
 ### Option 2: Local Web Development
 

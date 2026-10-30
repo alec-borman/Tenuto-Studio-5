@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "electron:build:mac": "vite build && npx --yes electron-builder --config electron-builder.json --mac pkg --arm64"
+    "electron:build:mac": "vite build && npx --yes electron-builder --config electron-builder.json --mac pkg --arm64",
+    "electron:build:win": "vite build && npx --yes electron-builder --config electron-builder.json --win nsis --x64"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

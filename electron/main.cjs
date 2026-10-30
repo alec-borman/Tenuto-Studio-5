@@ -5,6 +5,10 @@ const path = require('path');
 app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.tenuto.studio5');
+}
+
 function createMainWindow() {
   const mainWindow = new BrowserWindow({
     width: 1480,
@@ -20,6 +24,8 @@ function createMainWindow() {
       backgroundThrottling: false,
     },
   });
+
+  mainWindow.setMenuBarVisibility(false);
 
   mainWindow.on('page-title-updated', (event) => {
     event.preventDefault();

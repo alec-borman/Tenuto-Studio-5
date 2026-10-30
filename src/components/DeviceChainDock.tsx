@@ -13,6 +13,12 @@ const PATCH_CATALOG = [
   {
     group: 'Ableton Flagship Synths',
     options: [
+      'supersaw',
+      'reese_bass',
+      'flutter_pad',
+      'riser',
+      'pluck_lead',
+      'acid_lead',
       'wavetable',
       'operator',
       'meld',
@@ -77,6 +83,13 @@ const PATCH_CATALOG = [
   { group: 'Drums & Percussion', options: ['tenuto_808_kit', 'taiko_drum'] },
 ];
 
+const PRODUCER_RIG_PRESETS = [
+  { id: 'supersaw', label: 'Supersaw Drop' },
+  { id: 'reese_bass', label: 'Reese Sub' },
+  { id: 'wavetable', label: 'Ultraviolet Glide' },
+  { id: 'flutter_pad', label: 'Flutter Pad' },
+];
+
 const DEFAULT_MACRO_KEYS = [
   { key: 'cutoff', label: 'Filter Cutoff', defaultVal: 72 },
   { key: 'resonance', label: 'Resonance', defaultVal: 30 },
@@ -92,6 +105,10 @@ const MACRO_PRESETS: Record<string, Record<string, number>> = {
   warm_analog: { cutoff: 58, resonance: 24, osc1_pos: 40, unison: 30 },
   bright_lead: { cutoff: 108, resonance: 45, osc1_pos: 82, unison: 65 },
   deep_sub: { cutoff: 34, resonance: 18, sub_level: 95, unison: 10 },
+  heaven_supersaw: { cutoff: 112, resonance: 28, osc1_pos: 66, unison: 90, sub_level: 50 },
+  reese_sub: { cutoff: 42, resonance: 35, sub_level: 92, unison: 75 },
+  ultraviolet_glide: { cutoff: 78, resonance: 22, osc1_pos: 52, unison: 45 },
+  flutter_chords: { cutoff: 84, resonance: 30, osc1_pos: 60, unison: 75 },
 };
 
 const FX_DEVICE_DEFAULTS: Record<string, Record<string, number | string>> = {
@@ -257,7 +274,7 @@ export default function DeviceChainDock({
                   patchName: e.target.value,
                 })
               }
-              className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-300 outline-none focus:border-blue-500 cursor-pointer mb-2"
+              className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-emerald-300 outline-none focus:border-blue-500 cursor-pointer mb-1.5"
             >
               {PATCH_CATALOG.map((grp) => (
                 <optgroup key={grp.group} label={grp.group}>
@@ -269,6 +286,31 @@ export default function DeviceChainDock({
                 </optgroup>
               ))}
             </select>
+
+            {/* 1-Click Producer Rigs Bar */}
+            <div className="grid grid-cols-2 gap-1 mb-1.5">
+              {PRODUCER_RIG_PRESETS.map((rig) => (
+                <button
+                  key={rig.id}
+                  type="button"
+                  aria-label={`Producer rig ${rig.label} for ${activeTrack.id}`}
+                  onClick={() =>
+                    onUpdateAST({
+                      trackId: activeTrack.id,
+                      mutationType: 'PATCH_UPDATE',
+                      patchName: rig.id,
+                    })
+                  }
+                  className={`px-1.5 py-0.5 rounded border text-[8px] font-bold truncate cursor-pointer transition-colors ${
+                    activeTrack.patch === rig.id
+                      ? 'bg-emerald-600/30 border-emerald-500 text-emerald-200'
+                      : 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'
+                  }`}
+                >
+                  {rig.label}
+                </button>
+              ))}
+            </div>
 
             <div
               data-testid={`synth-topology-spec-${activeTrack.id}`}
@@ -351,7 +393,6 @@ export default function DeviceChainDock({
             <div className="grid grid-cols-4 gap-1.5">
               {DEFAULT_MACRO_KEYS.map((m) => {
                 const currentVal = activeTrack.macros?.[m.key] ?? m.defaultVal;
-                const fillPct = Math.max(0, Math.min(100, Math.round((currentVal / 127) * 100)));
                 return (
                   <div
                     key={m.key}
@@ -363,12 +404,26 @@ export default function DeviceChainDock({
                     >
                       {m.key}
                     </span>
-                    <div className="w-full h-1 bg-slate-950 rounded overflow-hidden my-1">
-                      <div
-                        style={{ width: `${fillPct}%` }}
-                        className="h-full bg-purple-500"
-                      />
-                    </div>
+                    <input
+                      type="range"
+                      aria-label={`Drag macro ${m.key} for ${activeTrack.id}`}
+                      min={0}
+                      max={127}
+                      value={currentVal}
+                      onChange={(e) => {
+                        const nextVal = Math.max(
+                          0,
+                          Math.min(127, parseInt(e.target.value, 10) || 0)
+                        );
+                        onUpdateAST({
+                          trackId: activeTrack.id,
+                          mutationType: 'MACRO_UPDATE',
+                          macroKey: m.key,
+                          macroValue: nextVal,
+                        });
+                      }}
+                      className="w-full h-2 accent-purple-500 cursor-pointer my-1"
+                    />
                     <input
                       type="number"
                       aria-label={`Macro ${m.key} for ${activeTrack.id}`}

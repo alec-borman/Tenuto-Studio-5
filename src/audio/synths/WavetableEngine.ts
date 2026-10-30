@@ -69,6 +69,9 @@ export class WavetableEngine {
     };
 
     const patchStr = (def?.patch || 'wavetable').toLowerCase();
+    const isSupersaw = patchStr.includes('supersaw');
+    const isFlutter = patchStr.includes('flutter') || Boolean(eventPhysics?.flutterRateHz);
+
     let defaultBank: WavetableBankName = 'basic_shapes';
     if (patchStr.includes('harm')) defaultBank = 'harmonics';
     else if (patchStr.includes('pwm') || patchStr.includes('digital')) defaultBank = 'digital_pwm';
@@ -82,7 +85,7 @@ export class WavetableEngine {
 
     const osc1Pos = normalize0to1(
       wtFx.osc1_pos ?? macros.osc1_pos ?? macros.wt_pos ?? macros.wave_pos ?? env.osc1_pos,
-      0.45
+      isSupersaw ? 0.66 : 0.45
     );
     const osc2Pos = normalize0to1(
       wtFx.osc2_pos ?? macros.osc2_pos ?? env.osc2_pos,
@@ -90,24 +93,51 @@ export class WavetableEngine {
     );
 
     const unisonRaw = String(
-      wtFx.unison_mode || env.unison_mode || (macros.unison ? 'shimmer' : 'classic')
+      wtFx.unison_mode ||
+        env.unison_mode ||
+        (isSupersaw || macros.unison || eventPhysics?.detune ? 'shimmer' : 'classic')
     ).toLowerCase() as WavetableUnisonMode;
 
-    const unisonAmount = normalize0to1(
+    let unisonAmount = normalize0to1(
       wtFx.unison_amount ?? macros.unison ?? macros.carrier_unison ?? env.unison_amount,
-      0.35
+      isSupersaw ? 0.85 : 0.35
     );
-    const unisonVoices = Math.max(
+    let unisonVoices = Math.max(
       1,
       Math.min(
         8,
-        Math.round(Number(wtFx.unison_voices ?? macros.unison_voices ?? (unisonAmount > 0.1 ? 3 : 1)))
+        Math.round(
+          Number(
+            wtFx.unison_voices ??
+              macros.unison_voices ??
+              (isSupersaw ? 8 : unisonAmount > 0.1 ? 3 : 1)
+          )
+        )
       )
     );
 
+    if (eventPhysics?.detune !== undefined) {
+      unisonAmount = Math.max(0, Math.min(1, eventPhysics.detune / 100));
+      unisonVoices = Math.max(4, unisonVoices);
+    }
+
     const baseCutoff =
+      eventPhysics?.cutoff ??
       cutoffOverrideHz ??
-      Number(wtFx.cutoff ?? macros.cutoff ?? macros.filter_cutoff ?? 3400);
+      Number(wtFx.cutoff ?? macros.cutoff ?? macros.filter_cutoff ?? (isSupersaw ? 9500 : 3400));
+
+    let lfo1RateHz = Math.max(
+      0.1,
+      Math.min(32, Number(wtFx.lfo1_rate ?? macros.lfo_rate ?? (isFlutter ? 12.0 : 3.2)))
+    );
+    let lfo1ToCutoff = Math.max(
+      -1,
+      Math.min(1, Number(wtFx.lfo1_to_cutoff ?? (isFlutter ? 0.65 : 0.1)))
+    );
+    if (eventPhysics?.flutterRateHz !== undefined) {
+      lfo1RateHz = Math.max(1, Math.min(32, eventPhysics.flutterRateHz));
+      lfo1ToCutoff = 0.7;
+    }
 
     return {
       bank1,
@@ -119,13 +149,13 @@ export class WavetableEngine {
       osc2Semitones: Number(wtFx.osc2_semi ?? 0),
       osc2Gain: normalize0to1(wtFx.osc2_gain ?? 0.45, 0.45),
       subEnabled: wtFx.sub !== false,
-      subGain: normalize0to1(wtFx.sub_gain ?? macros.sub_level ?? 0.35, 0.35),
+      subGain: normalize0to1(wtFx.sub_gain ?? macros.sub_level ?? (isSupersaw ? 0.5 : 0.35), isSupersaw ? 0.5 : 0.35),
       subTone: normalize0to1(wtFx.sub_tone ?? 0.3, 0.3),
       subOctave: Number(wtFx.sub_octave) === -2 ? -2 : -1,
       unisonMode: unisonRaw,
       unisonVoices,
       unisonAmount,
-      filterCutoffHz: Math.max(80, Math.min(14000, isNaN(baseCutoff) ? 3400 : baseCutoff)),
+      filterCutoffHz: Math.max(80, Math.min(14000, isNaN(baseCutoff) ? (isSupersaw ? 9500 : 3400) : baseCutoff)),
       filterResonance: Math.max(0.5, Math.min(12, Number(wtFx.resonance ?? macros.resonance ?? 1.2))),
       filterMorph: normalize0to1(wtFx.filter_morph ?? macros.filter_morph ?? 0, 0),
       envAttackSec: Math.max(0.003, Number(wtFx.attack ?? env.attack ?? 0.012)),
@@ -134,9 +164,9 @@ export class WavetableEngine {
       envReleaseSec: Math.max(0.04, Number(wtFx.release ?? env.release ?? 0.18)),
       env2ToPos: Math.max(-1, Math.min(1, Number(wtFx.env2_to_pos ?? macros.env_to_pos ?? 0.25))),
       env2ToCutoff: Math.max(-1, Math.min(1, Number(wtFx.env2_to_cutoff ?? 0.35))),
-      lfo1RateHz: Math.max(0.1, Math.min(20, Number(wtFx.lfo1_rate ?? macros.lfo_rate ?? 3.2))),
+      lfo1RateHz,
       lfo1ToPos: Math.max(-1, Math.min(1, Number(wtFx.lfo1_to_pos ?? macros.lfo_to_pos ?? 0.15))),
-      lfo1ToCutoff: Math.max(-1, Math.min(1, Number(wtFx.lfo1_to_cutoff ?? 0.1))),
+      lfo1ToCutoff,
     };
   }
 
@@ -249,7 +279,8 @@ export class WavetableEngine {
     params: WavetablePatchParams,
     swell?: 'crescendo' | 'diminuendo',
     startAmp?: number,
-    endAmp?: number
+    endAmp?: number,
+    physics?: AtomicEvent['physics']
   ): { stopAndDisconnect: () => void; fadeOutAndStop: (now: number) => void } {
     const env = ctx.createGain();
     const filter = ctx.createBiquadFilter();
@@ -260,19 +291,46 @@ export class WavetableEngine {
 
     filter.Q.setValueAtTime(Math.min(8, params.filterResonance), startSec);
 
-    const startCutoff = Math.max(
-      120,
-      Math.min(14000, params.filterCutoffHz * (1 + params.env2ToCutoff * 0.6))
-    );
-    const endCutoff = Math.max(120, Math.min(14000, params.filterCutoffHz));
-    filter.frequency.setValueAtTime(startCutoff, startSec);
-    filter.frequency.exponentialRampToValueAtTime(
-      endCutoff,
-      startSec + Math.min(durSec, params.envDecaySec)
-    );
+    if (physics?.filterSweep && physics.filterSweep.length >= 2) {
+      const sHz = Math.max(80, Math.min(14000, physics.filterSweep[0]));
+      const eHz = Math.max(80, Math.min(14000, physics.filterSweep[1]));
+      filter.frequency.setValueAtTime(sHz, startSec);
+      filter.frequency.exponentialRampToValueAtTime(eHz, startSec + Math.max(0.05, durSec));
+    } else {
+      const startCutoff = Math.max(
+        120,
+        Math.min(14000, params.filterCutoffHz * (1 + params.env2ToCutoff * 0.6))
+      );
+      const endCutoff = Math.max(120, Math.min(14000, params.filterCutoffHz));
+      filter.frequency.setValueAtTime(startCutoff, startSec);
+      filter.frequency.exponentialRampToValueAtTime(
+        endCutoff,
+        startSec + Math.min(durSec, params.envDecaySec)
+      );
+    }
 
     const activeOscs: OscillatorNode[] = [];
     const activeGains: GainNode[] = [env];
+
+    const applyBendCurve = (osc: OscillatorNode, baseOscFreq: number) => {
+      const bendArr = physics?.mpe?.bend;
+      if (bendArr && bendArr.length > 0 && durSec >= 0.04) {
+        if (bendArr.length === 1) {
+          osc.frequency.setValueAtTime(baseOscFreq * Math.pow(2, bendArr[0] / 12), startSec);
+        } else {
+          const segDur = durSec / (bendArr.length - 1);
+          for (let bIdx = 0; bIdx < bendArr.length; bIdx++) {
+            const bentFreq = Math.max(
+              20,
+              Math.min(14000, baseOscFreq * Math.pow(2, bendArr[bIdx] / 12))
+            );
+            const tPoint = startSec + bIdx * segDur;
+            if (bIdx === 0) osc.frequency.setValueAtTime(bentFreq, tPoint);
+            else osc.frequency.linearRampToValueAtTime(bentFreq, tPoint);
+          }
+        }
+      }
+    };
 
     // Modulated effective wave position for Osc 1
     const modPos1 = Math.max(
@@ -280,7 +338,7 @@ export class WavetableEngine {
       Math.min(1, params.osc1Pos + params.env2ToPos * 0.35 + params.lfo1ToPos * 0.15)
     );
 
-    const numVoices = Math.max(1, Math.min(4, params.unisonVoices));
+    const numVoices = Math.max(1, Math.min(6, params.unisonVoices));
     const voiceGainScalar = 0.55 / Math.sqrt(numVoices);
 
     for (let v = 0; v < numVoices; v++) {
@@ -309,6 +367,7 @@ export class WavetableEngine {
 
       osc1.frequency.setValueAtTime(freq, startSec);
       osc1.detune.setValueAtTime(detuneCents, startSec);
+      applyBendCurve(osc1, freq);
 
       const g1 = ctx.createGain();
       g1.gain.value = voiceGainScalar;
@@ -336,6 +395,7 @@ export class WavetableEngine {
       const osc2Freq = freq * Math.pow(2, params.osc2Semitones / 12);
       osc2.frequency.setValueAtTime(osc2Freq, startSec);
       osc2.detune.setValueAtTime(params.osc2DetuneCents, startSec);
+      applyBendCurve(osc2, osc2Freq);
 
       const g2 = ctx.createGain();
       g2.gain.value = params.osc2Gain * 0.45;
@@ -351,6 +411,7 @@ export class WavetableEngine {
       subOsc.type = params.subTone > 0.45 ? 'triangle' : 'sine';
       const subFreq = freq * Math.pow(2, params.subOctave);
       subOsc.frequency.setValueAtTime(Math.max(20, subFreq), startSec);
+      applyBendCurve(subOsc, Math.max(20, subFreq));
 
       const gSub = ctx.createGain();
       gSub.gain.value = params.subGain * 0.55;
@@ -456,7 +517,8 @@ export class WavetableEngine {
     params: WavetablePatchParams,
     swell?: 'crescendo' | 'diminuendo',
     startAmp?: number,
-    endAmp?: number
+    endAmp?: number,
+    physics?: AtomicEvent['physics']
   ): void {
     const startSpectrum1 = WavetableEngine.computeHarmonicSpectrum(params.bank1, params.osc1Pos);
     const modTargetPos = Math.max(
@@ -471,20 +533,61 @@ export class WavetableEngine {
     const baseGainR = Math.sin(panAngle);
 
     const twoPiOverSr = (2 * Math.PI) / sampleRate;
-    const osc2Freq = freq * Math.pow(2, (params.osc2Semitones + params.osc2DetuneCents / 100) / 12);
-    const subFreq = Math.max(20, freq * Math.pow(2, params.subOctave));
+    const osc2Ratio = Math.pow(2, (params.osc2Semitones + params.osc2DetuneCents / 100) / 12);
+    const subRatio = Math.pow(2, params.subOctave);
 
-    const unisonOffsets = Array.from({ length: Math.min(3, params.unisonVoices) }, (_, idx) =>
-      WavetableEngine.getUnisonVoiceOffsets(
+    const numRenderVoices = Math.max(1, Math.min(5, params.unisonVoices));
+    const unisonOffsets = Array.from({ length: numRenderVoices }, (_, idx) => {
+      const off = WavetableEngine.getUnisonVoiceOffsets(
         idx,
-        Math.min(3, params.unisonVoices),
+        numRenderVoices,
         params.unisonMode,
         params.unisonAmount
-      )
-    );
+      );
+      return {
+        ...off,
+        detuneMult: Math.pow(2, off.detuneCents / 1200),
+        panL: 1 - off.panOffset * 0.4,
+        panR: 1 + off.panOffset * 0.4,
+      };
+    });
+    const invSqrtUnison = 1 / Math.sqrt(unisonOffsets.length);
+
+    const LUT_SIZE = 2048;
+    const LUT_MASK = LUT_SIZE - 1;
+    const lutStart1 = new Float32Array(LUT_SIZE);
+    const lutEnd1 = new Float32Array(LUT_SIZE);
+    const lutOsc2 = new Float32Array(LUT_SIZE);
+    const osc2Scale = params.osc2Enabled ? params.osc2Gain * 0.4 : 0;
+    for (let h = 1; h <= 10; h++) {
+      if (freq * h > 14000) break;
+      const ampS1 = startSpectrum1.imag[h];
+      const ampE1 = endSpectrum1.imag[h];
+      const ampO2 = spectrum2.imag[h] * osc2Scale;
+      for (let k = 0; k < LUT_SIZE; k++) {
+        const s = Math.sin(((2 * Math.PI * k) / LUT_SIZE) * h);
+        lutStart1[k] += s * ampS1;
+        lutEnd1[k] += s * ampE1;
+        if (ampO2 !== 0) lutOsc2[k] += s * ampO2;
+      }
+    }
+    const radToLut = LUT_SIZE / (2 * Math.PI);
+
+    const bendArr = physics?.mpe?.bend;
+    const evalBendSemitones = (u: number): number => {
+      if (!bendArr || bendArr.length === 0) return 0;
+      if (bendArr.length === 1) return bendArr[0];
+      const clampedU = Math.max(0, Math.min(1, u));
+      const scaled = clampedU * (bendArr.length - 1);
+      const idx0 = Math.floor(scaled);
+      const idx1 = Math.min(bendArr.length - 1, idx0 + 1);
+      const frac = scaled - idx0;
+      return bendArr[idx0] + (bendArr[idx1] - bendArr[idx0]) * frac;
+    };
 
     let lpL = 0;
     let lpR = 0;
+    let basePhase = 0;
     const hasSwell = swell === 'crescendo' || swell === 'diminuendo';
     const baseAmpScalar = hasSwell ? 1.0 : amp;
     const attackSec = Math.min(params.envAttackSec, durSec * 0.35);
@@ -492,6 +595,11 @@ export class WavetableEngine {
 
     for (let i = 0; i < noteFrames; i++) {
       const t = i / sampleRate;
+      const uNorm = Math.min(1, t / Math.max(0.01, durSec));
+      const bendSemi = evalBendSemitones(uNorm);
+      const instFreq = bendSemi !== 0 ? freq * Math.pow(2, bendSemi / 12) : freq;
+      basePhase += instFreq * twoPiOverSr;
+
       let env = 1.0;
       if (hasSwell) {
         if (t < attackSec) env = (t / attackSec) * (startAmp ?? amp);
@@ -515,38 +623,32 @@ export class WavetableEngine {
       const env2Val = Math.exp(-t / Math.max(0.05, params.envDecaySec));
       const lfo1Val = 0.5 + 0.5 * Math.sin(2 * Math.PI * params.lfo1RateHz * t);
       const morphMix = Math.max(0, Math.min(1, 0.6 * env2Val + 0.4 * lfo1Val));
+      const oneMinusMorph = 1 - morphMix;
 
       let sigL = 0;
       let sigR = 0;
 
-      // Sum band-limited harmonics (up to 10 harmonics for fast offline PCM rendering)
-      for (let h = 1; h <= 10; h++) {
-        if (freq * h > 14000) break;
-        const hAmp1 =
-          startSpectrum1.imag[h] * (1 - morphMix) + endSpectrum1.imag[h] * morphMix;
-        const hAmp2 = params.osc2Enabled ? spectrum2.imag[h] * params.osc2Gain * 0.4 : 0;
-
-        for (let uIdx = 0; uIdx < unisonOffsets.length; uIdx++) {
-          const u = unisonOffsets[uIdx];
-          const uFreq = freq * Math.pow(2, u.detuneCents / 1200);
-          const sVal = Math.sin(i * uFreq * h * twoPiOverSr) * hAmp1;
-          sigL += sVal * (1 - u.panOffset * 0.4);
-          sigR += sVal * (1 + u.panOffset * 0.4);
-        }
-
-        if (hAmp2 !== 0) {
-          const s2 = Math.sin(i * osc2Freq * h * twoPiOverSr) * hAmp2;
-          sigL += s2;
-          sigR += s2;
-        }
+      for (let uIdx = 0; uIdx < unisonOffsets.length; uIdx++) {
+        const u = unisonOffsets[uIdx];
+        const lutIdx = ((basePhase * u.detuneMult * radToLut) | 0) & LUT_MASK;
+        const sVal = lutStart1[lutIdx] * oneMinusMorph + lutEnd1[lutIdx] * morphMix;
+        sigL += sVal * u.panL;
+        sigR += sVal * u.panR;
       }
 
-      sigL /= Math.sqrt(unisonOffsets.length);
-      sigR /= Math.sqrt(unisonOffsets.length);
+      if (osc2Scale !== 0) {
+        const lutIdx2 = ((basePhase * osc2Ratio * radToLut) | 0) & LUT_MASK;
+        const s2 = lutOsc2[lutIdx2];
+        sigL += s2;
+        sigR += s2;
+      }
+
+      sigL *= invSqrtUnison;
+      sigR *= invSqrtUnison;
 
       // Add Sub-Oscillator
       if (params.subEnabled && params.subGain > 0.01) {
-        const subPhase = i * subFreq * twoPiOverSr;
+        const subPhase = basePhase * subRatio;
         const subWave =
           Math.sin(subPhase) * (1 - params.subTone * 0.3) +
           Math.sin(subPhase * 2) * (params.subTone * 0.3);
@@ -555,11 +657,17 @@ export class WavetableEngine {
         sigR += subSample;
       }
 
+      let baseCut = params.filterCutoffHz;
+      if (physics?.filterSweep && physics.filterSweep.length >= 2) {
+        baseCut =
+          physics.filterSweep[0] + (physics.filterSweep[1] - physics.filterSweep[0]) * uNorm;
+      }
+
       const modCutoff = Math.max(
         120,
         Math.min(
           12000,
-          params.filterCutoffHz *
+          baseCut *
             (1 + params.env2ToCutoff * env2Val * 0.5 + params.lfo1ToCutoff * (lfo1Val - 0.5) * 0.4)
         )
       );

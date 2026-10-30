@@ -277,6 +277,13 @@ export function resolveSoundfontInstrument(
 
   const NATIVE_SYNTH_PATCHES = new Set([
     'wavetable',
+    'supersaw',
+    'reese',
+    'reese_bass',
+    'flutter_pad',
+    'riser',
+    'pluck_lead',
+    'acid_lead',
     'operator',
     'meld',
     'drift',

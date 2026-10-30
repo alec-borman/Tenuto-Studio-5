@@ -61,4 +61,49 @@ describe('TDB-720: Ableton Flagship Synthesizer Suite (Operator, Meld, Drift, An
     expect(wavBlob.type).toBe('audio/wav');
     expect(wavBlob.size).toBeGreaterThan(44100 * 2);
   });
+
+  it('automatically links polyphonic .glide(180ms) chords voice-by-voice and renders supersaw, reese_bass, flutter_pad, and inline .filter()/.detune()/.pitch_dip()', async () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+
+    const glideScore = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Ultraviolet Floating Chords", tempo: 120, time: "4/4" }
+        def pad "Floating Synth" style=synth patch="wavetable" detune=45 cutoff=2200
+        measure 1 { pad: [ab2 eb3 c4 g4 c5]:1.glide(180ms) | }
+        measure 2 { pad: [ab2 eb3 f4 ab4 b4]:1 | }
+      }
+    `);
+
+    const m1Notes = glideScore.events
+      .filter((e) => e.measureNumber === 1)
+      .sort((a, b) => a.pitch.midi - b.pitch.midi);
+    expect(m1Notes).toHaveLength(5);
+    // Ab2->Ab2 (0), Eb3->Eb3 (0), C4->F4 (+5), G4->Ab4 (+1), C5->B4 (-1)
+    expect(m1Notes.map((n) => n.physics?.mpe?.bend?.[4])).toEqual([0, 0, 5, 1, -1]);
+
+    const dropScore = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Heavenly Supersaw Drop", tempo: 136, time: "4/4", sidechain: "drums" }
+        def flutter "Flutter Chords" style=synth patch="flutter_pad" detune=75
+        def saws    "Saw Chords"     style=synth patch="supersaw"    detune=90 cutoff=11000
+        def reese   "Reese Sub"      style=synth patch="reese_bass"  detune=75 cutoff=480
+        def riser   "Pitch Riser"    style=synth patch="riser"
+        def drums   "Drop Kit"       style=grid  patch="tenuto_808_kit"
+
+        measure 1 {
+          flutter: [d3 a3 c#4 e4 f#4 a4]:2.filter(300, 2200).flutter(12) [e3 b3 e4 g#4 b4]:2.filter(2200, 6500).detune(80%).pitch_dip(-7) |
+          saws:    [d3 a3 d4 e4 f#4 a4 c#5]:2.ff [c#3 g#3 c#4 e4 g#4 b4]:2.ff.pitch_dip(-7) |
+          reese:   d1:2.ff.glide(80ms) c#1:2.ff.pitch_dip(-7) |
+          riser:   [f#4 c#5 f#5]:1.cresc(30, 125) |
+          drums:   <[ v1: k:4.ff r:4 k:4.ff r:4 | v2: r:4 s:4.ff r:4 s:4.ff ]>
+        }
+      }
+    `);
+
+    const wavBlob = await engine.exportWavBlob(dropScore);
+    expect(wavBlob.type).toBe('audio/wav');
+    expect(wavBlob.size).toBeGreaterThan(44100 * 2);
+  });
 });
+

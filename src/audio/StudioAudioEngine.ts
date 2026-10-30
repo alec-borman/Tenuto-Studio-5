@@ -22,6 +22,7 @@ import { SpatialAudioMatrix, SendTapMode } from './SpatialAudioMatrix';
 import { WavetableEngine } from './synths/WavetableEngine';
 import { AbletonSynthSuite } from './synths/AbletonSynthSuite';
 import { SamplerAndDrumRackEngine } from './synths/SamplerAndDrumRackEngine';
+import { ContinuousSynthEngine } from './synths/ContinuousSynthEngine';
 import { AbletonAudioFxEngine } from './fx/AbletonAudioFxEngine';
 
 export interface PlaybackProgress {
@@ -1438,7 +1439,57 @@ export class StudioAudioEngine {
       }
     }
 
-    if (item.patch.includes('wavetable')) {
+    if (ContinuousSynthEngine.isContinuousSynthPatch(item.patch, item.style, item.event.physics)) {
+      const sr = ctx.sampleRate || 44100;
+      const totalVoiceSec = durSec + 0.35;
+      const voiceFrames = Math.max(128, Math.floor(totalVoiceSec * sr));
+      if (typeof ctx.createBuffer === 'function' && typeof ctx.createBufferSource === 'function') {
+        const buf = ctx.createBuffer(2, voiceFrames, sr);
+        const chL = buf.getChannelData(0);
+        const chR = buf.getChannelData(1);
+        ContinuousSynthEngine.renderVoiceIntoTrackStem(
+          chL,
+          chR,
+          0,
+          voiceFrames,
+          sr,
+          this.tempoBpm || 120,
+          item.noteIndexInTrack ?? 0,
+          item
+        );
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(voiceOut);
+        src.start(safeStart);
+        let cleaned = false;
+        const cleanup: ActiveVoiceCleanup = {
+          fadeOutAndStop: (_now: number) => {
+            cleanup.stopAndDisconnect();
+          },
+          stopAndDisconnect: () => {
+            if (cleaned) return;
+            cleaned = true;
+            this.activeVoices.delete(cleanup);
+            try {
+              src.stop();
+              src.disconnect();
+              pannerNode?.disconnect();
+            } catch {
+              // Ignore
+            }
+          },
+        };
+        this.activeVoices.add(cleanup);
+        src.onended = () => cleanup.stopAndDisconnect();
+        return;
+      }
+    }
+
+    if (
+      item.patch.includes('wavetable') ||
+      item.patch.includes('supersaw') ||
+      item.patch.includes('flutter')
+    ) {
       const wtParams = WavetableEngine.resolveParams(
         item.def,
         item.event.physics,
@@ -1455,7 +1506,8 @@ export class StudioAudioEngine {
         wtParams,
         item.swell,
         item.startAmp,
-        item.endAmp
+        item.endAmp,
+        item.event.physics
       );
       this.activeVoices.add(cleanup);
       return;
@@ -1479,7 +1531,8 @@ export class StudioAudioEngine {
         synthParams,
         item.swell,
         item.startAmp,
-        item.endAmp
+        item.endAmp,
+        item.event.physics
       );
       this.activeVoices.add(cleanup);
       return;
@@ -2722,6 +2775,12 @@ export class StudioAudioEngine {
     const left = new Float32Array(totalFrames);
     const right = new Float32Array(totalFrames);
     const timeline = this.buildScheduledTimeline(score);
+    const tempoBpm = Number(score.meta?.tempo) || 120;
+    const trackStems = new Map<
+      string,
+      { left: Float32Array; right: Float32Array; def?: TrackDefinition }
+    >();
+    let continuousVoiceSeed = 0;
 
     for (const item of timeline) {
       const startFrame = Math.max(0, Math.floor(item.startSec * sampleRate));
@@ -2751,6 +2810,33 @@ export class StudioAudioEngine {
         : Math.max(0.85, profile.releaseSec);
       const totalNoteSec = item.durSec + releaseSec;
       const noteFrames = Math.min(totalFrames - startFrame, Math.floor(totalNoteSec * sampleRate));
+
+      if (
+        !isDrum &&
+        ContinuousSynthEngine.isContinuousSynthPatch(item.patch, item.style, item.event.physics)
+      ) {
+        const trackId = item.event.trackId || 'pno';
+        let stem = trackStems.get(trackId);
+        if (!stem) {
+          stem = {
+            left: new Float32Array(totalFrames),
+            right: new Float32Array(totalFrames),
+            def: item.def,
+          };
+          trackStems.set(trackId, stem);
+        }
+        ContinuousSynthEngine.renderVoiceIntoTrackStem(
+          stem.left,
+          stem.right,
+          startFrame,
+          noteFrames,
+          sampleRate,
+          tempoBpm,
+          continuousVoiceSeed++,
+          item
+        );
+        continue;
+      }
 
       const panAngle = ((item.pan + 1) * 0.5) * (Math.PI * 0.5);
       const gainL = Math.cos(panAngle);
@@ -3086,7 +3172,11 @@ export class StudioAudioEngine {
         continue;
       }
 
-      if (item.patch.includes('wavetable')) {
+      if (
+        item.patch.includes('wavetable') ||
+        item.patch.includes('supersaw') ||
+        item.patch.includes('flutter')
+      ) {
         const wtParams = WavetableEngine.resolveParams(
           item.def,
           item.event.physics,
@@ -3105,7 +3195,8 @@ export class StudioAudioEngine {
           wtParams,
           item.swell,
           item.startAmp,
-          item.endAmp
+          item.endAmp,
+          item.event.physics
         );
         applyItemFx(noteFrames);
         continue;
@@ -3131,7 +3222,8 @@ export class StudioAudioEngine {
           synthParams,
           item.swell,
           item.startAmp,
-          item.endAmp
+          item.endAmp,
+          item.event.physics
         );
         applyItemFx(noteFrames);
         continue;
@@ -3318,6 +3410,25 @@ export class StudioAudioEngine {
         right[startFrame + i] += sample * gainR;
       }
       applyItemFx(noteFrames);
+    }
+
+    for (const [, stem] of trackStems.entries()) {
+      ContinuousSynthEngine.applyTrackBassMonoCrossover(stem.left, stem.right, sampleRate, 120);
+      const trackFxChain = stem.def?.fxChain || [];
+      if (trackFxChain.length > 0) {
+        AbletonAudioFxEngine.applyFxChainToSlice(
+          stem.left,
+          stem.right,
+          0,
+          totalFrames,
+          sampleRate,
+          trackFxChain
+        );
+      }
+      for (let i = 0; i < totalFrames; i++) {
+        left[i] += stem.left[i];
+        right[i] += stem.right[i];
+      }
     }
 
     // Apply rich 2.4-second Concertgebouw Hall Diffuser (6 parallel lowpass-damped combs + 2 series all-pass filters)
