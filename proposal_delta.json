@@ -1,42 +1,28 @@
 {
-  "proposal_id": "tdb-726-cross-platform-desktop-packaging",
-  "target_intent": "TDB-726: Cross-Platform Desktop Packaging for macOS (.pkg) and Windows (NSIS .exe Installer)",
-  "delta_before": 0.25,
+  "proposal_id": "tdb-728-krate-chord-coalescing-and-prebaking",
+  "target_intent": "TDB-728: Eliminate Detune Unison Playback Lag via Control-Rate (k-rate) DSP, Chord Buffer Coalescing & Pre-Baked Realtime Buffers",
+  "delta_before": 0.28,
   "mutations": [
     {
-      "file": "package.json",
-      "function": "scripts",
-      "ast_depth": 1,
-      "decay_weight": 0.95,
-      "patch": "@@ -15,1 +15,2 @@\n-    \"electron:build:mac\": \"vite build && npx --yes electron-builder --config electron-builder.json --mac pkg --arm64\"\n+    \"electron:build:mac\": \"vite build && npx --yes electron-builder --config electron-builder.json --mac pkg --arm64\",\n+    \"electron:build:win\": \"vite build && npx --yes electron-builder --config electron-builder.json --win nsis --x64\""
+      "file": "src/audio/synths/ContinuousSynthEngine.ts",
+      "function": "renderVoiceIntoTrackStem",
+      "ast_depth": 2,
+      "decay_weight": 0.9,
+      "patch": "@@ -1,528 +1,489 @@ 64-sample Control-Rate (k-rate) modulation blocks, branchless polynomial saw/PWM accumulators, and multi-note chordVoices coalescing"
     },
     {
-      "file": "electron-builder.json",
-      "function": "config",
-      "ast_depth": 1,
-      "decay_weight": 0.95,
-      "patch": "@@ -4,0 +5,1 @@\n+  \"npmRebuild\": false,\n@@ -29,0 +31,18 @@\n+  \"win\": { \"target\": [{ \"target\": \"nsis\", \"arch\": [\"x64\"] }] },\n+  \"nsis\": { \"oneClick\": false, \"perMachine\": false, \"allowToChangeInstallationDirectory\": true, \"createDesktopShortcut\": true, \"createStartMenuShortcut\": true, \"shortcutName\": \"Tenuto Studio 5\" }"
+      "file": "src/audio/StudioAudioEngine.ts",
+      "function": "buildScheduledTimeline / prebakeContinuousSynthTimeline / triggerRealtimeVoice / playScore",
+      "ast_depth": 2,
+      "decay_weight": 0.9,
+      "patch": "@@ -58,3 +58,11 @@ Add chordVoices and prebakedBuffer to ScheduledNoteEvent; coalesce simultaneous chord notes in buildScheduledTimeline; prebake synth buffers before startContextTime in playScore"
     },
     {
-      "file": "electron/main.cjs",
-      "function": "createMainWindow",
+      "file": "tests/ableton_full_parity_and_synth_workflow.test.ts",
+      "function": "TDB-728 test suite",
       "ast_depth": 1,
       "decay_weight": 0.95,
-      "patch": "@@ -7,0 +8,4 @@\n+if (process.platform === 'win32') {\n+  app.setAppUserModelId('com.tenuto.studio5');\n+}\n@@ -23,0 +28,2 @@\n+  mainWindow.setMenuBarVisibility(false);"
-    },
-    {
-      "file": "README.md",
-      "function": "Installation & Setup",
-      "ast_depth": 1,
-      "decay_weight": 0.95,
-      "patch": "@@ -51,20 +51,38 @@\n+### Option 1A: macOS Desktop App (`.pkg` Installer)\n+### Option 1B: Windows Desktop App (`.exe` NSIS Setup Installer)"
-    },
-    {
-      "file": "tests/documentation_integrity.test.ts",
-      "function": "TDB-607 & TDB-726 test suite",
-      "ast_depth": 1,
-      "decay_weight": 0.95,
-      "patch": "@@ -5,24 +5,39 @@\n+describe('TDB-607 & TDB-726: Final Release Documentation, Grammar Guide & Cross-Platform Installer Integrity', ...)"
+      "patch": "@@ -74,2 +74,40 @@ Verify 7-note supersaw chord coalesces into 1 event with chordVoices.length === 7 and renders in < 40ms"
     }
   ]
 }

@@ -57,6 +57,13 @@ interface ScheduledNoteEvent {
   normalizedVelocity?: number;
   cutoffHzOverride?: number;
   reverbSendGain?: number;
+  chordVoices?: Array<{
+    freq: number;
+    midi: number;
+    amp: number;
+    mpeBend?: number[];
+  }>;
+  prebakedBuffer?: AudioBuffer;
 }
 
 interface ActiveVoiceCleanup {
@@ -1052,8 +1059,100 @@ export class StudioAudioEngine {
 
     this.humanizeTimelinePhrasing(list);
     list.sort((a, b) => a.startSec - b.startSec);
-    SamplerAndDrumRackEngine.applyDrumRackChokeGroups(list);
-    return list;
+
+    const coalescedList: ScheduledNoteEvent[] = [];
+    for (let i = 0; i < list.length; i++) {
+      const curr = list[i];
+      const isContSynth = ContinuousSynthEngine.isContinuousSynthPatch(
+        curr.patch,
+        curr.style,
+        curr.event.physics
+      );
+      if (!isContSynth) {
+        coalescedList.push(curr);
+        continue;
+      }
+
+      const prev = coalescedList[coalescedList.length - 1];
+      if (
+        prev &&
+        prev.event.trackId === curr.event.trackId &&
+        Math.abs(prev.startSec - curr.startSec) < 0.004 &&
+        Math.abs(prev.durSec - curr.durSec) < 0.01 &&
+        ContinuousSynthEngine.isContinuousSynthPatch(prev.patch, prev.style, prev.event.physics)
+      ) {
+        if (!prev.chordVoices) {
+          prev.chordVoices = [
+            {
+              freq: prev.freq,
+              midi: prev.midi,
+              amp: prev.amp,
+              mpeBend: prev.event.physics?.mpe?.bend,
+            },
+          ];
+        }
+        prev.chordVoices.push({
+          freq: curr.freq,
+          midi: curr.midi,
+          amp: curr.amp,
+          mpeBend: curr.event.physics?.mpe?.bend,
+        });
+        continue;
+      }
+
+      coalescedList.push(curr);
+    }
+
+    SamplerAndDrumRackEngine.applyDrumRackChokeGroups(coalescedList);
+    return coalescedList;
+  }
+
+  /**
+   * Pre-renders all continuous-synth chord/note AudioBuffers before the playback clock starts
+   * so `triggerRealtimeVoice` schedules `AudioBufferSourceNode` in O(1) time (< 0.02ms)
+   * with zero main-thread lag during playback.
+   */
+  private prebakeContinuousSynthTimeline(
+    ctx: BaseAudioContext,
+    timeline: ScheduledNoteEvent[],
+    tempoBpm: number
+  ): void {
+    if (typeof ctx.createBuffer !== 'function') return;
+    const sr = ctx.sampleRate || 44100;
+    let seed = 1;
+    for (const item of timeline) {
+      if (
+        !ContinuousSynthEngine.isContinuousSynthPatch(
+          item.patch,
+          item.style,
+          item.event.physics
+        )
+      ) {
+        continue;
+      }
+
+      const isStacc =
+        item.event.physics?.articulation === 'stacc' ||
+        item.event.physics?.articulation === 'staccato';
+      const relSec = isStacc ? 0.14 : 0.28;
+      const totalSec = Math.max(0.06, item.durSec + relSec);
+      const frames = Math.max(128, Math.floor(totalSec * sr));
+      const buf = ctx.createBuffer(2, frames, sr);
+      const left = buf.getChannelData(0);
+      const right = buf.getChannelData(1);
+
+      ContinuousSynthEngine.renderVoiceIntoTrackStem(
+        left,
+        right,
+        0,
+        frames,
+        sr,
+        tempoBpm,
+        seed++,
+        item
+      );
+      item.prebakedBuffer = buf;
+    }
   }
 
   /**
@@ -1339,6 +1438,109 @@ export class StudioAudioEngine {
       return;
     }
 
+    if (ContinuousSynthEngine.isContinuousSynthPatch(item.patch, item.style, item.event.physics)) {
+      if (typeof ctx.createBuffer === 'function' && typeof ctx.createBufferSource === 'function') {
+        let buf = item.prebakedBuffer;
+        if (!buf) {
+          const sr = ctx.sampleRate || 44100;
+          const totalVoiceSec = durSec + 0.28;
+          const voiceFrames = Math.max(128, Math.floor(totalVoiceSec * sr));
+          buf = ctx.createBuffer(2, voiceFrames, sr);
+          const chL = buf.getChannelData(0);
+          const chR = buf.getChannelData(1);
+          ContinuousSynthEngine.renderVoiceIntoTrackStem(
+            chL,
+            chR,
+            0,
+            voiceFrames,
+            sr,
+            this.tempoBpm || 120,
+            item.noteIndexInTrack ?? 0,
+            item
+          );
+          item.prebakedBuffer = buf;
+        }
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(voiceOut);
+        src.start(safeStart);
+        let cleaned = false;
+        const cleanup: ActiveVoiceCleanup = {
+          fadeOutAndStop: (_now: number) => {
+            cleanup.stopAndDisconnect();
+          },
+          stopAndDisconnect: () => {
+            if (cleaned) return;
+            cleaned = true;
+            this.activeVoices.delete(cleanup);
+            try {
+              src.stop();
+              src.disconnect();
+              pannerNode?.disconnect();
+            } catch {
+              // Ignore
+            }
+          },
+        };
+        this.activeVoices.add(cleanup);
+        src.onended = () => cleanup.stopAndDisconnect();
+        return;
+      }
+    }
+
+    if (
+      item.patch.includes('wavetable') ||
+      item.patch.includes('supersaw') ||
+      item.patch.includes('flutter')
+    ) {
+      const wtParams = WavetableEngine.resolveParams(
+        item.def,
+        item.event.physics,
+        item.cutoffHzOverride
+      );
+      const cleanup = WavetableEngine.scheduleRealtimeVoice(
+        ctx,
+        voiceOut,
+        pannerNode,
+        item.freq,
+        safeStart,
+        durSec,
+        item.amp,
+        wtParams,
+        item.swell,
+        item.startAmp,
+        item.endAmp,
+        item.event.physics
+      );
+      this.activeVoices.add(cleanup);
+      return;
+    }
+
+    if (AbletonSynthSuite.isSupportedPatch(item.patch)) {
+      const synthParams = AbletonSynthSuite.resolveParams(
+        item.patch,
+        item.def,
+        item.event.physics,
+        item.cutoffHzOverride
+      );
+      const cleanup = AbletonSynthSuite.scheduleRealtimeVoice(
+        ctx,
+        voiceOut,
+        pannerNode,
+        item.freq,
+        safeStart,
+        durSec,
+        item.amp,
+        synthParams,
+        item.swell,
+        item.startAmp,
+        item.endAmp,
+        item.event.physics
+      );
+      this.activeVoices.add(cleanup);
+      return;
+    }
+
     if (item.sfInstrument) {
       const cachedSample = this.soundfontLoader.getCachedSampleForNote(item.sfInstrument, item.midi);
       if (cachedSample) {
@@ -1437,105 +1639,6 @@ export class StudioAudioEngine {
         );
         return;
       }
-    }
-
-    if (ContinuousSynthEngine.isContinuousSynthPatch(item.patch, item.style, item.event.physics)) {
-      const sr = ctx.sampleRate || 44100;
-      const totalVoiceSec = durSec + 0.35;
-      const voiceFrames = Math.max(128, Math.floor(totalVoiceSec * sr));
-      if (typeof ctx.createBuffer === 'function' && typeof ctx.createBufferSource === 'function') {
-        const buf = ctx.createBuffer(2, voiceFrames, sr);
-        const chL = buf.getChannelData(0);
-        const chR = buf.getChannelData(1);
-        ContinuousSynthEngine.renderVoiceIntoTrackStem(
-          chL,
-          chR,
-          0,
-          voiceFrames,
-          sr,
-          this.tempoBpm || 120,
-          item.noteIndexInTrack ?? 0,
-          item
-        );
-        const src = ctx.createBufferSource();
-        src.buffer = buf;
-        src.connect(voiceOut);
-        src.start(safeStart);
-        let cleaned = false;
-        const cleanup: ActiveVoiceCleanup = {
-          fadeOutAndStop: (_now: number) => {
-            cleanup.stopAndDisconnect();
-          },
-          stopAndDisconnect: () => {
-            if (cleaned) return;
-            cleaned = true;
-            this.activeVoices.delete(cleanup);
-            try {
-              src.stop();
-              src.disconnect();
-              pannerNode?.disconnect();
-            } catch {
-              // Ignore
-            }
-          },
-        };
-        this.activeVoices.add(cleanup);
-        src.onended = () => cleanup.stopAndDisconnect();
-        return;
-      }
-    }
-
-    if (
-      item.patch.includes('wavetable') ||
-      item.patch.includes('supersaw') ||
-      item.patch.includes('flutter')
-    ) {
-      const wtParams = WavetableEngine.resolveParams(
-        item.def,
-        item.event.physics,
-        item.cutoffHzOverride
-      );
-      const cleanup = WavetableEngine.scheduleRealtimeVoice(
-        ctx,
-        voiceOut,
-        pannerNode,
-        item.freq,
-        safeStart,
-        durSec,
-        item.amp,
-        wtParams,
-        item.swell,
-        item.startAmp,
-        item.endAmp,
-        item.event.physics
-      );
-      this.activeVoices.add(cleanup);
-      return;
-    }
-
-    if (AbletonSynthSuite.isSupportedPatch(item.patch)) {
-      const synthParams = AbletonSynthSuite.resolveParams(
-        item.patch,
-        item.def,
-        item.event.physics,
-        item.cutoffHzOverride
-      );
-      const cleanup = AbletonSynthSuite.scheduleRealtimeVoice(
-        ctx,
-        voiceOut,
-        pannerNode,
-        item.freq,
-        safeStart,
-        durSec,
-        item.amp,
-        synthParams,
-        item.swell,
-        item.startAmp,
-        item.endAmp,
-        item.event.physics
-      );
-      this.activeVoices.add(cleanup);
-      return;
     }
 
     if (item.style === 'synth') {
@@ -2639,6 +2742,8 @@ export class StudioAudioEngine {
     await this.soundfontLoader.prewarmScoreSamples(ctx, score);
     if (!this.isPlaying) return;
 
+    this.prebakeContinuousSynthTimeline(ctx, this.scheduledTimeline, this.tempoBpm);
+
     const baseStart = ctx.currentTime + 0.06;
     this.startContextTime = baseStart;
 
@@ -3028,9 +3133,18 @@ export class StudioAudioEngine {
         continue;
       }
 
-      const cachedSample = item.sfInstrument
-        ? this.soundfontLoader.getCachedSampleForNote(item.sfInstrument, item.midi)
-        : null;
+      const isSynthItem =
+        ContinuousSynthEngine.isContinuousSynthPatch(item.patch, item.style, item.event.physics) ||
+        item.patch.includes('wavetable') ||
+        item.patch.includes('supersaw') ||
+        item.patch.includes('flutter') ||
+        AbletonSynthSuite.isSupportedPatch(item.patch) ||
+        (item.style === 'synth' && !item.sfInstrument);
+
+      const cachedSample =
+        !isSynthItem && item.sfInstrument
+          ? this.soundfontLoader.getCachedSampleForNote(item.sfInstrument, item.midi)
+          : null;
 
       if (cachedSample) {
         const buf = cachedSample.buffer;

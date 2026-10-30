@@ -249,32 +249,6 @@ export function resolveSoundfontInstrument(
 
   if (isPizz) return 'pizzicato_strings';
 
-  // Check if track ID or display name explicitly names an orchestral/acoustic instrument
-  if (id.startsWith('vln1') || name.includes('first violin') || name.includes('solo violin')) return 'violin';
-  if (id.startsWith('vln2') || name.includes('second violin')) return 'string_ensemble_1';
-  if (id.startsWith('vln') || name.includes('violin')) return 'violin';
-  if (id.startsWith('vla') || name.includes('viola')) return 'viola';
-  if (id.startsWith('vc') || name.includes('cello') || name.includes('violoncello')) return 'cello';
-  if (id.startsWith('cb') || name.includes('contrabass') || name.includes('double bass')) return 'contrabass';
-  if (id === 'fl' || name.includes('flute')) return 'flute';
-  if (id === 'picc' || name.includes('piccolo')) return 'piccolo';
-  if (id === 'ob' || name.includes('oboe')) return 'oboe';
-  if (id === 'eh' || name.includes('english horn')) return 'english_horn';
-  if (id === 'cl' || name.includes('clarinet')) return 'clarinet';
-  if (id === 'bsn' || name.includes('bassoon')) return 'bassoon';
-  if (id === 'hn' || name.includes('french horn') || name.includes('horn')) return 'french_horn';
-  if (id === 'tpt' || name.includes('trumpet')) return 'trumpet';
-  if (id === 'tbn' || name.includes('trombone')) return 'trombone';
-  if (id === 'tba' || name.includes('tuba')) return 'tuba';
-  if (id.includes('harp') || id === 'arp' || name.includes('harp') || name.includes('pluck')) return 'orchestral_harp';
-  if (id === 'soprano' || id === 'choir' || name.includes('choir') || name.includes('soprano')) return 'choir_aahs';
-  if (id === 'alto' || id === 'vox' || name.includes('alto') || name.includes('celestial')) return 'voice_oohs';
-  if (id === 'tenor' || name.includes('tenor') || name.includes('baritone')) return 'choir_aahs';
-  if (id === 'brass' || name.includes('brass')) return 'brass_section';
-  if (id === 'strings' || name.includes('string')) return 'string_ensemble_1';
-  if (id === 'pno' || name.includes('piano') || name.includes('grand')) return 'acoustic_grand_piano';
-  if (id === 'org' || name.includes('organ')) return 'church_organ';
-
   const NATIVE_SYNTH_PATCHES = new Set([
     'wavetable',
     'supersaw',
@@ -294,6 +268,42 @@ export function resolveSoundfontInstrument(
     'granulator',
   ]);
   if (NATIVE_SYNTH_PATCHES.has(cleanPatch) || cleanPatch.startsWith('wavetable_')) {
+    return null;
+  }
+
+  // Check if track ID or display name explicitly names an orchestral/acoustic instrument
+  if (id.startsWith('vln1') || name.includes('first violin') || name.includes('solo violin')) return 'violin';
+  if (id.startsWith('vln2') || name.includes('second violin')) return 'string_ensemble_1';
+  if (id.startsWith('vln') || name.includes('violin')) return 'violin';
+  if (id.startsWith('vla') || name.includes('viola')) return 'viola';
+  if (id.startsWith('vc') || name.includes('cello') || name.includes('violoncello')) return 'cello';
+  if (id.startsWith('cb') || name.includes('contrabass') || name.includes('double bass')) return 'contrabass';
+  if (id === 'fl' || name.includes('flute')) return 'flute';
+  if (id === 'picc' || name.includes('piccolo')) return 'piccolo';
+  if (id === 'ob' || name.includes('oboe')) return 'oboe';
+  if (id === 'eh' || name.includes('english horn')) return 'english_horn';
+  if (id === 'cl' || name.includes('clarinet')) return 'clarinet';
+  if (id === 'bsn' || name.includes('bassoon')) return 'bassoon';
+  if (id === 'hn' || name.includes('french horn') || name.includes('horn')) return 'french_horn';
+  if (id === 'tpt' || name.includes('trumpet')) return 'trumpet';
+  if (id === 'tbn' || name.includes('trombone')) return 'trombone';
+  if (id === 'tba' || name.includes('tuba')) return 'tuba';
+  if (
+    id.includes('harp') ||
+    name.includes('harp') ||
+    (cleanStyle !== 'synth' && (id === 'arp' || name.includes('pluck')))
+  ) {
+    return 'orchestral_harp';
+  }
+  if (id === 'soprano' || id === 'choir' || name.includes('choir') || name.includes('soprano')) return 'choir_aahs';
+  if (id === 'alto' || id === 'vox' || name.includes('alto') || name.includes('celestial')) return 'voice_oohs';
+  if (id === 'tenor' || name.includes('tenor') || name.includes('baritone')) return 'choir_aahs';
+  if (id === 'brass' || name.includes('brass')) return 'brass_section';
+  if (id === 'strings' || name.includes('string')) return 'string_ensemble_1';
+  if (id === 'pno' || name.includes('piano') || name.includes('grand')) return 'acoustic_grand_piano';
+  if (id === 'org' || name.includes('organ')) return 'church_organ';
+
+  if (cleanStyle === 'synth' || cleanStyle === 'simpler' || cleanStyle === 'concrete') {
     return null;
   }
 

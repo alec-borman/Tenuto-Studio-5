@@ -154,7 +154,8 @@ export class DocumentParser {
    * when a user copies code directly from Gemini, ChatGPT, or Claude.
    */
   public sanitizeLLMInput(raw: string): string {
-    const trimmed = raw.trim();
+    const normalized = (raw || '').replace(/\r\n?/g, '\n');
+    const trimmed = normalized.trim();
     const fenceMatch = trimmed.match(/```(?:tenuto|ten|music|plaintext|[a-zA-Z0-9_-]*)?\s*\n([\s\S]*?)```/i);
     if (fenceMatch && fenceMatch[1]) {
       return fenceMatch[1].trim();
@@ -163,6 +164,37 @@ export class DocumentParser {
       .replace(/^```[a-zA-Z0-9_-]*\s*/i, '')
       .replace(/\s*```$/i, '')
       .trim();
+  }
+
+  /**
+   * Folds indented continuation lines (e.g. wrapped `vol=`, `detune=`, `sends=`, `.fx(...)` lines)
+   * onto their parent `def`, `def_return`, or `return` declaration line.
+   */
+  private foldMultilineDeclarations(cleanSource: string): string[] {
+    const rawLines = cleanSource.replace(/\r\n?/g, '\n').split('\n');
+    const folded: string[] = [];
+    const topLevelStartRegex =
+      /^(?:tenuto|meta|def|def_return|return|group|groove|locator|measure|scene|clip|macro|var|\$[a-zA-Z0-9_]+|\})\b/i;
+
+    for (const rawLine of rawLines) {
+      const trimmed = rawLine.trim();
+      if (!trimmed) continue;
+
+      const prevIdx = folded.length - 1;
+      const withoutInlineDicts = trimmed.replace(/@\{[^}]*\}/g, '');
+      if (
+        prevIdx >= 0 &&
+        /^(?:def|def_return|return)\s+/i.test(folded[prevIdx]) &&
+        !topLevelStartRegex.test(trimmed) &&
+        !withoutInlineDicts.includes('{') &&
+        !/^[a-zA-Z0-9_]+\s*:/.test(withoutInlineDicts)
+      ) {
+        folded[prevIdx] = `${folded[prevIdx]} ${trimmed}`;
+      } else {
+        folded.push(trimmed);
+      }
+    }
+    return folded;
   }
 
   public isFullDocument(raw: string): boolean {
@@ -883,7 +915,8 @@ export class DocumentParser {
 
     // 5. Extract def and return / def_return statements line by line
     const lines = cleanSource.split('\n');
-    for (const rawLine of lines) {
+    const declarationLines = this.foldMultilineDeclarations(cleanSource);
+    for (const rawLine of declarationLines) {
       const line = rawLine.trim();
       const defMatch = line.match(/^(def|def_return|return)\s+([a-zA-Z0-9_]+)\s*(?:"([^"]*)")?\s*(.*)$/i);
       if (defMatch) {

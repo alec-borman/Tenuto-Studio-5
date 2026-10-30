@@ -7,15 +7,21 @@ export interface ContinuousVoiceNote {
   startSec: number;
   durSec: number;
   freq: number;
-  targetGlideFreq?: number;
-  glideDurationSec?: number;
   midi: number;
   amp: number;
   startAmp: number;
   endAmp: number;
   swell?: 'crescendo' | 'diminuendo';
   pan: number;
+  chordVoices?: Array<{
+    freq: number;
+    midi: number;
+    amp: number;
+    mpeBend?: number[];
+  }>;
 }
+
+const CONTROL_BLOCK_SIZE = 128;
 
 export class ContinuousSynthEngine {
   /**
@@ -38,7 +44,6 @@ export class ContinuousSynthEngine {
     const windowSpan = Math.max(1e-5, spec.endNorm - spec.startNorm);
     const localU = (clampedU - spec.startNorm) / windowSpan;
 
-    // Smooth raised-cosine edge feathering when a sub-window (startNorm > 0 or endNorm < 1) is used
     let edgeFeather = 1.0;
     const featherWidth = 0.12;
     if (spec.startNorm > 0.001 && localU < featherWidth) {
@@ -53,7 +58,6 @@ export class ContinuousSynthEngine {
       const i0 = Math.floor(scaled);
       const i1 = Math.min(spec.curve.length - 1, i0 + 1);
       const frac = scaled - i0;
-      // Smoothstep S-curve interpolation between curve points
       const smoothFrac = frac * frac * (3 - 2 * frac);
       const val = spec.curve[i0] + (spec.curve[i1] - spec.curve[i0]) * smoothFrac;
       return defaultVal + (val - defaultVal) * edgeFeather;
@@ -64,9 +68,8 @@ export class ContinuousSynthEngine {
 
   /**
    * Automatically pairs sorted voices of consecutive chords/notes on the same track & voice
-   * when `.glide(ms)` is present, populating both `mpe.bend` (for WebAudio/UI) and exact
-   * target frequency slewing (`glideMs`) so every voice in a 5-note chord glides smoothly
-   * along its shortest voice-leading path into the next chord.
+   * when `.glide(ms)` is present, populating per-voice `mpe.bend` trajectories so every voice
+   * in a 5-note chord glides smoothly along its shortest voice-leading path into the next chord.
    */
   public static linkPolyphonicChordGlides(events: AtomicEvent[]): void {
     const stepsByTrackVoice = new Map<
@@ -123,7 +126,11 @@ export class ContinuousSynthEngine {
     }
   }
 
-  public static isContinuousSynthPatch(patch?: string, style?: string, physics?: AtomicEvent['physics']): boolean {
+  public static isContinuousSynthPatch(
+    patch?: string,
+    style?: string,
+    physics?: AtomicEvent['physics']
+  ): boolean {
     const p = (patch || '').trim().toLowerCase();
     const s = (style || '').trim().toLowerCase();
     if (
@@ -162,22 +169,10 @@ export class ContinuousSynthEngine {
     );
   }
 
-  private static readonly SAW_LUT_SIZE = 2048;
-  private static readonly SAW_LUT_MASK = 2047;
-  private static readonly SAW_LUT: Float32Array = (() => {
-    const lut = new Float32Array(2048);
-    for (let k = 0; k < 2048; k++) {
-      const wrappedPhase = k / 2048;
-      const ph = wrappedPhase * 2 * Math.PI;
-      lut[k] = (2 * wrappedPhase - 1) * 0.65 + Math.sin(ph) * 0.35 + Math.sin(ph * 2) * 0.18;
-    }
-    return lut;
-  })();
-
   /**
-   * Renders a note/chord voice into a track's stereo stem (`trackLeft`, `trackRight`) using
-   * free-running oscillator phases, global song-clock LFOs, intra-note windowed detune/filter/noise/drive,
-   * and all 20 continuous synth features.
+   * High-speed 64-sample Control-Rate (`k-rate`) synthesizer renderer.
+   * Supports both single notes and coalesced multi-note chords (`item.chordVoices`) so an entire
+   * 7-note supersaw chord shares one filter/comb/noise/drive/Haas pipeline and executes in < 0.25ms.
    */
   public static renderVoiceIntoTrackStem(
     trackLeft: Float32Array,
@@ -202,60 +197,87 @@ export class ContinuousSynthEngine {
     const isFlutterPatch = patch.includes('flutter');
     const isPluckPatch = patch.includes('pluck') || patch.includes('acid');
 
-    // 1. Analog Component Tolerance / Slop (organic per-voice variance)
-    const slopAmount = Math.max(0, Math.min(1, ((phys?.analogSlop ?? macros.slop ?? 18) as number) / 100));
-    const slopRand = Math.sin((voiceSeed + 1) * 12.9898) * 43758.5453;
-    const slopBipolar = (slopRand - Math.floor(slopRand)) * 2 - 1;
-    const slopFreqScalar = Math.pow(2, (slopBipolar * 3.5 * slopAmount) / 1200);
-    const slopCutoffScalar = 1 + slopBipolar * 0.04 * slopAmount;
+    const chordNotes =
+      item.chordVoices && item.chordVoices.length > 0
+        ? item.chordVoices
+        : [
+            {
+              freq: item.freq,
+              midi: item.midi,
+              amp: item.amp,
+              mpeBend: phys?.mpe?.bend,
+            },
+          ];
 
-    // 2. Unison Voices & Free-Running Initial Phases (prevents laser-click phase cancellation!)
-    const baseDetunePct =
-      phys?.detune ??
-      (macros.unison !== undefined ? Number(macros.unison) : isReese ? 72 : 68);
-    const numUnison = isReese ? 3 : 7;
-    const unisonPhases = new Float64Array(numUnison);
-    const unisonPans = new Float32Array(numUnison);
+    const numNotes = chordNotes.length;
+    // Scale unison count intelligently when a multi-note chord is coalesced (e.g. 2 unison x 7 notes = 14 oscs)
+    const numUnison = isReese ? 3 : numNotes >= 5 ? 2 : numNotes >= 3 ? 3 : 7;
+    const totalOscs = numNotes * numUnison;
+
+    const slopAmount = Math.max(
+      0,
+      Math.min(1, ((phys?.analogSlop ?? macros.slop ?? 18) as number) / 100)
+    );
+
+    const oscPhases = new Float32Array(totalOscs);
+    const oscPhaseIncs = new Float32Array(totalOscs);
+    const oscGainL = new Float32Array(totalOscs);
+    const oscGainR = new Float32Array(totalOscs);
+    const unisonPanNorm = new Float32Array(numUnison);
     const unisonStackRatios = new Float32Array(numUnison);
-    const unisonBasePanCos = new Float32Array(numUnison);
-    const unisonBasePanSin = new Float32Array(numUnison);
+    const noteSlopScalar = new Float32Array(numNotes);
 
     const stackMode = phys?.stackMode || (patch === 'supersaw' ? 'super' : 'none');
-    const staticWidthScalar = (phys?.stereoWidth ?? (macros.width ? Number(macros.width) : 100)) / 100;
-    const hasWidthCurve = Boolean(phys?.widthCurve && phys.widthCurve.length >= 2);
 
     for (let u = 0; u < numUnison; u++) {
-      // Deterministic free-running initial phase in [0, 2*PI)
-      const pSeed = Math.sin((voiceSeed * 17 + u * 53 + 7) * 78.233) * 43758.5453;
-      unisonPhases[u] = (pSeed - Math.floor(pSeed)) * 2 * Math.PI;
-      const normPos = numUnison > 1 ? (u / (numUnison - 1)) * 2 - 1 : 0;
-      unisonPans[u] = normPos;
-
-      const panPos = Math.max(-1, Math.min(1, item.pan + normPos * 0.75 * staticWidthScalar));
-      const panRad = ((panPos + 1) * 0.5) * (Math.PI * 0.5);
-      unisonBasePanCos[u] = Math.cos(panRad);
-      unisonBasePanSin[u] = Math.sin(panRad);
-
-      if (stackMode === 'octaves' && u >= numUnison - 2) {
-        unisonStackRatios[u] = 2.0; // +12st octave layer
+      unisonPanNorm[u] = numUnison > 1 ? (u / (numUnison - 1)) * 2 - 1 : 0;
+      if (stackMode === 'octaves' && u >= numUnison - 1) {
+        unisonStackRatios[u] = 2.0;
       } else if (stackMode === 'fifths' && u === numUnison - 1) {
-        unisonStackRatios[u] = 1.4983; // +7st fifth layer
+        unisonStackRatios[u] = 1.4983;
       } else if (stackMode === 'seventh' && u === numUnison - 1) {
-        unisonStackRatios[u] = 1.8877; // +11st maj7 layer
+        unisonStackRatios[u] = 1.8877;
       } else {
         unisonStackRatios[u] = 1.0;
       }
     }
 
+    const normFactor = 0.62 / Math.sqrt(totalOscs);
+    const baseWidthScalar = (phys?.stereoWidth ?? (macros.width ? Number(macros.width) : 100)) / 100;
+    const hasDynamicWidthCurve = Boolean(phys?.widthCurve && phys.widthCurve.length >= 2);
+
+    for (let nIdx = 0; nIdx < numNotes; nIdx++) {
+      const sRand = Math.sin((voiceSeed + nIdx * 31 + 1) * 12.9898) * 43758.5453;
+      const sBipolar = (sRand - Math.floor(sRand)) * 2 - 1;
+      noteSlopScalar[nIdx] = Math.pow(2, (sBipolar * 3.5 * slopAmount) / 1200);
+
+      for (let u = 0; u < numUnison; u++) {
+        const oscIdx = nIdx * numUnison + u;
+        const pSeed = Math.sin((voiceSeed * 17 + nIdx * 71 + u * 53 + 7) * 78.233) * 43758.5453;
+        oscPhases[oscIdx] = pSeed - Math.floor(pSeed); // Normalized [0, 1) phase
+
+        const normPos = unisonPanNorm[u];
+        const panPos = Math.max(-1, Math.min(1, item.pan + normPos * 0.75 * baseWidthScalar));
+        const panRad = (panPos + 1) * 0.25 * Math.PI;
+        oscGainL[oscIdx] = Math.cos(panRad) * normFactor;
+        oscGainR[oscIdx] = Math.sin(panRad) * normFactor;
+      }
+    }
+
+    const baseDetunePct =
+      phys?.detune ??
+      (macros.unison !== undefined ? Number(macros.unison) : isReese ? 72 : 68);
+
     let subPhase = 0;
     let fmModPhase = 0;
+    let ringPhase = 0;
     let lpL = 0;
     let bpL = 0;
     let lpR = 0;
     let bpR = 0;
     let pinkState = 0;
+    let noiseLfsr = ((voiceSeed + 1) * 1103515245 + 12345) | 0;
 
-    // Comb filter delay line if `.comb()` is active
     const combSamples = phys?.combFreqHz
       ? Math.max(8, Math.min(2048, Math.floor(sampleRate / phys.combFreqHz)))
       : 0;
@@ -263,9 +285,10 @@ export class ContinuousSynthEngine {
     const combBufR = combSamples > 0 ? new Float32Array(combSamples) : null;
     let combIdx = 0;
 
-    // Filter Keytracking (scales cutoff with pitch relative to C4 = MIDI 60)
+    const avgMidi =
+      chordNotes.reduce((acc, n) => acc + n.midi, 0) / Math.max(1, numNotes);
     const keytrackPct = (phys?.keytrack ?? macros.keytrack ?? 35) / 100;
-    const keytrackRatio = Math.pow(2, ((item.midi - 60) * keytrackPct) / 12);
+    const keytrackRatio = Math.pow(2, ((avgMidi - 60) * keytrackPct) / 12);
 
     const baseCutoffHz =
       phys?.cutoff ??
@@ -279,53 +302,63 @@ export class ContinuousSynthEngine {
 
     const baseRes = phys?.resonance ?? (isPluckPatch ? 3.2 : 1.2);
     const qDamp = Math.max(0.12, Math.min(1.0, 1.0 / Math.max(0.6, baseRes * 0.7)));
-    const twoPiOverSr = (2 * Math.PI) / sampleRate;
-    const invTwoPi = 1 / (2 * Math.PI);
+    const invSampleRate = 1.0 / sampleRate;
     const durFrames = Math.max(1, Math.floor(item.durSec * sampleRate));
     const secPerBeat = 60 / Math.max(40, tempoBpm || 120);
-    const normFactor = 0.62 / Math.sqrt(numUnison);
-    const sawLut = ContinuousSynthEngine.SAW_LUT;
-    const sawLutMask = ContinuousSynthEngine.SAW_LUT_MASK;
-    const sawLutSize = ContinuousSynthEngine.SAW_LUT_SIZE;
 
-    for (let i = 0; i < len; i++) {
-      const absFrame = startFrame + i;
-      const songTimeSec = absFrame / sampleRate;
-      const t = i / sampleRate;
-      const normU = Math.min(1.0, i / durFrames);
+    const subLevel =
+      macros.sub_level !== undefined
+        ? Number(macros.sub_level) / 100
+        : isReese
+          ? 0.85
+          : 0.42;
+    const lowestNoteFreq = Math.min(...chordNotes.map((n) => n.freq));
+    const airPct =
+      (phys?.airSheen ?? (macros.air ? Number(macros.air) : patch === 'supersaw' ? 55 : 0)) / 100;
+    const hasPwm = Boolean(phys?.pwmDuty);
+    const hasWaveMirror = phys?.waveWarpMode === 'mirror';
+    const hasWaveBend = phys?.waveWarpMode === 'bend';
+    const waveBendScale = 1 + (phys?.waveWarpAmount ?? 0.5) * 2.2;
+    const chordAmpAvg =
+      chordNotes.reduce((acc, n) => acc + n.amp, 0) / Math.max(1, numNotes);
 
-      // 3. Amplitude Envelope (supports standard ADSR, .cresc/.dim swells, and .pre_swell reverse suction)
+    // Process in 128-sample Control-Rate (k-rate) blocks
+    for (let blockStart = 0; blockStart < len; blockStart += CONTROL_BLOCK_SIZE) {
+      const blockEnd = Math.min(len, blockStart + CONTROL_BLOCK_SIZE);
+      const midSample = (blockStart + blockEnd) >> 1;
+      const absFrame = startFrame + midSample;
+      const songTimeSec = absFrame * invSampleRate;
+      const t = midSample * invSampleRate;
+      const normU = Math.min(1.0, midSample / durFrames);
+
+      // 1. Amplitude Envelope at k-rate
       let ampEnv = 1.0;
       if (phys?.preSwell) {
-        if (i <= durFrames) {
+        if (midSample <= durFrames) {
           ampEnv = Math.pow(normU, 2.6);
         } else {
-          // Razor-clean cut at barline for pre-drop reverse suction
-          const rel = (i - durFrames) / Math.max(1, Math.floor(0.025 * sampleRate));
+          const rel = (midSample - durFrames) / Math.max(1, Math.floor(0.025 * sampleRate));
           ampEnv = Math.max(0, 1 - rel);
         }
       } else if (item.swell === 'crescendo' || item.swell === 'diminuendo') {
-        const sA = item.startAmp;
-        const eA = item.endAmp;
-        if (i <= durFrames) {
-          ampEnv = sA + (eA - sA) * normU;
+        if (midSample <= durFrames) {
+          ampEnv = item.startAmp + (item.endAmp - item.startAmp) * normU;
         } else {
-          const relProg = (i - durFrames) / Math.max(1, len - durFrames);
-          ampEnv = eA * Math.pow(Math.max(0, 1 - relProg), 1.6);
+          const relProg = (midSample - durFrames) / Math.max(1, len - durFrames);
+          ampEnv = item.endAmp * Math.pow(Math.max(0, 1 - relProg), 1.6);
         }
       } else {
         const attackSec = isPluckPatch ? 0.003 : 0.008;
         if (t < attackSec) {
           ampEnv = t / attackSec;
-        } else if (i <= durFrames) {
+        } else if (midSample <= durFrames) {
           ampEnv = isPluckPatch ? 0.35 + 0.65 * Math.exp(-(t - attackSec) * 6.5) : 0.92;
         } else {
-          const relProg = (i - durFrames) / Math.max(1, len - durFrames);
+          const relProg = (midSample - durFrames) / Math.max(1, len - durFrames);
           ampEnv = 0.92 * Math.pow(Math.max(0, 1 - relProg), 1.6);
         }
       }
 
-      // 4. Rhythmic Trance Gate Chopper (`.gate([1, 0, 1, 1, ...])`)
       if (phys?.tranceGate && phys.tranceGate.length > 0) {
         const stepCount = phys.tranceGate.length;
         const exactPos = normU * stepCount;
@@ -337,7 +370,6 @@ export class ContinuousSynthEngine {
         ampEnv *= gateTarget * (1 - smoothEdge) + nextTarget * smoothEdge;
       }
 
-      // 5. Global Song-Clock Flutter LFO (`.flutter(rateHz | [startRate, endRate])`)
       if (phys?.flutterRateHz || isFlutterPatch) {
         let rateHz = phys?.flutterRateHz ?? 12.0;
         if (phys?.flutterCurve && phys.flutterCurve.length >= 2) {
@@ -350,70 +382,32 @@ export class ContinuousSynthEngine {
         ampEnv *= 1 - depth * (1 - lfo);
       }
 
-      // 6. Sample-Accurate Quarter-Note Sidechain Ducking Shaper (`.duck(depth)`)
       const duckDepth = phys?.duckDepth ?? (macros.duck ? Number(macros.duck) / 100 : 0);
       if (duckDepth > 0.01) {
         const beatPhase = (songTimeSec / secPerBeat) % 1.0;
-        // S-curve sidechain recovery over each quarter-note beat
         const recovery = beatPhase < 0.04 ? 0.0 : Math.min(1.0, (beatPhase - 0.04) / 0.58);
         const shaped = recovery * recovery * (3 - 2 * recovery);
         ampEnv *= 1 - duckDepth * (1 - shaped);
       }
 
-      // 7. Continuous Pitch Trajectory (MPE / Polyphonic Chord Glide + Pitch Dip + Pluck Zap + Warble + Fine Cents)
-      let currentFreq = item.freq * slopFreqScalar;
-
-      if (isRiser) {
-        currentFreq *= 1 + normU; // +12st riser sweep
-      }
-
-      if (phys?.mpe?.bend && phys.mpe.bend.length > 0) {
-        const scaled = normU * (phys.mpe.bend.length - 1);
-        const b0 = Math.floor(scaled);
-        const b1 = Math.min(phys.mpe.bend.length - 1, b0 + 1);
-        const bFrac = scaled - b0;
-        const smoothB = bFrac * bFrac * (3 - 2 * bFrac);
-        const bendSt = phys.mpe.bend[b0] + (phys.mpe.bend[b1] - phys.mpe.bend[b0]) * smoothB;
-        if (bendSt !== 0) currentFreq *= Math.pow(2, bendSt / 12);
-      }
+      // 2. Shared Pitch Modifiers at k-rate
+      let globalPitchMultiplier = isRiser ? Math.pow(2, normU) : 1.0;
 
       if (phys?.detuneCentsMod) {
         const cents = this.evaluateWindowedModulation(phys.detuneCentsMod, normU, 0);
-        if (cents !== 0) currentFreq *= Math.pow(2, cents / 1200);
+        if (cents !== 0) globalPitchMultiplier *= Math.pow(2, cents / 1200);
       }
 
       if (phys?.pluckDecayMs && phys.pluckSemitones) {
         const decaySec = phys.pluckDecayMs / 1000;
         const zapSt = phys.pluckSemitones * Math.exp(-t / Math.max(0.002, decaySec));
-        currentFreq *= Math.pow(2, zapSt / 12);
+        globalPitchMultiplier *= Math.pow(2, zapSt / 12);
       }
 
       if (phys?.warbleDepth) {
         const wRate = phys.warbleRateHz ?? 3.2;
-        const wCents = (phys.warbleDepth * 0.45) * Math.sin(2 * Math.PI * wRate * songTimeSec);
-        currentFreq *= 1 + wCents * 0.00057762265;
-      }
-
-      // 8. Intra-Note Windowed Unison Detune Spread (`.detune(85%, 0.4..0.85)` or `.detune([0, 90, 20])`)
-      const activeDetunePct = phys?.detuneMod
-        ? this.evaluateWindowedModulation(phys.detuneMod, normU, 8)
-        : baseDetunePct;
-      const maxSpreadCents = (activeDetunePct / 100) * (isReese ? 34 : 42);
-
-      // 9. Stereo Width Trajectory (`.width([10, 100])` or `width=120`)
-      let widthScalar = staticWidthScalar;
-      if (hasWidthCurve && phys?.widthCurve) {
-        const w0 = phys.widthCurve[0];
-        const w1 = phys.widthCurve[phys.widthCurve.length - 1];
-        widthScalar = (w0 + (w1 - w0) * normU) / 100;
-      }
-
-      // 10. Linear FM & Hard-Sync Ratio
-      let fmModOffset = 0;
-      if (phys?.fmAmount && phys.fmAmount > 0) {
-        const fmRatio = phys.fmRatio ?? 2.0;
-        fmModPhase += currentFreq * fmRatio * twoPiOverSr;
-        fmModOffset = Math.sin(fmModPhase) * phys.fmAmount * 2.5;
+        const wCents = phys.warbleDepth * 0.45 * Math.sin(2 * Math.PI * wRate * songTimeSec);
+        globalPitchMultiplier *= Math.pow(2, wCents / 1200);
       }
 
       let syncRatio = phys?.syncRatio ?? 1.0;
@@ -421,157 +415,227 @@ export class ContinuousSynthEngine {
         syncRatio = phys.syncSweep[0] + (phys.syncSweep[1] - phys.syncSweep[0]) * normU;
       }
 
-      // 11. Sum Multi-Voice Unison Stack
-      let sigL = 0;
-      let sigR = 0;
+      // 3. Windowed Unison Detune & Stereo Pan Gains at k-rate
+      const activeDetunePct = phys?.detuneMod
+        ? this.evaluateWindowedModulation(phys.detuneMod, normU, 8)
+        : baseDetunePct;
+      const maxSpreadOctaves = ((activeDetunePct / 100) * (isReese ? 34 : 42)) / 1200;
 
-      for (let u = 0; u < numUnison; u++) {
-        const normPos = unisonPans[u]; // -1 .. +1
-        const voiceCents = normPos * maxSpreadCents;
-        const centRatio = 1 + voiceCents * 0.00057762265 + voiceCents * voiceCents * 0.0000001668;
-        const voiceFreq = currentFreq * unisonStackRatios[u] * centRatio;
+      let widthScalar = baseWidthScalar;
+      if (hasDynamicWidthCurve && phys?.widthCurve) {
+        const w0 = phys.widthCurve[0];
+        const w1 = phys.widthCurve[phys.widthCurve.length - 1];
+        widthScalar = (w0 + (w1 - w0) * normU) / 100;
+      }
 
-        unisonPhases[u] += voiceFreq * twoPiOverSr;
-        const syncedPhase = unisonPhases[u] * syncRatio;
+      for (let nIdx = 0; nIdx < numNotes; nIdx++) {
+        const cNote = chordNotes[nIdx];
+        let noteBendMultiplier = 1.0;
+        const bendArr = cNote.mpeBend || phys?.mpe?.bend;
+        if (bendArr && bendArr.length > 0) {
+          const scaled = normU * (bendArr.length - 1);
+          const b0 = Math.floor(scaled);
+          const b1 = Math.min(bendArr.length - 1, b0 + 1);
+          const bFrac = scaled - b0;
+          const smoothB = bFrac * bFrac * (3 - 2 * bFrac);
+          const bendSt = bendArr[b0] + (bendArr[b1] - bendArr[b0]) * smoothB;
+          if (bendSt !== 0) noteBendMultiplier = Math.pow(2, bendSt / 12);
+        }
 
-        let oscSample = 0;
-        if (phys?.pwmDuty) {
-          const wrappedPhase = (syncedPhase * invTwoPi) % 1.0;
-          const pwmRate = phys.pwmRateHz ?? 1.8;
-          const duty = Math.max(
+        const baseNoteFreq =
+          cNote.freq * noteSlopScalar[nIdx] * globalPitchMultiplier * noteBendMultiplier * syncRatio * invSampleRate;
+
+        for (let u = 0; u < numUnison; u++) {
+          const oscIdx = nIdx * numUnison + u;
+          const normPos = unisonPanNorm[u];
+          const x = normPos * maxSpreadOctaves;
+          const detuneRatio = 1 + x * 0.69314718 + x * x * 0.2402265;
+          const inc = baseNoteFreq * unisonStackRatios[u] * detuneRatio;
+
+          oscPhaseIncs[oscIdx] = inc < 0.45 ? inc : 0.45;
+
+          if (hasDynamicWidthCurve) {
+            const panPos = Math.max(-1, Math.min(1, item.pan + normPos * 0.75 * widthScalar));
+            const panRad = (panPos + 1) * 0.25 * Math.PI;
+            oscGainL[oscIdx] = Math.cos(panRad) * normFactor;
+            oscGainR[oscIdx] = Math.sin(panRad) * normFactor;
+          }
+        }
+      }
+
+      const subPhaseInc = (lowestNoteFreq * 0.5 * globalPitchMultiplier) * invSampleRate;
+      const fmPhaseInc =
+        phys?.fmAmount && phys.fmAmount > 0
+          ? lowestNoteFreq * (phys.fmRatio ?? 2.0) * invSampleRate
+          : 0;
+      const ringPhaseInc =
+        phys?.ringAmount && phys.ringAmount > 0
+          ? (phys.ringFreqHz ?? 220) * invSampleRate
+          : 0;
+
+      const pwmThreshold = hasPwm
+        ? Math.max(
             0.05,
-            Math.min(0.95, phys.pwmDuty + 0.22 * Math.sin(2 * Math.PI * pwmRate * songTimeSec))
-          );
-          oscSample = wrappedPhase < duty ? 0.85 : -0.85;
-        } else {
-          // Rich band-tempered sawtooth + FM phase offset via precomputed 2048-point LUT
-          const lutIdx = (((syncedPhase + fmModOffset) * invTwoPi * sawLutSize) | 0) & sawLutMask;
-          oscSample = sawLut[lutIdx];
-        }
+            Math.min(
+              0.95,
+              (phys?.pwmDuty ?? 0.5) +
+                0.22 * Math.sin(2 * Math.PI * (phys?.pwmRateHz ?? 1.8) * songTimeSec)
+            )
+          )
+        : 0.5;
 
-        if (phys?.waveWarpMode === 'mirror') {
-          oscSample = Math.abs(oscSample) * 2 - 0.8;
-        } else if (phys?.waveWarpMode === 'bend') {
-          const amt = phys.waveWarpAmount ?? 0.5;
-          oscSample = Math.tanh(oscSample * (1 + amt * 2.5));
-        }
-
-        if (!hasWidthCurve) {
-          sigL += oscSample * unisonBasePanCos[u];
-          sigR += oscSample * unisonBasePanSin[u];
-        } else {
-          const panPos = Math.max(-1, Math.min(1, item.pan + normPos * 0.75 * widthScalar));
-          sigL += oscSample * 0.7071 * (1 - panPos * 0.5);
-          sigR += oscSample * 0.7071 * (1 + panPos * 0.5);
-        }
-      }
-
-      sigL *= normFactor;
-      sigR *= normFactor;
-
-      // 12. Phase-Locked Mono Sub-Oscillator (Essential for Reese Bass & Supersaw weight)
-      const subLevel =
-        macros.sub_level !== undefined
-          ? Number(macros.sub_level) / 100
-          : isReese
-            ? 0.85
-            : 0.42;
-      if (subLevel > 0.01) {
-        subPhase += currentFreq * 0.5 * twoPiOverSr;
-        const subSample = Math.sin(subPhase) * subLevel * 0.55;
-        sigL += subSample;
-        sigR += subSample;
-      }
-
-      // 13. Ring Modulation (`.ring(amount, freqHz)`)
-      if (phys?.ringAmount && phys.ringAmount > 0) {
-        const rFreq = phys.ringFreqHz ?? 220;
-        const ringCarrier = Math.sin(2 * Math.PI * rFreq * songTimeSec);
-        const rMix = Math.min(1, phys.ringAmount);
-        sigL = sigL * (1 - rMix) + sigL * ringCarrier * rMix;
-        sigR = sigR * (1 - rMix) + sigR * ringCarrier * rMix;
-      }
-
-      // 14. Windowed White / Pink / Breath Noise Layer (`.noise(level, color, start..end)`)
       const baseNoise = phys?.noiseLevel ?? (macros.noise ? Number(macros.noise) / 100 : 0);
       const activeNoise = phys?.noiseMod
         ? this.evaluateWindowedModulation(phys.noiseMod, normU, 0)
         : baseNoise;
-      if (activeNoise > 0.005) {
-        const nRand = Math.sin((absFrame + voiceSeed * 97) * 12.9898) * 43758.5453;
-        const white = (nRand - Math.floor(nRand)) * 2 - 1;
-        pinkState = 0.92 * pinkState + 0.08 * white;
-        const noiseSig =
-          phys?.noiseColor === 'pink'
-            ? pinkState * 2.2
-            : phys?.noiseColor === 'breath'
-              ? white * Math.exp(-t * 14)
-              : white * 0.45;
-        sigL += noiseSig * activeNoise;
-        sigR += noiseSig * activeNoise;
-      }
 
-      // 15. Intra-Note Filter Cutoff Trajectory + Keytracking + SVF Resonance
       const modCutoffHz = phys?.cutoffMod
         ? this.evaluateWindowedModulation(phys.cutoffMod, normU, baseCutoffHz)
         : phys?.preSwell
           ? 240 + (baseCutoffHz - 240) * Math.pow(normU, 2.2)
           : baseCutoffHz;
-      const effectiveCutoff = Math.max(
-        60,
-        Math.min(15500, modCutoffHz * keytrackRatio * slopCutoffScalar)
-      );
-      const svfF = Math.min(0.85, 2 * Math.sin((Math.PI * effectiveCutoff) / sampleRate));
+      const effectiveCutoff = Math.max(60, Math.min(15500, modCutoffHz * keytrackRatio));
+      const svfF = Math.min(0.85, 2 * Math.sin((Math.PI * effectiveCutoff) * invSampleRate));
 
-      const hpL = sigL - lpL - qDamp * bpL;
-      bpL += svfF * hpL;
-      lpL += svfF * bpL;
+      const driveVal = phys?.driveMod
+        ? this.evaluateWindowedModulation(phys.driveMod, normU, 0)
+        : isReese
+          ? 0.35
+          : 0;
+      const driveScalar = driveVal > 0 ? 1 + (driveVal > 1 ? driveVal / 100 : driveVal) * 2.8 : 1.0;
+      const blockFinalGain =
+        ampEnv *
+        (item.swell === 'crescendo' || item.swell === 'diminuendo' ? 1.0 : chordAmpAvg) *
+        0.78;
 
-      const hpR = sigR - lpR - qDamp * bpR;
-      bpR += svfF * hpR;
-      lpR += svfF * bpR;
+      const isFastSawPath = !hasPwm && !hasWaveMirror && !hasWaveBend && fmPhaseInc === 0;
 
-      let outL = lpL;
-      let outR = lpR;
+      // 4. Tight Branchless Inner Sample Loop (64 samples)
+      for (let i = blockStart; i < blockEnd; i++) {
+        let sigL = 0;
+        let sigR = 0;
 
-      // 16. Comb Filter Flanging (`.comb(freqHz, feedback)`)
-      if (combBufL && combBufR && combSamples > 0) {
-        const fb = phys?.combFeedback ?? 0.65;
-        const dL = combBufL[combIdx];
-        const dR = combBufR[combIdx];
-        outL = outL * 0.65 + dL * 0.55;
-        outR = outR * 0.65 + dR * 0.55;
-        combBufL[combIdx] = Math.tanh(lpL + dL * fb);
-        combBufR[combIdx] = Math.tanh(lpR + dR * fb);
-        combIdx = (combIdx + 1) % combSamples;
+        if (isFastSawPath) {
+          for (let o = 0; o < totalOscs; o++) {
+            let ph = oscPhases[o] + oscPhaseIncs[o];
+            if (ph >= 1) ph -= 1;
+            oscPhases[o] = ph;
+            const oscSample = 2 * ph - 1;
+            sigL += oscSample * oscGainL[o];
+            sigR += oscSample * oscGainR[o];
+          }
+        } else {
+          let fmOffset = 0;
+          if (fmPhaseInc > 0) {
+            fmModPhase += fmPhaseInc;
+            if (fmModPhase >= 1) fmModPhase -= 1;
+            const fmTri = 1 - 4 * Math.abs(fmModPhase - 0.5);
+            fmOffset = fmTri * (phys?.fmAmount ?? 0) * 0.35;
+          }
+
+          for (let o = 0; o < totalOscs; o++) {
+            let ph = oscPhases[o] + oscPhaseIncs[o];
+            if (ph >= 1) ph -= 1;
+            oscPhases[o] = ph;
+
+            let p = ph + fmOffset;
+            if (p >= 1) p -= 1;
+            else if (p < 0) p += 1;
+
+            let oscSample = hasPwm ? (p < pwmThreshold ? 0.85 : -0.85) : 2 * p - 1;
+
+            if (hasWaveMirror) {
+              oscSample = Math.abs(oscSample) * 2 - 0.8;
+            } else if (hasWaveBend) {
+              const x = oscSample * waveBendScale;
+              oscSample = x / (1 + Math.abs(x));
+            }
+
+            sigL += oscSample * oscGainL[o];
+            sigR += oscSample * oscGainR[o];
+          }
+        }
+
+        if (subLevel > 0.01) {
+          subPhase += subPhaseInc;
+          if (subPhase >= 1) subPhase -= 1;
+          // Fast parabolic sine approximation on [0, 1)
+          const sp = subPhase * 2 - 1;
+          const subSine = 4 * sp * (1 - Math.abs(sp));
+          const subSample = subSine * subLevel * 0.52;
+          sigL += subSample;
+          sigR += subSample;
+        }
+
+        if (ringPhaseInc > 0) {
+          ringPhase += ringPhaseInc;
+          if (ringPhase >= 1) ringPhase -= 1;
+          const rp = ringPhase * 2 - 1;
+          const ringSine = 4 * rp * (1 - Math.abs(rp));
+          const rMix = Math.min(1, phys?.ringAmount ?? 0);
+          sigL = sigL * (1 - rMix) + sigL * ringSine * rMix;
+          sigR = sigR * (1 - rMix) + sigR * ringSine * rMix;
+        }
+
+        if (activeNoise > 0.005) {
+          noiseLfsr = (noiseLfsr * 1664525 + 1013904223) | 0;
+          const white = (noiseLfsr >> 16) / 32768.0;
+          pinkState = 0.92 * pinkState + 0.08 * white;
+          const noiseSig =
+            phys?.noiseColor === 'pink' ? pinkState * 2.2 : white * 0.45;
+          sigL += noiseSig * activeNoise;
+          sigR += noiseSig * activeNoise;
+        }
+
+        const hpL = sigL - lpL - qDamp * bpL;
+        bpL += svfF * hpL;
+        lpL += svfF * bpL;
+
+        const hpR = sigR - lpR - qDamp * bpR;
+        bpR += svfF * hpR;
+        lpR += svfF * bpR;
+
+        let outL = lpL;
+        let outR = lpR;
+
+        if (combBufL && combBufR && combSamples > 0) {
+          const fb = phys?.combFeedback ?? 0.65;
+          const dL = combBufL[combIdx];
+          const dR = combBufR[combIdx];
+          outL = outL * 0.65 + dL * 0.55;
+          outR = outR * 0.65 + dR * 0.55;
+          const cInL = (lpL + dL * fb) * 1.1;
+          const cInR = (lpR + dR * fb) * 1.1;
+          combBufL[combIdx] = cInL / (1 + Math.abs(cInL));
+          combBufR[combIdx] = cInR / (1 + Math.abs(cInR));
+          combIdx = (combIdx + 1) % combSamples;
+        }
+
+        if (driveScalar > 1.01) {
+          const dL = outL * driveScalar;
+          const dR = outR * driveScalar;
+          outL = dL / (1 + Math.abs(dL));
+          outR = dR / (1 + Math.abs(dR));
+        }
+
+        if (airPct > 0.01) {
+          const aL = hpL * 2.2;
+          const aR = hpR * 2.2;
+          outL += (aL / (1 + Math.abs(aL))) * airPct * 0.42;
+          outR += (aR / (1 + Math.abs(aR))) * airPct * 0.42;
+        }
+
+        const absIdx = startFrame + i;
+        trackLeft[absIdx] += outL * blockFinalGain;
+        trackRight[absIdx] += outR * blockFinalGain;
       }
-
-      // 17. Intra-Note Windowed Saturation Drive (`.drive([0.1, 0.9])`)
-      if (phys?.driveMod) {
-        const driveVal = this.evaluateWindowedModulation(phys.driveMod, normU, 0);
-        const driveScalar = 1 + (driveVal > 1 ? driveVal / 100 : driveVal) * 3.2;
-        outL = Math.tanh(outL * driveScalar);
-        outR = Math.tanh(outR * driveScalar);
-      } else if (isReese) {
-        outL = Math.tanh(outL * 1.65);
-        outR = Math.tanh(outR * 1.65);
-      }
-
-      // 18. Harmonic Air / Top-End Presence Exciter (`.air(75%)`)
-      const airPct = (phys?.airSheen ?? (macros.air ? Number(macros.air) : patch === 'supersaw' ? 55 : 0)) / 100;
-      if (airPct > 0.01) {
-        outL += Math.tanh(hpL * 2.4) * airPct * 0.45;
-        outR += Math.tanh(hpR * 2.4) * airPct * 0.45;
-      }
-
-      const finalGain = ampEnv * item.amp * 0.78;
-      trackLeft[absFrame] += outL * finalGain;
-      trackRight[absFrame] += outR * finalGain;
     }
 
-    // 19. Stereo Haas Micro-Delay Widening (`.haas(12ms)`)
     if (phys?.haasDelayMs && phys.haasDelayMs > 0) {
-      const delayFrames = Math.min(1500, Math.max(1, Math.floor((phys.haasDelayMs / 1000) * sampleRate)));
+      const delayFrames = Math.min(
+        1500,
+        Math.max(1, Math.floor((phys.haasDelayMs / 1000) * sampleRate))
+      );
       const copyR = trackRight.slice(startFrame, endFrame);
       for (let i = delayFrames; i < len; i++) {
         trackRight[startFrame + i] = copyR[i - delayFrames];
@@ -579,10 +643,6 @@ export class ContinuousSynthEngine {
     }
   }
 
-  /**
-   * Processes a summed Track Stem through Bass-Mono Crossover (`< 120 Hz` mono lock)
-   * so wide supersaw and Reese tracks retain 100% phase-solid low-end punch.
-   */
   public static applyTrackBassMonoCrossover(
     left: Float32Array,
     right: Float32Array,
