@@ -1,0 +1,446 @@
+tenuto "6.0" {
+  %% ============================================================================
+  %% 1. GLOBAL METADATA, SCALE LOCK & SIDECHAIN ROUTING
+  %% ============================================================================
+  meta @{
+    title: "Starlight Over the Glass Bayou (Hybrid Symphonic Power Ballad)",
+    tempo: 76,
+    time: "4/4",
+    key: "F#",
+    scale: "minor",
+    scale_lock: true,
+    sidechain: "drums",
+    sidechain_tap: "post_fx"
+  }
+
+  %% ============================================================================
+  %% 2. SHARED CONCERT HALL & BALLAD SHIMMER RETURN BUSES
+  %% ============================================================================
+  return ballad_hall  "Royal Concert Hall" .fx(hybrid_reverb, @{decay: 4.8, predelay: 28, mix: 1.0})
+  return velvet_space "Unison Velvet Shimmer" .fx(hybrid_reverb, @{decay: 5.6, predelay: 18, mix: 1.0}).fx(echo, @{time: 395, feedback: 0.42, mix: 0.35})
+
+  %% ============================================================================
+  %% 3. DETUNED UNISON SYNTHESIZER SECTION (style=synth)
+  %% ============================================================================
+  def saws  "Anthem Supersaw"      style=synth patch="supersaw"    vol=102 pan=-0.12 detune=90 cutoff=10800 resonance=1.6 sub=72 air=88 duck=58 width=160 slop=34 sends=@{velvet_space: 0.55, ballad_hall: 0.35} .fx(multiband_dynamics, @{amount: 0.55}).fx(saturator, @{drive: 0.22, mix: 0.40})
+  def reese "Warm Reese Sub"       style=synth patch="reese_bass"  vol=106 pan=0.00  detune=80 cutoff=480   resonance=2.0 sub=96 duck=65 width=120 slop=28 sends=@{ballad_hall: 0.15} .fx(roar, @{drive: 0.45, feedback: 0.18, mix: 0.60}).fx(erosion, @{freq: 1400, amount: 0.16})
+  def lead  "Crying Unison Lead"   style=synth patch="pluck_lead"  vol=104 pan=0.16  detune=84 cutoff=9800  resonance=2.2 air=84 duck=48 width=150 slop=30 sends=@{velvet_space: 0.60} .midi_fx(note_echo, @{repeats: 1, delay: 2, feedback: 0.40}) .fx(chorus, @{rate: 0.65, amount: 0.48, mix: 0.38})
+  def fpad  "Tape Flutter Pad"     style=synth patch="flutter_pad" vol=96  pan=-0.18 detune=78 cutoff=6800  resonance=1.5 air=76 duck=52 width=165 slop=42 sends=@{velvet_space: 0.70, ballad_hall: 0.45} .fx(phaser_flanger, @{rate: 0.28, feedback: 0.38, mix: 0.28})
+
+  %% ============================================================================
+  %% 4. CONCERT PIANOS & SYMPHONIC ORCHESTRA (style=standard & style=grid)
+  %% ============================================================================
+  %% Concert Grand Piano & Vintage Rhodes
+  def pno   "Salamander Grand"     style=standard patch="salamander_grand"  vol=104 pan=-0.15 sends=@{ballad_hall: 0.55} .midi_fx(expressive_chords, @{strum: 18}) .fx(compressor, @{threshold: -18, ratio: 2.5})
+  def epno  "Warm Suitcase Rhodes" style=standard patch="rhodes"            vol=94  pan=0.20  sends=@{ballad_hall: 0.50, velvet_space: 0.35} .fx(chorus, @{rate: 0.5, amount: 0.35, mix: 0.30})
+
+  %% Orchestral Strings
+  def vln1  "1st Violins"          style=standard patch="violin"            vol=102 pan=-0.42 sends=@{ballad_hall: 0.60} .fx(eq_eight, @{low_cut_hz: 150, high_shelf_db: 2.2})
+  def vln2  "2nd Violins"          style=standard patch="string_ensemble_1" vol=96  pan=-0.24 sends=@{ballad_hall: 0.60}
+  def vla   "Violas"               style=standard patch="viola"             vol=94  pan=0.12  sends=@{ballad_hall: 0.60}
+  def vc    "Solo & Section Cello" style=standard patch="cello"             vol=102 pan=0.32  sends=@{ballad_hall: 0.55} .fx(compressor, @{threshold: -18, ratio: 3.0})
+  def cb    "Contrabasses"         style=standard patch="contrabass"        vol=100 pan=0.45  sends=@{ballad_hall: 0.40} .fx(glue_compressor, @{threshold: -16, ratio: 3.5})
+
+  %% Brass, Woodwinds, Choir & Harp
+  def hn    "French Horns"         style=standard patch="french_horn"       vol=100 pan=-0.28 sends=@{ballad_hall: 0.65} .fx(saturator, @{drive: 0.16, mix: 0.32})
+  def tpt   "Solo Trumpet"         style=standard patch="trumpet"           vol=100 pan=0.22  sends=@{ballad_hall: 0.60}
+  def tbn   "Trombones"            style=standard patch="trombone"          vol=98  pan=0.36  sends=@{ballad_hall: 0.60}
+  def fl    "Concert Flute"        style=standard patch="flute"             vol=94  pan=-0.18 sends=@{ballad_hall: 0.65}
+  def eh    "English Horn"         style=standard patch="english_horn"      vol=96  pan=0.14  sends=@{ballad_hall: 0.65}
+  def choir "Cathedral Choir"      style=standard patch="choir_aahs"        vol=98  pan=0.00  sends=@{ballad_hall: 0.72, velvet_space: 0.40}
+  def harp  "Orchestral Harp"      style=standard patch="orchestral_harp"   vol=92  pan=-0.35 sends=@{ballad_hall: 0.68}
+
+  %% Timpani & Power Ballad Drum Kit
+  def timp  "Orchestral Timpani"   style=standard patch="timpani"           vol=104 pan=-0.08 sends=@{ballad_hall: 0.52} .fx(drum_buss, @{drive: 0.28, boom_amount: 0.38})
+  def drums "Ballad Impact Kit"    style=grid     patch="tenuto_808_kit"    vol=106 pan=0.00  sends=@{ballad_hall: 0.30} .fx(drum_buss, @{drive: 0.38, crunch: 0.25, boom_amount: 0.52})
+
+  %% ============================================================================
+  %% STAGE I (Measures 1-4): INTIMATE NOCTURNE (76 BPM)
+  %% Salamander Grand, Rhodes, Solo Cello, and English Horn carry a tender theme
+  %% while the detuned unison synths breathe gently underneath with soft blooms.
+  %% ============================================================================
+  measure 1 {
+    saws:  [f#3 c#4 f#4 a4 c#5]:1.p.cresc.open_voice.detune([0, 78, 25]).filter(450, 5200).glide(220ms) |
+    reese: f#1:1.mp.detune(74%, 0.25..0.88).warble(22, 1.5).drive([0.20, 0.55]).glide(200ms) |
+    lead:  r:2 c#5:2.p.cresc.detune(72%, 0.30..0.88).haas(10ms).vib |
+    fpad:  [f#3 a3 c#4 e4]:1.p.cresc.detune(76%, 0.20..0.88).flutter([5, 11]).analog_slop(42%).glide(220ms) |
+    pno:   f#2:8.mp c#3:8 f#3:8 a3:8 c#4:8 f#4:8 a4:8 c#5:8 |
+    epno:  [f#3 a3 c#4 f#4]:1.p.cresc |
+    vln1:  r:2 c#5:2.mp.cresc.vib |
+    vln2:  [a4 c#5]:1.p.cresc.vib |
+    vla:   [f#3 a3 c#4]:1.p.cresc |
+    vc:    f#2:2..mp.vib a2:4.mp.legato |
+    cb:    f#1:1.mp |
+    hn:    r:1 |
+    tpt:   r:1 |
+    tbn:   r:1 |
+    fl:    r:2 a5:2.p.cresc.vib |
+    eh:    c#5:2..mp.vib f#5:4.mp.legato |
+    choir: [f#3 a3 c#4 f#4]:1.p.cresc |
+    harp:  f#2:8.p c#3:8 f#3:8 a3:8 c#4:8 f#4:8 a4:8 c#5:8 |
+    timp:  r:1 |
+    drums: <[ v1: k:4.mp r:4 r:2 | v2: r:2 rim:4.p r:4 ]>
+  }
+
+  measure 2 {
+    saws:  [d3 a3 d4 f#4 a4 c#5]:1.mp.cresc.open_voice.detune(80%, 0.25..0.88).filter(550, 6200).glide(220ms) |
+    reese: d1:1.mp.cresc.detune(76%, 0.25..0.90).warble(24, 1.6).drive([0.25, 0.62]).glide(200ms) |
+    lead:  f#5:2..mp.detune(76%, 0.25..0.88).haas(10ms).vib e5:8.mp.legato d5:8.mp.legato |
+    fpad:  [d3 f#3 a3 c#4]:1.mp.detune(78%, 0.20..0.90).flutter([6, 12]).analog_slop(42%).glide(220ms) |
+    pno:   d2:8.mp a2:8 d3:8 f#3:8 a3:8 c#4:8 f#4:8 a4:8 |
+    epno:  [d3 f#3 a3 c#4]:1.mp |
+    vln1:  f#5:2..mp.vib e5:8.mp.legato d5:8.mp.legato |
+    vln2:  [f#4 a4]:2.mp.vib [d4 f#4]:2.mp.vib |
+    vla:   [d3 f#3 a3]:1.mp |
+    vc:    d2:2..mp.vib f#2:4.mp.legato |
+    cb:    d1:1.mp |
+    hn:    [d3 f#3 a3]:1.p.cresc |
+    tpt:   r:1 |
+    tbn:   r:1 |
+    fl:    f#5:2.mp.vib d5:2.mp.vib |
+    eh:    e5:2.mp.vib d5:2.mp.vib |
+    choir: [d3 f#3 a3 c#4]:1.mp |
+    harp:  d2:8.mp a2:8 d3:8 f#3:8 a3:8 c#4:8 f#4:8 a4:8 |
+    timp:  r:1 |
+    drums: <[ v1: k:4.mp r:4 k:4.p r:4 | v2: r:2 rim:4.mp r:4 ]>
+  }
+
+  measure 3 {
+    saws:  [a2 e3 a3 c#4 e4 a4]:1.mf.open_voice.stack("octaves").detune([0, 84, 30]).filter(700, 7800).glide(220ms) |
+    reese: a1:1.mf.detune(80%, 0.20..0.90).warble(28, 1.8).drive([0.28, 0.70]).glide(200ms) |
+    lead:  c#5:4..mf.zap.detune(80%, 0.20..0.90) e5:8.mf.legato a5:2.mf.detune(84%, 0.20..0.90).vib.glide(160ms) |
+    fpad:  [a2 c#3 e3 a3]:1.mf.detune(80%, 0.20..0.90).flutter([6, 14]).analog_slop(40%).glide(220ms) |
+    pno:   a1:8.mf e2:8 a2:8 c#3:8 e3:8 a3:8 c#4:8 e4:8 |
+    epno:  [a2 c#3 e3 a3]:1.mf |
+    vln1:  c#5:4..mf.vib e5:8.mf.legato a5:2.mf.vib |
+    vln2:  [e4 a4]:2.mf.vib [c#4 e4]:2.mf.vib |
+    vla:   [a3 c#4 e4]:1.mf |
+    vc:    a1:2..mf.vib e2:4.mf.legato |
+    cb:    a1:1.mf |
+    hn:    [a2 e3 a3 c#4]:1.mp.cresc |
+    tpt:   r:1 |
+    tbn:   [a1 e2 a2]:1.p.cresc |
+    fl:    e5:2.mf.vib a5:2.mf.vib |
+    eh:    c#5:4..mf.vib e5:8.mf.legato a4:2.mf.vib |
+    choir: [a3 c#4 e4 a4]:1.mf |
+    harp:  a1:8.mf e2:8 a2:8 c#3:8 e3:8 a3:8 c#4:8 e4:8 |
+    timp:  a1:4.mp r:4 r:2 |
+    drums: <[ v1: k:4.mf r:4 k:4.mp r:4 | v2: r:2 rim:4.mf r:4 | v3: ch:4.p ch:4.p ch:4.p ch:4.p ]>
+  }
+
+  measure 4 {
+    saws:  [e2 b2 e3 g#3 b3 e4 g#4]:1.mf.cresc.open_voice.stack("octaves").detune(86%, 0.20..0.90).filter(800, 9000).glide(220ms) |
+    reese: e1:1.mf.cresc.detune(82%, 0.20..0.90).warble(30, 2.0).drive([0.32, 0.78]).glide(200ms) |
+    lead:  g#5:2..mf.cresc.detune(84%, 0.20..0.90).haas(12ms).vib f#5:8.f.legato e5:8.f.legato |
+    fpad:  [e2 g#2 b2 e3 g#3]:1.mf.cresc.detune(82%, 0.20..0.90).flutter([8, 16]).glide(220ms) |
+    pno:   e2:8.mf b2:8 e3:8 g#3:8 b3:8 e4:8 g#4:8 b4:8 |
+    epno:  [e3 g#3 b3 e4]:1.mf.cresc |
+    vln1:  g#5:2..mf.cresc.vib f#5:8.f.legato e5:8.f.legato |
+    vln2:  [b4 e5]:2.mf.vib [g#4 b4]:2.f.vib |
+    vla:   [e3 g#3 b3]:1.mf.cresc |
+    vc:    e2:2..mf.cresc.vib b2:4.f.legato |
+    cb:    e1:1.mf.cresc |
+    hn:    [e3 g#3 b3 e4]:1.mf.cresc |
+    tpt:   r:2 b4:2.mp.cresc.vib |
+    tbn:   [e2 b2 e3]:1.mp.cresc |
+    fl:    g#5:2..mf.vib b5:4.f.legato |
+    eh:    g#4:2..mf.vib b4:4.f.legato |
+    choir: [e3 g#3 b3 e4]:1.mf.cresc |
+    harp:  e2:8.mf b2:8 e3:8 g#3:8 b3:8 e4:8 g#4:8 b4:8 |
+    timp:  e2:2.mp r:4 b1:4.mf |
+    drums: <[ v1: k:4.mf r:4 k:4.mf r:4 | v2: r:2 s:4.mf s:8.mf s:8.f | v3: ch:4.mp ch:4.mp oh:4.mf ch:4.mf ]>
+  }
+
+  %% ============================================================================
+  %% STAGE II (Measures 5-8): PRE-CHORUS ORCHESTRAL & UNISON SWELL (76 BPM)
+  %% Full strings, French Horns, and detuned unison leads join the piano.
+  %% Measure 8 builds into a dramatic C#7 dominant turnaround with pre_swell.
+  %% ============================================================================
+  measure 5 {
+    saws:  [b2 f#3 b3 d4 f#4 b4]:1.f.open_voice.stack("octaves").detune([0, 90, 35]).air(85%).glide(200ms) |
+    reese: b0:1.f.detune(86%, 0.18..0.90).warble(32, 2.2).drive([0.35, 0.85]).glide(180ms) |
+    lead:  f#5:4..f.zap.detune(86%, 0.18..0.90).haas(12ms) d5:8.f.legato b5:2.f.detune(88%, 0.18..0.92).vib.glide(150ms) |
+    fpad:  [b2 d3 f#3 b3]:1.f.detune(84%, 0.18..0.90).flutter([8, 16]).filter(900, 10500).glide(200ms) |
+    pno:   [b1 f#2 b2]:4.f [d3 f#3 b3 d4]:4.f [f#3 b3 d4 f#4]:4.f [d3 f#3 b3 d4]:4.f |
+    epno:  [b2 d3 f#3 b3]:2.f [d3 f#3 b3 d4]:2.f |
+    vln1:  f#5:4..f.vib d5:8.f.legato b5:2.f.vib |
+    vln2:  [d5 f#5]:2.f.vib [b4 d5]:2.f.vib |
+    vla:   [b3 d4 f#4]:1.f |
+    vc:    b1:2..f.vib f#2:4.f.legato |
+    cb:    b0:1.f |
+    hn:    [b2 f#3 b3 d4]:1.f |
+    tpt:   f#4:2.mp.cresc.vib b4:2.f.vib |
+    tbn:   [b1 f#2 b2]:1.mf.cresc |
+    fl:    f#5:4..f.vib d5:8.f.legato b5:2.f.vib |
+    eh:    d5:2.f.vib f#5:2.f.vib |
+    choir: [b3 d4 f#4 b4]:1.f |
+    harp:  b1:8.f f#2:8 b2:8 d3:8 f#3:8 b3:8 d4:8 f#4:8 |
+    timp:  b1:4.f r:4 f#2:2.mp.cresc |
+    drums: <[ v1: k:4.f r:4 k:8.f k:8.f r:4 | v2: r:2 s:4.f r:4 | v3: cr:4.f ch:4.mf oh:4.f ch:4.mf ]>
+  }
+
+  measure 6 {
+    saws:  [f#2 c#3 f#3 a3 c#4 f#4 a4]:1.f.open_voice.stack("fifths").detune(90%, 0.18..0.92).air(88%).glide(200ms) |
+    reese: f#1:1.f.detune(88%, 0.18..0.92).warble(34, 2.3).drive([0.38, 0.88]).glide(180ms) |
+    lead:  a5:4..f.zap.detune(88%, 0.18..0.90).haas(12ms) f#5:8.f.legato c#5:2.f.detune(86%, 0.18..0.90).vib.glide(150ms) |
+    fpad:  [f#2 a2 c#3 f#3 a3]:1.f.detune(84%, 0.18..0.90).flutter([9, 18]).filter(1000, 11200).glide(200ms) |
+    pno:   [f#1 c#2 f#2]:4.f [a2 c#3 f#3 a3]:4.f [c#3 f#3 a3 c#4]:4.f [a2 c#3 f#3 a3]:4.f |
+    epno:  [f#3 a3 c#4 f#4]:2.f [a3 c#4 f#4 a4]:2.f |
+    vln1:  a5:4..f.vib f#5:8.f.legato c#5:2.f.vib |
+    vln2:  [c#5 f#5]:2.f.vib [a4 c#5]:2.f.vib |
+    vla:   [f#3 a3 c#4]:1.f |
+    vc:    f#2:2..f.vib c#3:4.f.legato |
+    cb:    f#1:1.f |
+    hn:    [f#3 a3 c#4 f#4]:1.f |
+    tpt:   a4:2.f.vib f#4:2.f.vib |
+    tbn:   [f#2 c#3 f#3]:1.f |
+    fl:    a5:4..f.vib f#5:8.f.legato c#6:2.f.vib |
+    eh:    f#5:2.f.vib c#5:2.f.vib |
+    choir: [f#3 a3 c#4 f#4]:1.f |
+    harp:  f#2:8.f c#3:8 f#3:8 a3:8 c#4:8 f#4:8 a4:8 c#5:8 |
+    timp:  f#2:4.f r:4 c#2:2.f |
+    drums: <[ v1: k:4.f r:4 k:4.f r:4 | v2: r:2 s:4.f r:4 | v3: ch:4.mf oh:4.f ch:4.mf oh:4.f ]>
+  }
+
+  measure 7 {
+    saws:  [d2 a2 d3 f#3 a3 d4 f#4]:1.f.cresc.open_voice.stack("octaves").detune([0, 92, 40]).air(90%).glide(200ms) |
+    reese: d1:1.ff.detune(90%, 0.15..0.92).warble(36, 2.5).drive([0.42, 0.90]).glide(180ms) |
+    lead:  d5:4.f.zap.detune(88%, 0.18..0.90) f#5:4.f.detune(90%, 0.18..0.90) a5:4..ff.zap.detune(92%, 0.15..0.92) b5:8.ff.legato |
+    fpad:  [d2 f#2 a2 d3 f#3]:1.f.cresc.detune(86%, 0.15..0.92).flutter([10, 20]).filter(1200, 12500).glide(200ms) |
+    pno:   d2:8.f a2:8 d3:8 f#3:8 a3:8 d4:8 f#4:8 a4:8 |
+    epno:  [d3 f#3 a3 d4]:1.f.cresc |
+    vln1:  d5:4.f.vib f#5:4.f.vib a5:4..ff.vib b5:8.ff.legato |
+    vln2:  [f#4 a4]:2.f.vib [a4 d5]:2.ff.vib |
+    vla:   [d3 f#3 a3]:2.f [f#3 a3 d4]:2.ff |
+    vc:    d2:2.f.vib f#2:4.ff.legato a2:4.ff.legato |
+    cb:    d1:1.f.cresc |
+    hn:    [d3 f#3 a3 d4]:1.f.cresc |
+    tpt:   d5:2.f.vib f#5:2.ff.vib |
+    tbn:   [d2 a2 d3]:1.f.cresc |
+    fl:    d5:4.f.legato f#5:4.f.legato a5:2.ff.vib |
+    eh:    d5:2.f.vib f#5:2.ff.vib |
+    choir: [d3 f#3 a3 d4]:1.f.cresc |
+    harp:  d2:8.f a2:8 d3:8 f#3:8 a3:8 d4:8 f#4:8 a4:8 |
+    timp:  d2:2.f a1:2.ff |
+    drums: <[ v1: k:4.f k:8.f r:8 k:4.ff r:4 | v2: r:2 s:4.ff r:4 | v3: cr:2.f oh:2.ff ]>
+  }
+
+  measure 8 {
+    saws:  [c#2 g#2 c#3 f#3 g#3 c#4]:2.ff.stack("octaves").detune([0, 94, 45]).glide(160ms) [c#2 g#2 c#3 e#3 g#3 c#4]:2.ff.stack("octaves").detune(96%, 0.10..0.95).air(95%).pitch_dip(-7).glide(200ms) |
+    reese: c#1:2.ff.detune(92%, 0.12..0.94).warble(40, 2.8) c#1:2.ff.detune(96%, 0.10..0.96).drive([0.50, 0.96]).glide(180ms) |
+    lead:  c#6:2.ff.zap.detune(92%, 0.12..0.94).sync([1.0, 2.8]) e#6:2.ff.detune(96%, 0.10..0.96).haas(14ms).vib.glide(160ms) |
+    fpad:  [c#2 f#2 g#2 c#3]:2.ff.detune(88%, 0.12..0.94) [c#2 e#2 g#2 c#3]:2.ff.detune(92%, 0.10..0.96).flutter([12, 26]).filter(1500, 15000).pre_swell |
+    pno:   [c#2 g#2 c#3 f#3 g#3 c#4]:2.ff [c#2 g#2 c#3 e#3 g#3 c#4]:2.ff |
+    epno:  [c#3 f#3 g#3 c#4]:2.ff [c#3 e#3 g#3 c#4]:2.ff |
+    vln1:  c#6:2.ff.vib e#6:2.ff.vib |
+    vln2:  [g#4 c#5]:2.ff.trem [g#4 e#5]:2.ff.trem |
+    vla:   [c#3 f#3 g#3]:2.ff.trem [c#3 e#3 g#3]:2.ff.trem |
+    vc:    c#2:2.ff.vib g#2:4.ff.marcato c#3:4.ff.marcato |
+    cb:    c#1:2.ff c#1:2.ff |
+    hn:    [c#3 f#3 g#3 c#4]:2.ff [c#3 e#3 g#3 c#4]:2.ff |
+    tpt:   c#5:2.ff.vib e#5:2.ff.vib |
+    tbn:   [c#2 g#2 c#3]:2.ff [c#2 g#2 e#3]:2.ff |
+    fl:    c#6:2.ff.vib e#6:2.ff.vib |
+    eh:    g#5:2.ff.vib e#5:2.ff.vib |
+    choir: [c#3 f#3 g#3 c#4]:2.ff [c#3 e#3 g#3 c#4]:2.ff |
+    harp:  c#2:16.ff g#2:16 c#3:16 e#3:16 g#3:16 c#4:16 e#4:16 g#4:16 c#5:16 e#5:16 g#5:16 c#6:16 e#6:4.ff |
+    timp:  c#2:4.ff g#1:4.ff c#2:8.ff c#2:8.ff c#2:8.ff c#2:8.ff |
+    drums: <[ v1: k:4.ff k:4.ff k:8.ff k:8.ff k:8.ff k:8.ff | v2: s:4.ff s:4.ff s:16.ff s:16.ff s:16.ff s:16.ff s:16.ff s:16.ff s:16.ff s:16.ff | v3: cr:1.ff ]>
+  }
+
+  %% ============================================================================
+  %% STAGE III (Measures 9-12): GRAND SYMPHONIC BALLAD CHORUS (82 BPM)
+  %% Piecewise tempo lift to 82 BPM as the full orchestra, Choir, Salamander Grand,
+  %% and 7-voice detuned unison synths soar over a slow half-time stadium groove.
+  %% ============================================================================
+  measure 9 {
+    meta @{ tempo: 82 }
+    saws:  [d2 a2 d3 f#3 a3 d4 f#4]:1.ff.open_voice.stack("octaves").detune([0, 96, 40]).air(95%).glide(200ms) |
+    reese: d1:1.ff.detune(92%, 0.12..0.94).warble(36, 2.4).drive([0.48, 0.94]).glide(180ms) |
+    lead:  f#6:4..ff.zap.detune(94%, 0.12..0.94).haas(12ms) e6:8.ff.legato d6:4.ff.detune(90%, 0.15..0.92) a5:4.ff.glide(150ms) |
+    fpad:  [d3 f#3 a3 d4 f#4]:1.ff.detune(88%, 0.12..0.92).flutter([8, 18]).filter(1800, 14000).glide(200ms) |
+    pno:   [d1 a1 d2]:4.ff [f#3 a3 d4 f#4]:4.ff [a3 d4 f#4 a4]:4.ff [f#3 a3 d4 f#4]:4.ff |
+    epno:  [d3 f#3 a3 d4]:1.ff |
+    vln1:  f#6:4..ff.vib e6:8.ff.legato d6:4.ff.vib a5:4.ff.vib |
+    vln2:  [a4 d5]:2.ff.vib [f#4 a4]:2.ff.vib |
+    vla:   [d3 f#3 a3]:2.ff [f#3 a3 d4]:2.ff |
+    vc:    d2:2..ff.vib a2:4.ff.legato |
+    cb:    d1:1.ff |
+    hn:    [d3 f#3 a3 d4]:1.ff |
+    tpt:   f#5:4..ff.vib e5:8.ff.legato d5:4.ff.marcato a4:4.ff.marcato |
+    tbn:   [d2 a2 d3 f#3]:1.ff |
+    fl:    f#6:4..ff.vib e6:8.ff.legato d6:4.ff.legato a5:4.ff.vib |
+    eh:    f#5:2.ff.vib d5:2.ff.vib |
+    choir: [d4 f#4 a4 d5]:1.ff |
+    harp:  d2:8.ff a2:8 d3:8 f#3:8 a3:8 d4:8 f#4:8 a4:8 |
+    timp:  d2:4.ff r:4 a1:2.ff |
+    drums: <[ v1: k:4.ff r:4 k:8.ff k:8.ff r:4 | v2: r:2 s:4.ff r:4 | v3: cr:4.ff oh:8.f ch:8.f oh:8.f ch:8.f oh:8.f ch:8.f ]>
+  }
+
+  measure 10 {
+    saws:  [e2 b2 e3 g#3 b3 e4 g#4]:1.ff.open_voice.stack("octaves").detune(94%, 0.15..0.94).air(94%).glide(200ms) |
+    reese: e1:1.ff.detune(92%, 0.12..0.94).warble(38, 2.5).drive([0.48, 0.94]).glide(180ms) |
+    lead:  g#6:4..ff.zap.detune(94%, 0.12..0.94).haas(12ms) f#6:8.ff.legato e6:4.ff.detune(90%, 0.15..0.92) b5:4.ff.glide(150ms) |
+    fpad:  [e3 g#3 b3 e4 g#4]:1.ff.detune(88%, 0.12..0.92).flutter([9, 20]).filter(1800, 14200).glide(200ms) |
+    pno:   [e1 b1 e2]:4.ff [g#3 b3 e4 g#4]:4.ff [b3 e4 g#4 b4]:4.ff [g#3 b3 e4 g#4]:4.ff |
+    epno:  [e3 g#3 b3 e4]:1.ff |
+    vln1:  g#6:4..ff.vib f#6:8.ff.legato e6:4.ff.vib b5:4.ff.vib |
+    vln2:  [b4 e5]:2.ff.vib [g#4 b4]:2.ff.vib |
+    vla:   [e3 g#3 b3]:2.ff [g#3 b3 e4]:2.ff |
+    vc:    e2:2..ff.vib b2:4.ff.legato |
+    cb:    e1:1.ff |
+    hn:    [e3 g#3 b3 e4]:1.ff |
+    tpt:   g#5:4..ff.vib f#5:8.ff.legato e5:4.ff.marcato b4:4.ff.marcato |
+    tbn:   [e2 b2 e3 g#3]:1.ff |
+    fl:    g#6:4..ff.vib f#6:8.ff.legato e6:4.ff.legato b5:4.ff.vib |
+    eh:    g#5:2.ff.vib e5:2.ff.vib |
+    choir: [e4 g#4 b4 e5]:1.ff |
+    harp:  e2:8.ff b2:8 e3:8 g#3:8 b3:8 e4:8 g#4:8 b4:8 |
+    timp:  e2:4.ff r:4 b1:2.ff |
+    drums: <[ v1: k:4.ff r:4 k:8.ff k:8.ff r:4 | v2: r:2 s:4.ff r:4 | v3: oh:8.f ch:8.f oh:8.f ch:8.f oh:8.f ch:8.f oh:8.f ch:8.f ]>
+  }
+
+  measure 11 {
+    saws:  [f#2 c#3 f#3 a3 c#4 f#4 a4]:2.ff.open_voice.stack("octaves").detune([0, 96, 42]).glide(160ms) [e2 b2 e3 a3 c#4 e4 a4]:2.ff.open_voice.stack("fifths").detune(94%, 0.15..0.94).glide(160ms) |
+    reese: f#1:2.ff.detune(94%, 0.12..0.94).glide(150ms) e1:2.ff.detune(92%, 0.12..0.94).drive([0.50, 0.95]).glide(150ms) |
+    lead:  a6:4..ff.zap.detune(95%, 0.12..0.94).sync([1.0, 3.0]) f#6:8.ff.legato e6:4..ff.detune(92%, 0.15..0.92) c#6:8.ff.legato |
+    fpad:  [f#3 a3 c#4 f#4]:2.ff.detune(90%, 0.12..0.94) [e3 a3 c#4 e4]:2.ff.detune(90%, 0.12..0.94).flutter([10, 22]) |
+    pno:   [f#1 c#2 f#2]:4.ff [a3 c#4 f#4 a4]:4.ff [e1 b1 e2]:4.ff [a3 c#4 e4 a4]:4.ff |
+    epno:  [f#3 a3 c#4 f#4]:2.ff [e3 a3 c#4 e4]:2.ff |
+    vln1:  a6:4..ff.vib f#6:8.ff.legato e6:4..ff.vib c#6:8.ff.legato |
+    vln2:  [c#5 f#5]:2.ff.vib [c#5 e5]:2.ff.vib |
+    vla:   [f#3 a3 c#4]:2.ff [e3 a3 c#4]:2.ff |
+    vc:    f#2:2.ff.vib e2:2.ff.vib |
+    cb:    f#1:2.ff e1:2.ff |
+    hn:    [f#3 a3 c#4 f#4]:2.ff [e3 a3 c#4 e4]:2.ff |
+    tpt:   a5:4..ff.vib f#5:8.ff.legato e5:4..ff.vib c#5:8.ff.legato |
+    tbn:   [f#2 c#3 f#3]:2.ff [e2 a2 e3]:2.ff |
+    fl:    a6:4..ff.vib f#6:8.ff.legato e6:2.ff.vib |
+    eh:    f#5:2.ff.vib e5:2.ff.vib |
+    choir: [f#4 a4 c#5 f#5]:2.ff [e4 a4 c#5 e5]:2.ff |
+    harp:  f#2:8.ff c#3:8 f#3:8 a3:8 e2:8 a2:8 c#3:8 e3:8 |
+    timp:  f#2:2.ff e2:2.ff |
+    drums: <[ v1: k:4.ff k:8.ff r:8 k:4.ff k:8.ff r:8 | v2: r:4 s:4.ff r:4 s:4.ff | v3: cr:2.ff cr:2.ff ]>
+  }
+
+  measure 12 {
+    saws:  [d2 a2 d3 f#3 b3 d4 f#4]:2.ff.open_voice.stack("octaves").detune(96%, 0.12..0.95).glide(160ms) [c#2 g#2 c#3 e#3 g#3 c#4 e#4]:2.ff.open_voice.stack("octaves").detune(98%, 0.10..0.96).air(96%).glide(200ms) |
+    reese: d1:2.ff.detune(94%, 0.12..0.95).glide(150ms) c#1:2.ff.detune(96%, 0.10..0.96).drive([0.55, 0.98]).glide(180ms) |
+    lead:  d6:4.ff.zap.detune(94%, 0.12..0.94) b5:4.ff.detune(92%, 0.15..0.92) c#6:2.ff.zap.detune(96%, 0.10..0.96).haas(14ms).vib |
+    fpad:  [d3 f#3 b3 d4]:2.ff.detune(90%, 0.12..0.94) [c#3 e#3 g#3 c#4]:2.ff.detune(94%, 0.10..0.96).flutter([12, 26]).pre_swell |
+    pno:   [d1 a1 d2]:4.ff [f#3 b3 d4 f#4]:4.ff [c#1 g#1 c#2]:4.ff [e#3 g#3 c#4 e#4]:4.ff |
+    epno:  [d3 f#3 b3 d4]:2.ff [c#3 e#3 g#3 c#4]:2.ff |
+    vln1:  d6:4.ff.vib b5:4.ff.vib c#6:2.ff.vib |
+    vln2:  [f#4 b4]:2.ff.trem [e#4 g#4]:2.ff.trem |
+    vla:   [d3 f#3 b3]:2.ff.trem [c#3 e#3 g#3]:2.ff.trem |
+    vc:    d2:2.ff.vib c#2:2.ff.vib |
+    cb:    d1:2.ff c#1:2.ff |
+    hn:    [d3 f#3 b3 d4]:2.ff [c#3 e#3 g#3 c#4]:2.ff |
+    tpt:   d5:4.ff.marcato b4:4.ff.marcato c#5:2.ff.vib |
+    tbn:   [d2 a2 d3]:2.ff [c#2 g#2 c#3]:2.ff |
+    fl:    d6:4.ff.legato b5:4.ff.legato c#6:2.ff.vib |
+    eh:    b4:2.ff.vib c#5:2.ff.vib |
+    choir: [d4 f#4 b4 d5]:2.ff [c#4 e#4 g#4 c#5]:2.ff |
+    harp:  d2:8.ff f#2:8 b2:8 d3:8 c#2:8 e#2:8 g#2:8 c#3:8 |
+    timp:  d2:2.ff c#2:8.ff c#2:8.ff c#2:8.ff c#2:8.ff |
+    drums: <[ v1: k:4.ff k:4.ff k:8.ff k:8.ff k:8.ff k:8.ff | v2: s:4.ff s:4.ff s:16.ff s:16.ff s:16.ff s:16.ff s:16.ff s:16.ff s:16.ff s:16.ff | v3: cr:1.ff ]>
+  }
+
+  %% ============================================================================
+  %% STAGE IV (Measures 13-16): CATHARTIC BRIDGE & F# MAJOR FINALE (72 BPM)
+  %% Tempo broadens to 72 BPM for the final emotional peak, resolving in Bar 16
+  %% to a glowing F# Major Picardy Third chord with piano, harp, and unison bloom.
+  %% ============================================================================
+  measure 13 {
+    meta @{ tempo: 72 }
+    saws:  [b1 f#2 b2 d3 f#3 b3 d4]:1.ff.open_voice.stack("octaves").detune([0, 96, 42]).air(95%).glide(220ms) |
+    reese: b0:1.ff.detune(94%, 0.12..0.95).warble(36, 2.2).drive([0.48, 0.94]).glide(200ms) |
+    lead:  b5:2..ff.zap.detune(94%, 0.12..0.94).haas(12ms) d6:8.ff.legato c#6:8.ff.legato |
+    fpad:  [b2 d3 f#3 b3 d4]:1.ff.detune(90%, 0.12..0.94).flutter([8, 16]).filter(2000, 14500).glide(220ms) |
+    pno:   b1:8.ff f#2:8 b2:8 d3:8 f#3:8 b3:8 d4:8 f#4:8 |
+    epno:  [b2 d3 f#3 b3]:1.ff |
+    vln1:  b5:2..ff.vib d6:8.ff.legato c#6:8.ff.legato |
+    vln2:  [f#4 b4]:1.ff.vib |
+    vla:   [d3 f#3 b3]:1.ff |
+    vc:    b1:2..ff.vib f#2:4.ff.legato |
+    cb:    b0:1.ff |
+    hn:    [b2 f#3 b3 d4]:1.ff |
+    tpt:   b4:2..ff.vib d5:8.ff.legato c#5:8.ff.legato |
+    tbn:   [b1 f#2 b2 d3]:1.ff |
+    fl:    b5:2..ff.vib d6:8.ff.legato c#6:8.ff.legato |
+    eh:    f#5:2..ff.vib b5:4.ff.legato |
+    choir: [b3 d4 f#4 b4]:1.ff |
+    harp:  b1:8.ff f#2:8 b2:8 d3:8 f#3:8 b3:8 d4:8 f#4:8 |
+    timp:  b1:4.ff f#2:4.ff b1:2.ff |
+    drums: <[ v1: k:4.ff r:4 k:4.ff r:4 | v2: r:2 s:4.ff r:4 | v3: cr:1.ff ]>
+  }
+
+  measure 14 {
+    saws:  [g2 d3 g3 b3 d4 f#4 b4]:1.ff.open_voice.stack("octaves").detune(96%, 0.12..0.95).air(95%).glide(220ms) |
+    reese: g1:1.ff.detune(94%, 0.12..0.95).warble(38, 2.3).drive([0.48, 0.94]).glide(200ms) |
+    lead:  b5:2.ff.zap.detune(92%, 0.15..0.92) f#5:4.ff.detune(90%, 0.15..0.90) d5:4.ff.glide(160ms) |
+    fpad:  [g2 b2 d3 f#3 b3]:1.ff.detune(90%, 0.12..0.94).flutter([8, 18]).filter(2000, 14500).glide(220ms) |
+    pno:   g1:8.ff d2:8 g2:8 b2:8 d3:8 f#3:8 b3:8 d4:8 |
+    epno:  [g2 b2 d3 f#3]:1.ff |
+    vln1:  b5:2.ff.vib f#5:4.ff.vib d5:4.ff.vib |
+    vln2:  [g4 b4]:2.ff.vib [f#4 b4]:2.ff.vib |
+    vla:   [d3 g3 b3]:1.ff |
+    vc:    g1:2..ff.vib d2:4.ff.legato |
+    cb:    g1:1.ff |
+    hn:    [g2 d3 g3 b3]:1.ff |
+    tpt:   b4:2.ff.vib f#4:4.ff.marcato d4:4.ff.marcato |
+    tbn:   [g1 d2 g2 b2]:1.ff |
+    fl:    b5:2.ff.vib f#5:4.ff.legato d5:4.ff.legato |
+    eh:    g5:2.ff.vib d5:2.ff.vib |
+    choir: [g3 b3 d4 f#4]:1.ff |
+    harp:  g1:8.ff d2:8 g2:8 b2:8 d3:8 f#3:8 b3:8 d4:8 |
+    timp:  g1:4.ff d2:4.ff g1:2.ff |
+    drums: <[ v1: k:4.ff r:4 k:4.ff k:4.ff | v2: r:2 s:4.ff r:4 | v3: oh:4.ff ch:4.ff oh:4.ff ch:4.ff ]>
+  }
+
+  measure 15 {
+    saws:  [d2 a2 d3 f#3 a3 d4 f#4]:2.ff.open_voice.stack("fifths").detune(96%, 0.12..0.95).glide(180ms) [c#2 g#2 c#3 e#3 g#3 c#4 e#4]:2.ff.open_voice.stack("octaves").detune(98%, 0.10..0.96).glide(220ms) |
+    reese: d1:2.ff.detune(94%, 0.12..0.95).glide(160ms) c#1:2.ff.detune(98%, 0.10..0.96).drive([0.52, 0.96]).glide(200ms) |
+    lead:  f#5:4.ff.zap.detune(92%, 0.15..0.92) a5:4.ff.detune(94%, 0.15..0.94) g#5:4.ff.zap.detune(96%, 0.10..0.95) e#6:4.ff.detune(98%, 0.10..0.96).glide(180ms) |
+    fpad:  [d3 f#3 a3 d4]:2.ff.detune(90%, 0.12..0.94) [c#3 e#3 g#3 c#4]:2.ff.detune(94%, 0.10..0.96).flutter([10, 22]).pre_swell |
+    pno:   [d1 a1 d2]:4.ff [f#3 a3 d4 f#4]:4.ff [c#1 g#1 c#2]:4.ff [e#3 g#3 c#4 e#4]:4.ff |
+    epno:  [d3 f#3 a3 d4]:2.ff [c#3 e#3 g#3 c#4]:2.ff |
+    vln1:  f#5:4.ff.vib a5:4.ff.vib g#5:4.ff.vib e#6:4.ff.vib |
+    vln2:  [f#4 a4]:2.ff.trem [g#4 c#5]:2.ff.trem |
+    vla:   [d3 f#3 a3]:2.ff.trem [c#3 e#3 g#3]:2.ff.trem |
+    vc:    d2:2.ff.vib c#2:2.ff.vib |
+    cb:    d1:2.ff c#1:2.ff |
+    hn:    [d3 f#3 a3 d4]:2.ff [c#3 e#3 g#3 c#4]:2.ff |
+    tpt:   f#4:4.ff.marcato a4:4.ff.marcato g#4:4.ff.marcato e#5:4.ff.marcato |
+    tbn:   [d2 a2 d3]:2.ff [c#2 g#2 c#3]:2.ff |
+    fl:    f#5:4.ff.legato a5:4.ff.legato g#5:4.ff.legato e#6:4.ff.vib |
+    eh:    f#5:2.ff.vib g#5:2.ff.vib |
+    choir: [d4 f#4 a4 d5]:2.ff [c#4 e#4 g#4 c#5]:2.ff |
+    harp:  d2:8.ff a2:8 d3:8 f#3:8 c#2:8 g#2:8 c#3:8 e#3:8 |
+    timp:  d2:2.ff c#2:8.ff c#2:8.ff c#2:8.ff c#2:8.ff |
+    drums: <[ v1: k:4.ff k:4.ff k:8.ff k:8.ff k:8.ff k:8.ff | v2: s:4.ff s:4.ff s:16.ff s:16.ff s:16.ff s:16.ff s:16.ff s:16.ff s:16.ff s:16.ff | v3: cr:2.ff cr:2.ff ]>
+  }
+
+  measure 16 {
+    saws:  [f#2 c#3 f#3 a#3 c#4 f#4 a#4]:1.ff.open_voice.stack("octaves").detune([0, 96, 18]).air(98%).filter(2200, 15500) |
+    reese: f#1:1.ff.detune([0, 90, 12]).warble(20, 1.4).drive([0.45, 0.65]) |
+    lead:  f#6:1.ff.zap.detune([0, 94, 18]).haas(12ms).vib |
+    fpad:  [f#2 a#2 c#3 f#3 a#3]:1.ff.detune([0, 86, 15]).flutter([14, 5]).analog_slop(35%) |
+    pno:   f#1:8.ff c#2:8 f#2:8 a#2:8 c#3:8 f#3:8 a#3:8 [c#4 f#4 a#4 c#5]:2.ff |
+    epno:  [f#3 a#3 c#4 f#4]:1.ff |
+    vln1:  f#6:1.ff.vib |
+    vln2:  [a#4 c#5]:1.ff.vib |
+    vla:   [f#3 a#3 c#4]:1.ff.vib |
+    vc:    [f#2 c#3 f#3]:1.ff.vib |
+    cb:    f#1:1.ff |
+    hn:    [f#3 a#3 c#4 f#4]:1.ff |
+    tpt:   [f#4 a#4 c#5]:1.ff.vib |
+    tbn:   [f#2 c#3 f#3 a#3]:1.ff |
+    fl:    f#6:1.ff.vib |
+    eh:    a#5:1.ff.vib |
+    choir: [f#3 a#3 c#4 f#4]:1.ff |
+    harp:  f#1:16.ff c#2:16 f#2:16 a#2:16 c#3:16 f#3:16 a#3:16 c#4:16 f#4:2.ff |
+    timp:  f#2:4.ff c#2:4.ff f#2:2.ff |
+    drums: <[ v1: k:1.ff | v2: cr:1.ff ]>
+  }
+}
