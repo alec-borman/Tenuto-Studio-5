@@ -1,0 +1,860 @@
+import React, { useMemo, useState } from 'react';
+import { CompiledScore } from '../parser/DocumentParser';
+
+export interface ChordSymbolInfo {
+  rootLetter: string;
+  rootAccidental: string;
+  quality: string;
+  slashBass?: string;
+  fullText: string;
+}
+
+export interface GuitarStringState {
+  stringNumber: number; // 6 (Low E) down to 1 (High E)
+  fret: number | 'x';
+  midi: number | null;
+  noteLabel: string;
+}
+
+export interface GuitarVoicingDiagram {
+  baseFret: number;
+  strings: GuitarStringState[]; // Length 6: index 0 = 6th string (Low E), index 5 = 1st string (High E)
+}
+
+export interface ChordFlowSlice {
+  index: number;
+  measureNumber: number;
+  startWhole: number;
+  endWhole: number;
+  durationWhole: number;
+  midiNotes: number[];
+  hasGlide: boolean;
+  symbol: ChordSymbolInfo;
+  guitar: GuitarVoicingDiagram;
+}
+
+export interface TabChordFlowViewProps {
+  score: CompiledScore | null;
+  events: any[];
+  playheadBeat?: number;
+  isPlaying?: boolean;
+  rootKey?: string;
+}
+
+const FLAT_STEPS = [
+  { letter: 'C', acc: '' },
+  { letter: 'D', acc: '♭' },
+  { letter: 'D', acc: '' },
+  { letter: 'E', acc: '♭' },
+  { letter: 'E', acc: '' },
+  { letter: 'F', acc: '' },
+  { letter: 'G', acc: '♭' },
+  { letter: 'G', acc: '' },
+  { letter: 'A', acc: '♭' },
+  { letter: 'A', acc: '' },
+  { letter: 'B', acc: '♭' },
+  { letter: 'B', acc: '' },
+];
+
+const SHARP_STEPS = [
+  { letter: 'C', acc: '' },
+  { letter: 'C', acc: '♯' },
+  { letter: 'D', acc: '' },
+  { letter: 'D', acc: '♯' },
+  { letter: 'E', acc: '' },
+  { letter: 'F', acc: '' },
+  { letter: 'F', acc: '♯' },
+  { letter: 'G', acc: '' },
+  { letter: 'G', acc: '♯' },
+  { letter: 'A', acc: '' },
+  { letter: 'A', acc: '♯' },
+  { letter: 'B', acc: '' },
+];
+
+// Standard 6-string guitar open MIDI pitches: E2(40), A2(45), D3(50), G3(55), B3(59), E4(64)
+const STANDARD_GUITAR_OPEN_MIDI = [40, 45, 50, 55, 59, 64];
+
+export function formatMidiPitchDisplay(midi: number, preferFlats: boolean = false): string {
+  const clamped = Math.max(12, Math.min(108, Math.round(midi)));
+  const octave = Math.floor(clamped / 12) - 1;
+  const step = (preferFlats ? FLAT_STEPS : SHARP_STEPS)[clamped % 12];
+  return `${step.letter}${step.acc}${octave}`;
+}
+
+export function formatPitchClassDisplay(
+  pc: number,
+  preferFlats: boolean = false
+): {
+  letter: string;
+  acc: string;
+  text: string;
+} {
+  const norm = ((Math.round(pc) % 12) + 12) % 12;
+  const step = (preferFlats ? FLAT_STEPS : SHARP_STEPS)[norm];
+  return { letter: step.letter, acc: step.acc, text: `${step.letter}${step.acc}` };
+}
+
+/**
+ * Dynamically detects the chord symbol (root, accidental, quality, and optional slash bass)
+ * from any set of active MIDI notes in the compiled `.ten` score.
+ */
+export function detectChordSymbol(
+  midiNotes: number[],
+  preferFlats: boolean = false
+): ChordSymbolInfo {
+  if (!midiNotes || midiNotes.length === 0) {
+    return { rootLetter: '—', rootAccidental: '', quality: '', fullText: '—' };
+  }
+
+  const sorted = [...midiNotes].sort((a, b) => a - b);
+  const bassPc = ((sorted[0] % 12) + 12) % 12;
+  const uniquePcs = Array.from(new Set(sorted.map((m) => ((m % 12) + 12) % 12)));
+
+  if (uniquePcs.length === 1) {
+    const p = formatPitchClassDisplay(uniquePcs[0], preferFlats);
+    return { rootLetter: p.letter, rootAccidental: p.acc, quality: '', fullText: p.text };
+  }
+
+  if (uniquePcs.length === 2) {
+    const interval = (uniquePcs[1] - uniquePcs[0] + 12) % 12;
+    const p0 = formatPitchClassDisplay(uniquePcs[0], preferFlats);
+    const p1 = formatPitchClassDisplay(uniquePcs[1], preferFlats);
+    if (interval === 7) return { rootLetter: p0.letter, rootAccidental: p0.acc, quality: '5', fullText: `${p0.text}5` };
+    if (interval === 5) return { rootLetter: p1.letter, rootAccidental: p1.acc, quality: '5', fullText: `${p1.text}5` };
+    if (interval === 3) return { rootLetter: p0.letter, rootAccidental: p0.acc, quality: 'm', fullText: `${p0.text}m` };
+    if (interval === 4) return { rootLetter: p0.letter, rootAccidental: p0.acc, quality: '', fullText: p0.text };
+  }
+
+  const templates: Array<{
+    intervals: number[];
+    quality: string;
+    scoreBonus: number;
+  }> = [
+    { intervals: [0, 4, 7, 11, 2], quality: 'maj9', scoreBonus: 1.42 },
+    { intervals: [0, 3, 7, 10, 2], quality: 'm9', scoreBonus: 1.42 },
+    { intervals: [0, 4, 7, 10, 2], quality: '9', scoreBonus: 1.4 },
+    { intervals: [0, 4, 7, 11], quality: 'maj7', scoreBonus: 1.32 },
+    { intervals: [0, 3, 7, 9], quality: 'm6', scoreBonus: 1.35 },
+    { intervals: [0, 5, 7, 10], quality: '7sus', scoreBonus: 1.35 },
+    { intervals: [0, 4, 7, 10], quality: '7', scoreBonus: 1.28 },
+    { intervals: [0, 3, 7, 10], quality: 'm7', scoreBonus: 1.28 },
+    { intervals: [0, 4, 7, 9], quality: '6', scoreBonus: 1.2 },
+    { intervals: [0, 4, 7, 2], quality: 'add9', scoreBonus: 1.22 },
+    { intervals: [0, 3, 7, 2], quality: 'm(add9)', scoreBonus: 1.22 },
+    { intervals: [0, 3, 6, 10], quality: 'm7♭5', scoreBonus: 1.25 },
+    { intervals: [0, 3, 6, 9], quality: 'dim7', scoreBonus: 1.25 },
+    { intervals: [0, 4, 7], quality: '', scoreBonus: 1.15 },
+    { intervals: [0, 3, 7], quality: 'm', scoreBonus: 1.15 },
+    { intervals: [0, 5, 7], quality: 'sus4', scoreBonus: 1.1 },
+    { intervals: [0, 2, 7], quality: 'sus2', scoreBonus: 1.1 },
+    { intervals: [0, 3, 6], quality: 'dim', scoreBonus: 1.08 },
+    { intervals: [0, 4, 8], quality: 'aug', scoreBonus: 1.08 },
+  ];
+
+  let bestRootPc = bassPc;
+  let bestQuality = '';
+  let bestScore = -Infinity;
+
+  for (const candidateRoot of uniquePcs) {
+    const relSet = new Set(uniquePcs.map((pc) => (pc - candidateRoot + 12) % 12));
+
+    for (const tpl of templates) {
+      let matched = 0;
+      for (const req of tpl.intervals) {
+        if (relSet.has(req)) matched++;
+      }
+      const coverage = matched / tpl.intervals.length;
+      const unmatchedNotes = Math.max(0, uniquePcs.length - matched);
+      const bassBonus = candidateRoot === bassPc ? 0.34 : 0;
+      const totalScore = coverage * tpl.scoreBonus + bassBonus - unmatchedNotes * 0.16;
+
+      if (totalScore > bestScore) {
+        bestScore = totalScore;
+        bestRootPc = candidateRoot;
+        bestQuality = tpl.quality;
+      }
+    }
+  }
+
+  const rootDisp = formatPitchClassDisplay(bestRootPc, preferFlats);
+  const bassDisp = formatPitchClassDisplay(bassPc, preferFlats);
+
+  const isSlashInversion = bestRootPc !== bassPc && uniquePcs.length >= 3;
+  const slashBass = isSlashInversion ? bassDisp.text : undefined;
+  const qualityWithSlash = slashBass ? `${bestQuality}/${slashBass}` : bestQuality;
+
+  return {
+    rootLetter: rootDisp.letter,
+    rootAccidental: rootDisp.acc,
+    quality: qualityWithSlash,
+    slashBass,
+    fullText: `${rootDisp.text}${qualityWithSlash}`,
+  };
+}
+
+/**
+ * Computes a playable 6-string guitar fretboard diagram for the active MIDI notes,
+ * automatically determining the neck fret window (`baseFret`) and per-string notes.
+ */
+export function computeGuitarVoicing(
+  midiNotes: number[],
+  preferFlats: boolean = false
+): GuitarVoicingDiagram {
+  if (!midiNotes || midiNotes.length === 0) {
+    return {
+      baseFret: 1,
+      strings: STANDARD_GUITAR_OPEN_MIDI.map((_, idx) => ({
+        stringNumber: 6 - idx,
+        fret: 'x',
+        midi: null,
+        noteLabel: '',
+      })),
+    };
+  }
+
+  const sorted = [...midiNotes].sort((a, b) => a - b);
+  const uniquePcs = Array.from(new Set(sorted.map((m) => ((m % 12) + 12) % 12)));
+  const bassNote = sorted[0];
+
+  // Anchor neck position using the lowest note on E2(40) or A2(45)
+  const fretOn6 = bassNote - STANDARD_GUITAR_OPEN_MIDI[0];
+  const fretOn5 = bassNote - STANDARD_GUITAR_OPEN_MIDI[1];
+  let anchorFret = 1;
+  if (fretOn6 >= 1 && fretOn6 <= 11) {
+    anchorFret = fretOn6;
+  } else if (fretOn5 >= 1 && fretOn5 <= 11) {
+    anchorFret = fretOn5;
+  } else {
+    anchorFret = ((bassNote - 40) % 12 + 12) % 12 || 1;
+  }
+
+  const baseFret = anchorFret <= 2 ? 1 : Math.max(1, anchorFret - 1);
+
+  const strings: GuitarStringState[] = [];
+  for (let sIdx = 0; sIdx < 6; sIdx++) {
+    const openMidi = STANDARD_GUITAR_OPEN_MIDI[sIdx];
+    let bestFret: number | 'x' = 'x';
+    let bestMidi: number | null = null;
+    let minFretDist = Infinity;
+
+    if (sorted.length === 1) {
+      // Single note: place on the best matching string within the fret window
+      const exactFret = bassNote - openMidi;
+      if (exactFret >= baseFret - 1 && exactFret <= baseFret + 4 && exactFret >= 0) {
+        bestFret = exactFret;
+        bestMidi = bassNote;
+      }
+    } else if (sIdx === 0) {
+      const f = bassNote - openMidi;
+      if (f >= 0 && f <= 15) {
+        bestFret = f;
+        bestMidi = bassNote;
+      }
+    } else if (sIdx === 1 && sorted.length >= 4 && sorted[1] - sorted[0] >= 6) {
+      const f5 = sorted[1] - openMidi;
+      if (f5 >= baseFret && f5 <= baseFret + 4) {
+        bestFret = f5;
+        bestMidi = sorted[1];
+      } else {
+        bestFret = 'x';
+      }
+    } else {
+      const minFretSearch = baseFret === 1 ? 0 : baseFret;
+      for (let f = minFretSearch; f <= baseFret + 4; f++) {
+        const candidateMidi = openMidi + f;
+        const pc = ((candidateMidi % 12) + 12) % 12;
+        if (uniquePcs.includes(pc)) {
+          const dist = Math.abs(f - (baseFret + 1.5));
+          if (dist < minFretDist) {
+            minFretDist = dist;
+            bestFret = f;
+            bestMidi = candidateMidi;
+          }
+        }
+      }
+    }
+
+    const noteLabel =
+      bestMidi !== null
+        ? formatPitchClassDisplay(bestMidi % 12, preferFlats).text
+        : '';
+
+    strings.push({
+      stringNumber: 6 - sIdx,
+      fret: bestFret,
+      midi: bestMidi,
+      noteLabel,
+    });
+  }
+
+  return {
+    baseFret,
+    strings,
+  };
+}
+
+/**
+ * Extracts chronological harmonic slices directly from the compiled `.ten` events
+ * so the view always reflects the exact chords and notes written in the editor.
+ */
+export function extractCodeChordSlices(
+  events: any[],
+  preferFlats: boolean = false,
+  selectedTrackId: string | null = null
+): ChordFlowSlice[] {
+  const melodicEvents = (events || []).filter((ev) => {
+    if (!ev?.pitch || ev.pitch.isRest || ev.pitch.isSpacer || ev.pitch.midi <= 0) return false;
+    if (ev.style === 'grid' || ev.pitch.gridKey) return false;
+    if (selectedTrackId && (ev.trackId || 'pno') !== selectedTrackId) return false;
+    return true;
+  });
+
+  if (melodicEvents.length === 0) return [];
+
+  // Collect distinct note-onset boundaries (quantized to 1/16th note = 0.0625 whole note)
+  const onsetPointsSet = new Set<number>();
+  let maxEndWhole = 0.25;
+
+  for (const ev of melodicEvents) {
+    const st = ev.startTime ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator) : 0;
+    const dur = ev.duration ? ev.duration.numerator / Math.max(1, ev.duration.denominator) : 0.25;
+    const qSt = Math.round(st * 16) / 16;
+    const qEnd = Math.round((st + dur) * 16) / 16;
+    onsetPointsSet.add(qSt);
+    if (qEnd > maxEndWhole) maxEndWhole = qEnd;
+  }
+
+  const sortedOnsets = Array.from(onsetPointsSet).sort((a, b) => a - b);
+  const rawSlices: Array<{
+    startWhole: number;
+    endWhole: number;
+    measureNumber: number;
+    midiNotes: number[];
+    hasGlide: boolean;
+  }> = [];
+
+  for (let i = 0; i < sortedOnsets.length; i++) {
+    const sliceStart = sortedOnsets[i];
+    const sliceEnd = i + 1 < sortedOnsets.length ? sortedOnsets[i + 1] : Math.max(sliceStart + 0.25, maxEndWhole);
+    if (sliceEnd - sliceStart < 1e-4) continue;
+
+    const midPoint = (sliceStart + sliceEnd) * 0.5;
+    const activeMidis = new Set<number>();
+    let hasGlide = false;
+    let measureNum = Math.floor(sliceStart) + 1;
+
+    for (const ev of melodicEvents) {
+      const st = ev.startTime ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator) : 0;
+      const dur = ev.duration ? ev.duration.numerator / Math.max(1, ev.duration.denominator) : 0.25;
+      if (st <= midPoint + 1e-4 && st + dur >= midPoint - 1e-4) {
+        activeMidis.add(Math.round(ev.pitch.midi));
+        if (ev.measureNumber) measureNum = ev.measureNumber;
+        if ((ev.physics?.glideMs ?? 0) > 0 || Boolean(ev.physics?.mpe?.bend)) {
+          hasGlide = true;
+        }
+      }
+    }
+
+    if (activeMidis.size === 0) continue;
+    const sortedMidis = Array.from(activeMidis).sort((a, b) => a - b);
+
+    // Coalesce consecutive slices that have the exact same pitch set in the same measure
+    const prev = rawSlices[rawSlices.length - 1];
+    if (
+      prev &&
+      prev.measureNumber === measureNum &&
+      Math.abs(prev.endWhole - sliceStart) < 1e-4 &&
+      prev.midiNotes.length === sortedMidis.length &&
+      prev.midiNotes.every((m, idx) => m === sortedMidis[idx])
+    ) {
+      prev.endWhole = sliceEnd;
+      if (hasGlide) prev.hasGlide = true;
+    } else {
+      rawSlices.push({
+        startWhole: sliceStart,
+        endWhole: sliceEnd,
+        measureNumber: measureNum,
+        midiNotes: sortedMidis,
+        hasGlide,
+      });
+    }
+  }
+
+  return rawSlices.map((rs, idx) => ({
+    index: idx,
+    measureNumber: rs.measureNumber,
+    startWhole: rs.startWhole,
+    endWhole: rs.endWhole,
+    durationWhole: Math.max(0.0625, rs.endWhole - rs.startWhole),
+    midiNotes: rs.midiNotes,
+    hasGlide: rs.hasGlide,
+    symbol: detectChordSymbol(rs.midiNotes, preferFlats),
+    guitar: computeGuitarVoicing(rs.midiNotes, preferFlats),
+  }));
+}
+
+export default function TabChordFlowView({
+  score,
+  events = [],
+  playheadBeat = 0,
+  rootKey,
+}: TabChordFlowViewProps) {
+  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+
+  const preferFlats = useMemo(() => {
+    const k = (rootKey || score?.meta?.key || '').trim();
+    if (['F', 'Bb', 'Eb', 'Ab', 'Db', 'Gb', 'Dm', 'Gm', 'Cm', 'Fm', 'Bbm'].includes(k)) {
+      return true;
+    }
+    // Also prefer flats if the user wrote flat accidentals (e.g. ab2, eb3) in their tokens
+    return (events || []).some((ev) => /[a-g]b\d/i.test(ev?.rawToken || ''));
+  }, [rootKey, score?.meta?.key, events]);
+
+  const melodicTracks = useMemo(() => {
+    return (score?.defs || []).filter((d) => d.style !== 'grid' && !d.isReturn);
+  }, [score]);
+
+  const chordSlices = useMemo(
+    () => extractCodeChordSlices(events, preferFlats, selectedTrackId),
+    [events, preferFlats, selectedTrackId]
+  );
+
+  const currentWhole = Math.max(0, playheadBeat / 4);
+
+  const activeSliceIndex = useMemo(() => {
+    if (chordSlices.length === 0) return 0;
+    for (let i = 0; i < chordSlices.length; i++) {
+      const s = chordSlices[i];
+      if (currentWhole >= s.startWhole && currentWhole < s.endWhole) {
+        return i;
+      }
+    }
+    if (currentWhole >= chordSlices[chordSlices.length - 1].endWhole) {
+      return chordSlices.length - 1;
+    }
+    return 0;
+  }, [chordSlices, currentWhole]);
+
+  const activeSlice = chordSlices[activeSliceIndex];
+
+  // Determine the number of voice lanes from the maximum chord size in the user's code (clamped 1..6)
+  const numVoiceLanes = useMemo(() => {
+    if (chordSlices.length === 0) return 1;
+    const maxVoices = Math.max(...chordSlices.map((s) => s.midiNotes.length));
+    return Math.max(1, Math.min(6, maxVoices));
+  }, [chordSlices]);
+
+  const normalizedSliceVoices = useMemo(() => {
+    return chordSlices.map((s) => {
+      const notes = s.midiNotes;
+      const voices: number[] = [];
+      for (let v = 0; v < numVoiceLanes; v++) {
+        const idx = Math.min(notes.length - 1, Math.floor((v * notes.length) / numVoiceLanes));
+        voices.push(notes[Math.max(0, idx)] ?? 60);
+      }
+      return voices.sort((a, b) => a - b);
+    });
+  }, [chordSlices, numVoiceLanes]);
+
+  const { minMidi, maxMidi } = useMemo(() => {
+    if (chordSlices.length === 0) return { minMidi: 48, maxMidi: 72 };
+    let min = 127;
+    let max = 0;
+    for (const s of chordSlices) {
+      for (const m of s.midiNotes) {
+        if (m < min) min = m;
+        if (m > max) max = m;
+      }
+    }
+    if (min > max) return { minMidi: 48, maxMidi: 72 };
+    const center = Math.round((min + max) / 2);
+    const halfSpan = Math.max(10, Math.ceil((max - min) / 2) + 4);
+    return {
+      minMidi: Math.max(12, center - halfSpan),
+      maxMidi: Math.min(108, center + halfSpan),
+    };
+  }, [chordSlices]);
+
+  const svgWidth = 860;
+  const svgHeight = 250;
+  const playheadScreenX = 275;
+  const pxPerWholeNote = 260;
+
+  const midiToY = (midi: number): number => {
+    const span = Math.max(12, maxMidi - minMidi);
+    const norm = (midi - minMidi) / span;
+    return Math.round((1 - norm) * (svgHeight - 54) + 32);
+  };
+
+  // Compute live voice orb positions at the playhead from the active code slice
+  const activeVoiceOrbs = useMemo(() => {
+    if (!activeSlice || normalizedSliceVoices.length === 0) return [];
+    const currIdx = activeSliceIndex;
+    const currVoices = normalizedSliceVoices[currIdx] || [60];
+    const nextVoices =
+      currIdx + 1 < normalizedSliceVoices.length
+        ? normalizedSliceVoices[currIdx + 1]
+        : currVoices;
+
+    const progressInSlice =
+      activeSlice.durationWhole > 1e-4
+        ? Math.max(
+            0,
+            Math.min(1, (currentWhole - activeSlice.startWhole) / activeSlice.durationWhole)
+          )
+        : 0;
+
+    const glideStartU = 0.78;
+    let glideRatio = 0;
+    if (progressInSlice > glideStartU && currIdx + 1 < normalizedSliceVoices.length) {
+      const u = (progressInSlice - glideStartU) / (1 - glideStartU);
+      glideRatio = u * u * (3 - 2 * u);
+    }
+
+    const rawNotes = activeSlice.midiNotes;
+    const nextRawNotes =
+      currIdx + 1 < chordSlices.length ? chordSlices[currIdx + 1].midiNotes : rawNotes;
+
+    return rawNotes.slice(0, 6).map((startMidi, idx) => {
+      const targetIdx = Math.min(nextRawNotes.length - 1, idx);
+      const endMidi = nextRawNotes[targetIdx] ?? startMidi;
+      const interpMidi = startMidi + (endMidi - startMidi) * glideRatio;
+      const displayMidi = glideRatio > 0.5 ? endMidi : startMidi;
+      return {
+        voiceIndex: idx,
+        y: midiToY(interpMidi),
+        label: formatMidiPitchDisplay(displayMidi, preferFlats),
+      };
+    });
+  }, [activeSlice, normalizedSliceVoices, chordSlices, activeSliceIndex, currentWhole, preferFlats, minMidi, maxMidi]);
+
+  return (
+    <div
+      data-testid="tab-chord-flow-view"
+      style={{
+        background:
+          'radial-gradient(circle at 38% 36%, #C85A17 0%, #8F390A 48%, #4A1B04 100%)',
+      }}
+      className="w-full h-full flex flex-col justify-between text-amber-50 overflow-y-auto relative select-none p-4"
+    >
+      {/* Top Bar: Track Filter */}
+      <div className="flex items-center justify-between gap-2 z-10">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-[10px] font-mono uppercase tracking-widest px-2 py-0.5 rounded bg-black/30 text-amber-200 border border-amber-400/30">
+            Live Code Chord &amp; Guitar Flow
+          </span>
+          {melodicTracks.length > 1 && (
+            <select
+              aria-label="Chord Flow Track Filter"
+              value={selectedTrackId || ''}
+              onChange={(e) => setSelectedTrackId(e.target.value || null)}
+              className="bg-black/35 border border-amber-300/30 text-amber-100 text-[11px] font-mono rounded px-2 py-0.5 outline-none cursor-pointer"
+            >
+              <option value="">All Harmonic Tracks ({melodicTracks.length})</option>
+              {melodicTracks.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name} ({t.id})
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        <span className="text-[11px] font-mono text-amber-200/80">
+          {chordSlices.length} Harmonic Slices in Code
+        </span>
+      </div>
+
+      {/* Top Giant Centered Active Chord Symbol Readout (Derived from Active Code) */}
+      <div className="flex flex-col items-center justify-center my-1 z-10">
+        <div
+          data-testid="active-chord-symbol"
+          className="flex items-baseline justify-center tracking-tight drop-shadow-[0_4px_20px_rgba(255,255,255,0.35)]"
+        >
+          <span className="text-6xl font-bold text-white font-sans">
+            {activeSlice ? activeSlice.symbol.rootLetter : '—'}
+          </span>
+          {activeSlice?.symbol.rootAccidental && (
+            <span className="text-3xl font-semibold text-amber-100 -ml-1 mr-1 self-start mt-1">
+              {activeSlice.symbol.rootAccidental}
+            </span>
+          )}
+          <span className="text-4xl font-medium text-amber-100/95 ml-0.5">
+            {activeSlice ? activeSlice.symbol.quality : ''}
+          </span>
+        </div>
+        <span className="text-[11px] font-mono text-amber-200/80 tracking-widest uppercase mt-0.5">
+          {activeSlice
+            ? `Measure ${activeSlice.measureNumber} • Notes: ${activeSlice.midiNotes
+                .map((m) => formatMidiPitchDisplay(m, preferFlats))
+                .join(' – ')}`
+            : 'No Active Notes in Score'}
+        </span>
+      </div>
+
+      {/* Middle Section: Horizontally Scrolling Voice-Leading Glide Canvas & Glowing Orbs */}
+      <div className="w-full flex items-center justify-center my-1 overflow-hidden">
+        <svg
+          width={svgWidth}
+          height={svgHeight}
+          viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+          className="w-full max-w-4xl h-60 block overflow-visible"
+          aria-label="Voice Leading Chord Flow Canvas"
+        >
+          <defs>
+            <filter id="ultraviolet-glow" x="-30%" y="-30%" width="160%" height="160%">
+              <feGaussianBlur stdDeviation="4.5" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+
+          {/* Subtle Horizontal Chromatic Pitch Grid Lines */}
+          {Array.from({ length: maxMidi - minMidi + 1 }).map((_, idx) => {
+            const m = minMidi + idx;
+            const y = midiToY(m);
+            return (
+              <line
+                key={m}
+                x1={0}
+                y1={y}
+                x2={svgWidth}
+                y2={y}
+                stroke="rgba(255, 237, 213, 0.14)"
+                strokeWidth={m % 12 === 0 ? 1.1 : 0.6}
+              />
+            );
+          })}
+
+          {/* Scrolling Chord Slice Dividers & Top Column Chord Labels */}
+          {chordSlices.map((slice) => {
+            const colX =
+              playheadScreenX + (slice.startWhole - currentWhole) * pxPerWholeNote;
+            if (colX < -280 || colX > svgWidth + 280) return null;
+
+            return (
+              <g key={`col-${slice.index}`}>
+                <line
+                  x1={colX}
+                  y1={8}
+                  x2={colX}
+                  y2={svgHeight - 8}
+                  stroke="rgba(255, 237, 213, 0.25)"
+                  strokeWidth={1.2}
+                />
+                <text
+                  x={colX + 8}
+                  y={20}
+                  className="fill-amber-100/90 font-sans text-sm font-semibold"
+                >
+                  {slice.symbol.fullText}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Voice-Leading Trajectories Derived from Code Chords */}
+          {chordSlices.length > 0 &&
+            Array.from({ length: numVoiceLanes }).map((_, vIdx) => {
+              let dPath = '';
+
+              for (let sIdx = 0; sIdx < chordSlices.length; sIdx++) {
+                const slice = chordSlices[sIdx];
+                const xStart =
+                  playheadScreenX + (slice.startWhole - currentWhole) * pxPerWholeNote;
+                const xEnd =
+                  playheadScreenX + (slice.endWhole - currentWhole) * pxPerWholeNote;
+                const glideWidth = Math.min(48, Math.max(12, (xEnd - xStart) * 0.24));
+                const xHoldEnd = xEnd - glideWidth;
+
+                const currMidi = normalizedSliceVoices[sIdx][vIdx];
+                const nextMidi =
+                  sIdx + 1 < normalizedSliceVoices.length
+                    ? normalizedSliceVoices[sIdx + 1][vIdx]
+                    : currMidi;
+
+                const yCurr = midiToY(currMidi);
+                const yNext = midiToY(nextMidi);
+
+                if (sIdx === 0) {
+                  dPath += `M ${xStart.toFixed(1)} ${yCurr.toFixed(1)} `;
+                } else {
+                  dPath += `L ${xStart.toFixed(1)} ${yCurr.toFixed(1)} `;
+                }
+
+                dPath += `L ${xHoldEnd.toFixed(1)} ${yCurr.toFixed(1)} `;
+
+                if (sIdx + 1 < chordSlices.length) {
+                  const cp1X = xHoldEnd + glideWidth * 0.45;
+                  const cp2X = xEnd - glideWidth * 0.45;
+                  dPath += `C ${cp1X.toFixed(1)} ${yCurr.toFixed(1)}, ${cp2X.toFixed(1)} ${yNext.toFixed(1)}, ${xEnd.toFixed(1)} ${yNext.toFixed(1)} `;
+                }
+              }
+
+              return (
+                <g key={`voice-lane-${vIdx}`}>
+                  <path
+                    d={dPath}
+                    fill="none"
+                    stroke="rgba(255, 237, 213, 0.35)"
+                    strokeWidth={2.2}
+                  />
+                  <path
+                    d={dPath}
+                    fill="none"
+                    stroke="#FFFFFF"
+                    strokeWidth={3.2}
+                    filter="url(#ultraviolet-glow)"
+                    style={{
+                      clipPath: `inset(0px ${svgWidth - playheadScreenX}px 0px 0px)`,
+                    }}
+                  />
+                </g>
+              );
+            })}
+
+          {/* Fixed Vertical Playhead Line */}
+          <line
+            x1={playheadScreenX}
+            y1={8}
+            x2={playheadScreenX}
+            y2={svgHeight - 8}
+            stroke="rgba(255, 255, 255, 0.55)"
+            strokeWidth={1.5}
+          />
+
+          {/* Glowing Intersection Orbs & Live Pitch Labels at the Playhead */}
+          {activeVoiceOrbs.map((orb) => (
+            <g
+              key={`orb-${orb.voiceIndex}`}
+              data-testid={`voice-orb-${orb.voiceIndex}`}
+            >
+              <circle
+                cx={playheadScreenX}
+                cy={orb.y}
+                r={8}
+                fill="rgba(251, 146, 60, 0.45)"
+                filter="url(#ultraviolet-glow)"
+              />
+              <circle cx={playheadScreenX} cy={orb.y} r={4.5} fill="#FFFFFF" />
+              <text
+                x={playheadScreenX + 14}
+                y={orb.y + 4}
+                className="fill-white font-sans text-xs font-bold drop-shadow"
+              >
+                {orb.label}
+              </text>
+            </g>
+          ))}
+        </svg>
+      </div>
+
+      {/* Bottom Section: Live 6-String GUITAR Fretboard Diagram */}
+      <div
+        data-testid="guitar-fretboard-diagram"
+        className="flex flex-col items-center justify-center mt-1 mb-1 z-10"
+      >
+        <span className="text-xs font-sans font-semibold tracking-[0.25em] text-amber-100/90 uppercase mb-2">
+          GUITAR
+        </span>
+
+        <div className="relative flex items-center justify-center">
+          {activeSlice && activeSlice.guitar.baseFret > 1 && (
+            <span
+              data-testid="guitar-base-fret"
+              className="text-xs font-sans font-semibold text-amber-100 mr-2 -mt-12"
+            >
+              {activeSlice.guitar.baseFret}fr
+            </span>
+          )}
+
+          <svg
+            width={200}
+            height={145}
+            viewBox="0 0 200 145"
+            aria-label="6-String Guitar Chord Diagram"
+          >
+            {Array.from({ length: 5 }).map((_, fIdx) => {
+              const y = 22 + fIdx * 24;
+              return (
+                <line
+                  key={`fret-${fIdx}`}
+                  x1={25}
+                  y1={y}
+                  x2={175}
+                  y2={y}
+                  stroke="rgba(255, 247, 237, 0.85)"
+                  strokeWidth={
+                    fIdx === 0 && (!activeSlice || activeSlice.guitar.baseFret === 1) ? 3 : 1.3
+                  }
+                />
+              );
+            })}
+
+            {(activeSlice?.guitar.strings || []).map((str, sIdx) => {
+              const x = 25 + sIdx * 30;
+              const baseFret = activeSlice?.guitar.baseFret || 1;
+
+              return (
+                <g key={`str-${str.stringNumber}`}>
+                  <line
+                    x1={x}
+                    y1={22}
+                    x2={x}
+                    y2={118}
+                    stroke="rgba(255, 247, 237, 0.85)"
+                    strokeWidth={1.3}
+                  />
+
+                  {str.fret === 'x' && (
+                    <text
+                      x={x}
+                      y={14}
+                      textAnchor="middle"
+                      className="fill-amber-100/90 font-sans text-xs font-bold"
+                    >
+                      ×
+                    </text>
+                  )}
+
+                  {str.fret === 0 && (
+                    <circle
+                      cx={x}
+                      cy={12}
+                      r={4}
+                      fill="none"
+                      stroke="#FFFFFF"
+                      strokeWidth={1.5}
+                    />
+                  )}
+
+                  {typeof str.fret === 'number' && str.fret > 0 && (
+                    <circle
+                      cx={x}
+                      cy={22 + (str.fret - baseFret + 0.5) * 24}
+                      r={6.5}
+                      fill="#FFFFFF"
+                    />
+                  )}
+
+                  {str.noteLabel && (
+                    <text
+                      x={x}
+                      y={138}
+                      textAnchor="middle"
+                      className="fill-white font-sans text-xs font-semibold"
+                    >
+                      {str.noteLabel}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+      </div>
+    </div>
+  );
+}

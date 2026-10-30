@@ -1,35 +1,35 @@
 {
-  "proposal_id": "tdb-729-karaoke-realtime-code-highlighting",
-  "target_intent": "TDB-729: Smooth Karaoke Real-Time Code Highlighting, Auto-Scrolling Measure Spotlight & Token Progress Sweep",
+  "proposal_id": "tdb-730-dynamic-code-driven-tab-chord-flow-view",
+  "target_intent": "TDB-730: Dynamic Code-Driven Tab & Voice-Leading Chord Flow View (Tab / Chord Flow)",
   "delta_before": 0.24,
   "mutations": [
     {
-      "file": "src/index.css",
-      "function": "tenuto-karaoke-line-active / tenuto-karaoke-token-active",
+      "file": "src/components/TabChordFlowView.tsx",
+      "function": "TabChordFlowView",
       "ast_depth": 1,
       "decay_weight": 0.95,
-      "patch": "@@ -1,2 +1,24 @@ Add Karaoke line and token highlight styles for Monaco Editor"
+      "patch": "@@ -0,0 +1,520 @@\n+export function detectChordSymbol(...) { ... }\n+export function computeGuitarVoicing(...) { ... }\n+export function extractCodeChordSlices(...) { ... }\n+export default function TabChordFlowView(...) { ... }"
     },
     {
-      "file": "src/components/CodeEditor.tsx",
-      "function": "computeActiveKaraokeTokens / CodeEditor",
+      "file": "src/components/Transport.tsx",
+      "function": "Transport",
       "ast_depth": 2,
       "decay_weight": 0.9,
-      "patch": "@@ -1,182 +1,334 @@ Add computeActiveKaraokeTokens, Monaco deltaDecorations & auto-scroll, and live karaoke-code-ribbon"
+      "patch": "@@ -4,1 +4,1 @@\n-export type MainStudioView = 'piano_roll' | 'session' | 'arrangement';\n+export type MainStudioView = 'piano_roll' | 'tab_flow' | 'session' | 'arrangement';\n@@ -326,3 +326,4 @@\n                     { id: 'piano_roll', label: 'Piano Roll' },\n+                    { id: 'tab_flow', label: 'Tab / Chord Flow' },\n                     { id: 'session', label: 'Session' },"
     },
     {
       "file": "src/components/SplitWorkspace.tsx",
       "function": "SplitWorkspace",
       "ast_depth": 2,
       "decay_weight": 0.9,
-      "patch": "@@ -723,3 +723,9 @@ Pass events={compiledEvents}, playheadBeat={playheadBeat}, and isPlaying={isPlaying} to CodeEditor"
+      "patch": "@@ -9,1 +9,2 @@\n import DeviceChainDock from './DeviceChainDock';\n+import TabChordFlowView from './TabChordFlowView';\n@@ -770,0 +771,9 @@\n+            {activeMainView === 'tab_flow' && (\n+              <TabChordFlowView score={compiledScoreState} events={compiledEvents} playheadBeat={playheadBeat} isPlaying={isPlaying} rootKey={scoreMeta.key} />\n+            )}"
     },
     {
-      "file": "tests/code_editor_matrix.test.tsx",
-      "function": "TDB-729 test suite",
+      "file": "tests/tab_chord_flow_view.test.tsx",
+      "function": "TDB-730 Suite",
       "ast_depth": 1,
       "decay_weight": 0.95,
-      "patch": "@@ -48,1 +48,44 @@ Add unit test verifying Karaoke token highlighting and 0%-100% progress sweep"
+      "patch": "@@ -0,0 +1,105 @@\n+describe('TDB-730: Dynamic Code-Driven Tab & Voice-Leading Chord Flow View', () => { ... });"
     }
   ]
 }

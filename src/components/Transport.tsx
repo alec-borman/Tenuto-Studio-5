@@ -1,7 +1,7 @@
 import React from 'react';
 import { PRESET_SCORES } from '../presets/presetScores';
 
-export type MainStudioView = 'piano_roll' | 'session' | 'arrangement';
+export type MainStudioView = 'piano_roll' | 'tab_flow' | 'session' | 'arrangement';
 export type BottomDockTab = 'mixer' | 'devices' | 'inspector' | null;
 
 interface TransportProps {
@@ -324,6 +324,7 @@ export default function Transport({
                 {(
                   [
                     { id: 'piano_roll', label: 'Piano Roll' },
+                    { id: 'tab_flow', label: 'Tab / Chord Flow' },
                     { id: 'session', label: 'Session' },
                     { id: 'arrangement', label: 'Arrangement' },
                   ] as const

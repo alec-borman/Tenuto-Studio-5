@@ -7,6 +7,7 @@ import Transport, { MainStudioView, BottomDockTab } from './Transport';
 import SessionView from './SessionView';
 import ArrangementView from './ArrangementView';
 import DeviceChainDock from './DeviceChainDock';
+import TabChordFlowView from './TabChordFlowView';
 import { CommandManager } from '../commands/CommandManager';
 import { ASTCommand } from '../commands/ASTCommand';
 import { AudioContextManager } from '../audio/AudioContextManager';
@@ -739,7 +740,9 @@ export default function SplitWorkspace() {
                 ? 'Session View (Clip & Scene Matrix)'
                 : activeMainView === 'arrangement'
                   ? 'Arrangement View (Timeline & Locators)'
-                  : 'Scrolling Piano Roll View'}
+                  : activeMainView === 'tab_flow'
+                    ? 'Tab & Voice-Leading Chord Flow'
+                    : 'Scrolling Piano Roll View'}
             </span>
             <span className="text-[11px] font-mono text-emerald-400">
               {compiledEvents.length} Notes Compiled
@@ -767,6 +770,16 @@ export default function SplitWorkspace() {
                 onGenerateMidiPattern={handleGenerateMidiPattern}
               />
             </div>
+
+            {activeMainView === 'tab_flow' && (
+              <TabChordFlowView
+                score={compiledScoreState}
+                events={compiledEvents}
+                playheadBeat={playheadBeat}
+                isPlaying={isPlaying}
+                rootKey={scoreMeta.key}
+              />
+            )}
 
             {/* Session View Container */}
             {activeMainView === 'session' && (
