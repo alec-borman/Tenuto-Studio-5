@@ -177,10 +177,20 @@ export default function WebGPUCanvas({
     return events.filter((ev) => (ev.trackId || 'pno') === selectedTrackId);
   }, [events, selectedTrackId]);
 
-  // Native macOS trackpad pinch-to-zoom handler (wheel with ctrlKey / metaKey)
+  // Native macOS trackpad pinch-to-zoom AND mobile two-finger touch pinch-to-zoom handler
   useEffect(() => {
     const viewport = scrollViewportRef.current;
     if (!viewport) return;
+
+    let initialPinchDistance: number | null = null;
+    let initialPinchZoom: number = 1.0;
+
+    const getTouchDistance = (touches: TouchList): number => {
+      if (touches.length < 2) return 0;
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      return Math.hypot(dx, dy);
+    };
 
     const handleWheel = (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
@@ -190,9 +200,46 @@ export default function WebGPUCanvas({
       }
     };
 
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches && e.touches.length === 2) {
+        const dist = getTouchDistance(e.touches);
+        if (dist > 8) {
+          initialPinchDistance = dist;
+          setZoomLevel((currentZoom) => {
+            initialPinchZoom = currentZoom;
+            return currentZoom;
+          });
+        }
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches && e.touches.length === 2 && initialPinchDistance !== null && initialPinchDistance > 8) {
+        if (e.cancelable) e.preventDefault();
+        const currentDist = getTouchDistance(e.touches);
+        if (currentDist > 8) {
+          const ratio = currentDist / initialPinchDistance;
+          const nextZoom = Math.max(0.2, Math.min(3.0, Number((initialPinchZoom * ratio).toFixed(2))));
+          setZoomLevel(nextZoom);
+        }
+      }
+    };
+
+    const handleTouchEnd = () => {
+      initialPinchDistance = null;
+    };
+
     viewport.addEventListener('wheel', handleWheel, { passive: false });
+    viewport.addEventListener('touchstart', handleTouchStart, { passive: true });
+    viewport.addEventListener('touchmove', handleTouchMove, { passive: false });
+    viewport.addEventListener('touchend', handleTouchEnd);
+    viewport.addEventListener('touchcancel', handleTouchEnd);
     return () => {
       viewport.removeEventListener('wheel', handleWheel);
+      viewport.removeEventListener('touchstart', handleTouchStart);
+      viewport.removeEventListener('touchmove', handleTouchMove);
+      viewport.removeEventListener('touchend', handleTouchEnd);
+      viewport.removeEventListener('touchcancel', handleTouchEnd);
     };
   }, []);
 

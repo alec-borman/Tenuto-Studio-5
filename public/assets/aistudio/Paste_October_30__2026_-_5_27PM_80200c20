@@ -1,0 +1,2190 @@
+
+Stage 3 Live Production Audit (tenuto-studio-5-production.up.railway.app — "Ode to the Event Horizon (Op. 14)")
+Inspecting your live screenshot at M8:4 against the .ten source code in the left editor reveals the exact root causes of the Tab / Guitar scroll bugs:
+Why Non-Detuned Notes Were Sliding & Creating False Chords (Emaj7 at M8:4):
+In measure 8, none of the tracks have .detune() or .glide() (brass: [f3 c4 a4]:2 [g3 d4 b4]:2, horns: a4:2 b4:2, str_lo: f2:2 g2:2)—only saws in measure 9 has .detune(85%, 0.3..0.9).
+However, buildTrueVoiceTrajectories() in TabChordFlowView.tsx was linking targetMidi = dstEv.pitch.midi on every contiguous note, causing every instrument to slide diagonally during the last 22% of every note (M8:4). Because [g3 d4 b4]:2 was mid-slide toward Measure 9's [a3 e4 c#5]:1 at M8:4, the playhead evaluated intermediate passing pitches and displayed a false Emaj7 chord instead of G.
+Why Beats Were Missing / Disappearing Near the Playhead (M8 & M9):
+isPlayheadOverStartPill hid any note pill within 36px of playheadX. At 20% zoom (56px per full 4-beat measure), 36px is 65% of an entire measure, which caused the pills for Beat 3 ([g3 d4 b4]:2, b4:2, g2:2) in Measure 8 and Beat 1 in Measure 9 to disappear completely whenever the playhead approached them.
+Why Pills Overlapped in Dense Measures (M15) & Fullscreen Button Was Missing:
+At 20% zoom, 8th/quarter notes are 7px–14px wide while the pill box was hardcoded to 18px–40px wide, causing consecutive beats in M15 to stack on top of each other ([5][5][5][5]), and the Fullscreen / Mobile layout updates from TDB-736 had not yet been applied to Transport.tsx and SplitWorkspace.tsx.
+Implementation Contract TDB-741 (v5.1.8 -> v5.2.0)
+This contract fixes all of the Tab/Guitar scroll bugs and adds the Fullscreen button and Mobile support in one parallel batch commit:
+Strict Detune / Glide-Only Sliding (TabChordFlowView.tsx): Standard notes stay 100% flat at their exact written MIDI pitch (startMidi) for their entire duration. A note only slides or modulates its line when it explicitly carries .detune(...) (rendering a visual unison detune shimmer envelope across its start..end window, e.g. 0.3..0.9 in Measure 9), .glide(...), or .mpe(bend).
+Zero Missing Beats (Proportional Beat Duration Bars & Left-Side Playhead Badges): Removes isPlayheadOverStartPill so no beat is ever hidden, renders every note as a proportional duration bar spanning its exact beat start to beat end ([xStart, xEnd]), scales pill badges adaptively to note width so dense measures (M15) never overlap, and places the playhead orb's pitch badge to the left of the playhead line.
+Fullscreen Studio Toggle (⛶ Fullscreen) & Mobile / Touch Support: Adds the ⛶ Fullscreen / ✕ Exit button to Transport.tsx, 100dvh mobile safe-area layout, stacked mobile split view, and two-finger touchscreen pinch-to-zoom on both the Piano Roll and Tab/Chord Flow views.
+Paste the contract below directly into Google AI Studio:
+code
+Markdown
+# Implementation Contract: Detune-Only Tab Sliding, Zero-Missing-Beat Proportional Tab Bars, Fullscreen Toggle & Mobile Support (TDB-741)
+
+**Project:** Tenuto Studio 5
+**Scope:** Fix `src/components/TabChordFlowView.tsx` so notes remain 100% flat at their written pitch unless `.detune(...)`, `.glide(...)`, or `.mpe(bend)` is explicitly present on the note, render a visual intra-note unison detune wave for `.detune(pct, start..end)`, eliminate missing beats by removing `isPlayheadOverStartPill` and drawing proportional beat-duration bars with adaptive non-overlapping labels, and add the Fullscreen toggle button (`⛶ Fullscreen` / `✕ Exit`) and mobile touch support (`100dvh`, responsive mobile grid, two-finger touch pinch-to-zoom) across `index.html`, `src/index.css`, `src/components/Transport.tsx`, `src/components/SplitWorkspace.tsx`, `src/components/WebGPUCanvas.tsx`, and `src/audio/StudioAudioEngine.ts`; update `README.md` and `tests/`; and bump the repository version from `5.1.8` to `5.2.0`.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+**Version Bump:** 5.1.8 -> 5.2.0 (+0.0.2 step with base-10 minor rollover: 5.1.8 + 0.0.2 = 5.2.0)
+**Documentation Sync:** Modify and append `README.md`
+**Execution Mode:** Parallel Batch Edits (Read all target files in parallel in a single turn, then apply all file edits in parallel in a single batched tool-call turn — NEVER edit files sequentially one by one).
+
+---
+
+## 1. Objective
+In the live production screenshot of `"Ode to the Event Horizon (Op. 14)"` at `M8:4` (`20%` zoom), three visual bugs occur in `TabChordFlowView.tsx` alongside the missing Fullscreen/mobile controls:
+1. **Unwanted Sliding on Non-Detuned Notes:** `buildTrueVoiceTrajectories()` linked `targetMidi` to the next note's pitch on *every* contiguous note, causing plain half notes in Measure 8 (`brass: [f3 c4 a4]:2 [g3 d4 b4]:2`, `horns: a4:2 b4:2`) to slide diagonally at `M8:4` and display a false `Emaj7` chord instead of `G`. Notes must stay **100% flat** unless `.detune(...)`, `.glide(...)`, or `.mpe(bend)` is explicitly attached.
+2. **Missing Beats Near the Playhead:** `isPlayheadOverStartPill` hid note pills within `36px` of `playheadX`. At `20%` zoom, `36px` spans more than half a measure, erasing Beat 3 of Measure 8 and Beat 1 of Measure 9 whenever the playhead was nearby.
+3. **Overlapping Pills at Low Zoom (`20%`) & Missing Fullscreen / Mobile Support:** Fixed-width `18px–40px` pills overlapped on short notes in `M15`, and `Transport.tsx` / `SplitWorkspace.tsx` lacked the `⛶ Fullscreen` button and mobile `100dvh` touch layout.
+
+This contract fixes all three `TabChordFlowView.tsx` bugs, adds the Fullscreen toggle and mobile touch support, updates `README.md`, and bumps the repository version from `5.1.8` to `5.2.0`.
+
+---
+
+## 2. Root Cause
+1. In `src/components/TabChordFlowView.tsx` (`buildTrueVoiceTrajectories`), `if (dstEv) { targetMidi = Math.round(dstEv.pitch.midi); }` assigned a slide target to every note even when `hasExplicitGlide` was false.
+2. In `src/components/TabChordFlowView.tsx`, `isPlayheadOverStartPill` suppressed rendering the `<rect>` and `<text>` of any note within `36px` of `playheadX`, hiding entire beats when zoomed out.
+3. `src/components/Transport.tsx` and `src/components/SplitWorkspace.tsx` lacked `isFullscreen` / `onToggleFullscreen` and mobile stacked grid classes (`grid-cols-1 grid-rows-2 md:grid-cols-2 md:grid-rows-1`).
+
+---
+
+## 3. Files To Modify
+
+> **PARALLEL EXECUTION DIRECTIVE:** You MUST read all target files in a single parallel batch call, and you MUST apply all file edits below (`package.json`, `electron-builder.json`, `README.md`, `index.html`, `src/index.css`, `src/components/Transport.tsx`, `src/components/SplitWorkspace.tsx`, `src/components/WebGPUCanvas.tsx`, `src/components/TabChordFlowView.tsx`, `src/audio/StudioAudioEngine.ts`, `tests/tab_chord_flow_view.test.tsx`, `tests/multi_view_shell.test.tsx`, `tests/studio_engine_and_ui.test.tsx`, and `tests/documentation_integrity.test.ts`) simultaneously in a single parallel tool-call turn. Do NOT apply edits sequentially one file per turn.
+
+### 3.1 `package.json` & `electron-builder.json` - Bump Version `5.1.8 -> 5.2.0`
+1. In `package.json`, update `"version"` to `"5.2.0"`:
+```json
+{
+  "name": "tenuto-studio-5",
+  "private": true,
+  "version": "5.2.0",
+In electron-builder.json, update "extraMetadata.version" to "5.2.0":
+code
+JSON
+"extraMetadata": {
+    "main": "electron/main.cjs",
+    "version": "5.2.0"
+  },
+3.2 README.md - Synchronize Documentation for v5.2.0 (Detune-Only Tab Sliding, Proportional Beat Bars, Fullscreen & Mobile)
+In README.md:
+Update the top release badge to v5.2.0:
+code
+Markdown
+[![Release: v5.2.0](https://img.shields.io/badge/Release-v5.2.0-2563eb.svg)](./SPEC.md)
+Update the installer filenames in Option 1A and Option 1B to 5.2.0:
+open release/"Tenuto Studio 5-5.2.0-arm64.pkg"
+start "" "release\Tenuto Studio 5 Setup 5.2.0.exe"
+Under 1. Two-Tier Studio Transport & Multi-View Workspace Shell, ensure the Fullscreen & Mobile bullet is present:
+code
+Markdown
+* **Live Clock, Master Volume, Fullscreen & WAV Bounce:** Real-time BPM readout (tracking piecewise `meta @{ tempo }` changes per measure), Time Signature, `M<Measure>:<Beat>` counter, `0%–200%` Master Volume slider, 1-click **Export WAV**, and a **Fullscreen Studio Toggle (`⛶ Fullscreen`)** with mobile `100dvh` safe-area support and two-finger touchscreen pinch-to-zoom.
+Under Section 3.B (Dynamic Code-Driven Tab & Voice-Leading Chord Flow View), update the third bullet to document Detune/Glide-Only Sliding & Proportional Beat Bars:
+code
+Markdown
+* **Detune/Glide-Only Voice Modulation & Proportional Beat Bars:** Standard notes render as flat, proportional beat-duration bars at their exact MIDI pitch height so every beat is 100% visible at any zoom level (`20%–300%`). Notes only slide or modulate their line when `.detune(...)` (rendering a dual-wave unison detune shimmer envelope across its `start..end` window), `.glide(...)`, or `.mpe(bend)` is explicitly attached.
+Under ## Release Notes, update the heading to ## Release Notes (v5.2.0) and prepend the v5.2.0 entry:
+code
+Markdown
+## Release Notes (`v5.2.0`)
+
+* **`v5.2.0`:** Fixed `TabChordFlowView.tsx` so notes stay 100% flat unless `.detune(...)`, `.glide(...)`, or `.mpe(bend)` is present, added visual intra-note unison detune wave envelopes for `.detune(pct, start..end)`, replaced disappearing playhead pills with proportional beat-duration bars so every beat is visible at all zoom levels (`20%–300%`), and added the `⛶ Fullscreen` studio button and mobile `100dvh` touch pinch-to-zoom support.
+3.3 index.html & src/index.css - Mobile Viewport Meta & 100dvh / Fullscreen Styles
+Update index.html:
+code
+Html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#020617" />
+    <title>Tenuto Studio 5</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+Ensure the following mobile 100dvh and fullscreen classes are at the bottom of src/index.css:
+code
+CSS
+/* Mobile 100dvh Dynamic Viewport & Fullscreen Shell (TDB-741) */
+.tenuto-dvh-shell {
+  height: 100vh;
+  height: 100dvh;
+  width: 100vw;
+  max-width: 100%;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  touch-action: manipulation;
+}
+
+.tenuto-fullscreen-active {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100dvh !important;
+  z-index: 9999 !important;
+}
+3.4 src/components/Transport.tsx - Add ⛶ Fullscreen / ✕ Exit Button in Top-Right Transport Bar
+In src/components/Transport.tsx:
+CRITICAL TEST CONSTRAINT: Never use the word "Play" in any new button text or aria-label in Transport.tsx (use aria-label={isFullscreen ? 'Exit Fullscreen' : 'Toggle Fullscreen'}).
+Add isFullscreen?: boolean; and onToggleFullscreen?: () => void; to TransportProps and destructure isFullscreen = false, onToggleFullscreen, in Transport.
+In the Right section of Tier 1 in src/components/Transport.tsx (immediately after the Export WAV button), render the Fullscreen button:
+code
+Tsx
+{onToggleFullscreen && (
+            <button
+              type="button"
+              aria-label={isFullscreen ? 'Exit Fullscreen' : 'Toggle Fullscreen'}
+              onClick={onToggleFullscreen}
+              className={`${
+                isFullscreen
+                  ? 'bg-indigo-600/30 border-indigo-400 text-indigo-200'
+                  : 'bg-slate-950 hover:bg-slate-800 border-slate-700 text-slate-200'
+              } border text-xs font-semibold py-1 px-2.5 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0`}
+              title={isFullscreen ? 'Exit Fullscreen (Esc)' : 'Enter Fullscreen Studio Mode'}
+            >
+              {isFullscreen ? '✕ Exit' : '⛶ Fullscreen'}
+            </button>
+          )}
+3.5 src/components/SplitWorkspace.tsx & src/audio/StudioAudioEngine.ts - Fullscreen API Sync, Mobile Responsive Grid & iOS Audio Unlock
+In src/components/SplitWorkspace.tsx:
+Add const [isFullscreen, setIsFullscreen] = useState<boolean>(false); and const workspaceRootRef = useRef<HTMLDivElement>(null);.
+Add the fullscreenchange / webkitfullscreenchange listener and handleToggleFullscreen:
+code
+TypeScript
+useEffect(() => {
+    const handleFullscreenChange = () => {
+      const doc: any = document;
+      const activeFs = Boolean(doc.fullscreenElement || doc.webkitFullscreenElement);
+      setIsFullscreen(activeFs);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+    };
+  }, []);
+
+  const handleToggleFullscreen = async () => {
+    const doc: any = document;
+    const el: any = workspaceRootRef.current || document.documentElement;
+    try {
+      if (!isFullscreen && !doc.fullscreenElement && !doc.webkitFullscreenElement) {
+        if (typeof el.requestFullscreen === 'function') {
+          await el.requestFullscreen();
+        } else if (typeof el.webkitRequestFullscreen === 'function') {
+          await el.webkitRequestFullscreen();
+        }
+        setIsFullscreen(true);
+      } else {
+        if (typeof doc.exitFullscreen === 'function' && doc.fullscreenElement) {
+          await doc.exitFullscreen();
+        } else if (typeof doc.webkitExitFullscreen === 'function' && doc.webkitFullscreenElement) {
+          await doc.webkitExitFullscreen();
+        }
+        setIsFullscreen(false);
+      }
+    } catch {
+      setIsFullscreen((prev) => !prev);
+    }
+  };
+Pass isFullscreen={isFullscreen} and onToggleFullscreen={handleToggleFullscreen} to <Transport />.
+Update the root div, <main>, <section data-testid="code-editor-pane">, and <div data-testid="bottom-studio-dock"> in SplitWorkspace.tsx:
+code
+Tsx
+<div
+      ref={workspaceRootRef}
+      className={`tenuto-dvh-shell bg-slate-950 text-slate-100 overflow-hidden flex flex-col ${
+        isFullscreen ? 'tenuto-fullscreen-active' : ''
+      }`}
+    >
+code
+Tsx
+<main
+        data-testid="workspace-main-grid"
+        className={`flex-1 grid ${
+          isCodeVisible
+            ? 'grid-cols-1 grid-rows-2 md:grid-cols-2 md:grid-rows-1'
+            : 'grid-cols-1 grid-rows-1'
+        } min-h-0 overflow-hidden`}
+      >
+        <section
+          data-testid="code-editor-pane"
+          className={`${
+            isCodeVisible ? 'flex' : 'hidden'
+          } h-full w-full border-b md:border-b-0 md:border-r border-slate-800 bg-[#0B0F19] flex-col min-h-0 overflow-hidden`}
+        >
+In src/audio/StudioAudioEngine.ts, inside playScore(score: CompiledScore), unlock both 'suspended' and 'interrupted' mobile WebAudio states:
+code
+TypeScript
+const ctx = this.ensureContext();
+    if (ctx.state === 'suspended' || (ctx.state as string) === 'interrupted') {
+      await ctx.resume();
+    }
+3.6 src/components/WebGPUCanvas.tsx - Add Two-Finger Mobile Touch Pinch-to-Zoom
+In src/components/WebGPUCanvas.tsx, inside the useEffect that attaches the wheel listener to scrollViewportRef, also attach touchstart, touchmove, and touchend two-finger pinch-to-zoom listeners:
+code
+TypeScript
+let initialPinchDistance: number | null = null;
+    let initialPinchZoom: number = 1.0;
+
+    const getTouchDistance = (touches: TouchList): number => {
+      if (touches.length < 2) return 0;
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      return Math.hypot(dx, dy);
+    };
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches && e.touches.length === 2) {
+        const dist = getTouchDistance(e.touches);
+        if (dist > 8) {
+          initialPinchDistance = dist;
+          setZoomLevel((currentZoom) => {
+            initialPinchZoom = currentZoom;
+            return currentZoom;
+          });
+        }
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches && e.touches.length === 2 && initialPinchDistance !== null && initialPinchDistance > 8) {
+        if (e.cancelable) e.preventDefault();
+        const currentDist = getTouchDistance(e.touches);
+        if (currentDist > 8) {
+          const ratio = currentDist / initialPinchDistance;
+          const nextZoom = Math.max(0.2, Math.min(3.0, Number((initialPinchZoom * ratio).toFixed(2))));
+          setZoomLevel(nextZoom);
+        }
+      }
+    };
+
+    const handleTouchEnd = () => {
+      initialPinchDistance = null;
+    };
+
+    viewport.addEventListener('wheel', handleWheel, { passive: false });
+    viewport.addEventListener('touchstart', handleTouchStart, { passive: true });
+    viewport.addEventListener('touchmove', handleTouchMove, { passive: false });
+    viewport.addEventListener('touchend', handleTouchEnd);
+    viewport.addEventListener('touchcancel', handleTouchEnd);
+    return () => {
+      viewport.removeEventListener('wheel', handleWheel);
+      viewport.removeEventListener('touchstart', handleTouchStart);
+      viewport.removeEventListener('touchmove', handleTouchMove);
+      viewport.removeEventListener('touchend', handleTouchEnd);
+      viewport.removeEventListener('touchcancel', handleTouchEnd);
+    };
+3.7 src/components/TabChordFlowView.tsx - Strict Detune/Glide-Only Sliding, Intra-Note Detune Shimmer & Zero Missing Beats
+Replace src/components/TabChordFlowView.tsx with the following complete implementation:
+code
+TypeScript
+import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import { CompiledScore } from '../parser/DocumentParser';
+import { WindowedModulationSpec } from '../parser/ASTSerializer';
+
+export interface ChordSymbolInfo {
+  rootLetter: string;
+  rootAccidental: string;
+  quality: string;
+  slashBass?: string;
+  fullText: string;
+}
+
+export interface GuitarStringState {
+  stringNumber: number; // 6 (Low E) down to 1 (High E)
+  fret: number | 'x';
+  midi: number | null;
+  noteLabel: string;
+}
+
+export interface GuitarVoicingDiagram {
+  baseFret: number;
+  strings: GuitarStringState[];
+}
+
+export interface ChordFlowSlice {
+  index: number;
+  measureNumber: number;
+  startWhole: number;
+  endWhole: number;
+  durationWhole: number;
+  midiNotes: number[];
+  hasGlide: boolean;
+  symbol: ChordSymbolInfo;
+  guitar: GuitarVoicingDiagram;
+}
+
+export interface TrackedVoiceEvent {
+  id: string;
+  trackId: string;
+  voiceId: string;
+  color: string;
+  startWhole: number;
+  endWhole: number;
+  durationWhole: number;
+  startMidi: number;
+  targetMidi: number;
+  stringIndex: number; // 0 = High E (String 1) .. 5 = Low E (String 6)
+  targetStringIndex: number;
+  fret: number;
+  targetFret: number;
+  mpeBend?: number[];
+  hasGlide: boolean;
+  hasDetune: boolean;
+  detunePct?: number;
+  detuneMod?: WindowedModulationSpec;
+  rawToken?: string;
+}
+
+export interface TabChordFlowViewProps {
+  score: CompiledScore | null;
+  events: any[];
+  playheadBeat?: number;
+  isPlaying?: boolean;
+  rootKey?: string;
+}
+
+const FLAT_STEPS = [
+  { letter: 'C', acc: '' },
+  { letter: 'D', acc: '♭' },
+  { letter: 'D', acc: '' },
+  { letter: 'E', acc: '♭' },
+  { letter: 'E', acc: '' },
+  { letter: 'F', acc: '' },
+  { letter: 'G', acc: '♭' },
+  { letter: 'G', acc: '' },
+  { letter: 'A', acc: '♭' },
+  { letter: 'A', acc: '' },
+  { letter: 'B', acc: '♭' },
+  { letter: 'B', acc: '' },
+];
+
+const SHARP_STEPS = [
+  { letter: 'C', acc: '' },
+  { letter: 'C', acc: '♯' },
+  { letter: 'D', acc: '' },
+  { letter: 'D', acc: '♯' },
+  { letter: 'E', acc: '' },
+  { letter: 'F', acc: '' },
+  { letter: 'F', acc: '♯' },
+  { letter: 'G', acc: '' },
+  { letter: 'G', acc: '♯' },
+  { letter: 'A', acc: '' },
+  { letter: 'A', acc: '♯' },
+  { letter: 'B', acc: '' },
+];
+
+const TRACK_COLORS: Record<string, string> = {
+  saws: '#FBBF24',
+  fpad: '#F59E0B',
+  pad: '#34D399',
+  lead: '#38BDF8',
+  alto_lead: '#38BDF8',
+  reese: '#FB7185',
+  sub: '#A78BFA',
+  bass: '#F97316',
+  pno: '#60A5FA',
+  epno: '#818CF8',
+  harp: '#2DD4BF',
+  vln1: '#A78BFA',
+  vln2: '#818CF8',
+  vla: '#2DD4BF',
+  vc: '#FBBF24',
+  cb: '#FB923C',
+  strings: '#F472B6',
+  str_hi: '#38BDF8',
+  str_lo: '#F97316',
+  hn: '#FACC15',
+  horns: '#FACC15',
+  brass: '#F59E0B',
+  tpt: '#F87171',
+  tbn: '#FB923C',
+  tba: '#F59E0B',
+  fl: '#67E8F9',
+  eh: '#5EEAD4',
+  ob: '#5EEAD4',
+  cl: '#93C5FD',
+  choir: '#F472B6',
+  low_choir: '#FBBF24',
+  mid_oohs: '#F59E0B',
+  nebula_vox: '#38BDF8',
+  timp: '#FCA5A5',
+  drums: '#FDA4AF',
+};
+
+const FALLBACK_COLORS = [
+  '#FFFFFF',
+  '#FDE047',
+  '#67E8F9',
+  '#6EE7B7',
+  '#F9A8D4',
+  '#C4B5FD',
+  '#FDBA74',
+];
+
+function getInstrumentColor(trackId: string, idx: number = 0): string {
+  const clean = (trackId || 'pno').toLowerCase();
+  return TRACK_COLORS[clean] || FALLBACK_COLORS[idx % FALLBACK_COLORS.length];
+}
+
+// Standard 6-string guitar open MIDI pitches (Low E6 to High E1): E2(40), A2(45), D3(50), G3(55), B3(59), E4(64)
+const STANDARD_GUITAR_OPEN_MIDI = [40, 45, 50, 55, 59, 64];
+
+// Tab staff lines top-to-bottom (index 0 = String 1 High E4, index 5 = String 6 Low E2)
+const TAB_STAFF_OPEN_MIDI_TOP_DOWN = [64, 59, 55, 50, 45, 40];
+const TAB_STAFF_STRING_LABELS = ['e', 'B', 'G', 'D', 'A', 'E'];
+
+export function foldMidiIntoGuitarRange(midi: number): number {
+  let folded = Math.round(midi);
+  while (folded < 40) folded += 12;
+  while (folded > 86) folded -= 12;
+  return folded;
+}
+
+export function formatMidiPitchDisplay(midi: number, preferFlats: boolean = false): string {
+  const clamped = Math.max(12, Math.min(108, Math.round(midi)));
+  const octave = Math.floor(clamped / 12) - 1;
+  const step = (preferFlats ? FLAT_STEPS : SHARP_STEPS)[clamped % 12];
+  return `${step.letter}${step.acc}${octave}`;
+}
+
+export function formatPitchClassDisplay(
+  pc: number,
+  preferFlats: boolean = false
+): {
+  letter: string;
+  acc: string;
+  text: string;
+} {
+  const norm = ((Math.round(pc) % 12) + 12) % 12;
+  const step = (preferFlats ? FLAT_STEPS : SHARP_STEPS)[norm];
+  return { letter: step.letter, acc: step.acc, text: `${step.letter}${step.acc}` };
+}
+
+export function allocateNotesToTabStrings(
+  midiNotes: number[]
+): Map<number, { stringIndex: number; fret: number }> {
+  const result = new Map<number, { stringIndex: number; fret: number }>();
+  if (!midiNotes || midiNotes.length === 0) return result;
+
+  const sortedLowToHigh = Array.from(new Set(midiNotes.map((m) => Math.round(m)))).sort(
+    (a, b) => a - b
+  );
+  const usedStrings = new Set<number>();
+
+  for (let i = 0; i < sortedLowToHigh.length; i++) {
+    const rawMidi = sortedLowToHigh[i];
+    const playableMidi = foldMidiIntoGuitarRange(rawMidi);
+    let bestStringIdx = 5;
+    let bestFret = Math.max(0, playableMidi - 40);
+    let bestCost = Infinity;
+
+    for (let sIdx = 0; sIdx < 6; sIdx++) {
+      const openMidi = TAB_STAFF_OPEN_MIDI_TOP_DOWN[sIdx];
+      const fret = playableMidi - openMidi;
+      if (fret < 0 || fret > 22) continue;
+
+      const penalty = usedStrings.has(sIdx) ? 100 : 0;
+      const idealString = Math.max(0, Math.min(5, 5 - Math.floor((playableMidi - 40) / 5.5)));
+      const cost =
+        penalty + Math.abs(sIdx - idealString) * 3.0 + (fret > 12 ? (fret - 12) * 1.5 : 0);
+
+      if (cost < bestCost) {
+        bestCost = cost;
+        bestStringIdx = sIdx;
+        bestFret = fret;
+      }
+    }
+
+    usedStrings.add(bestStringIdx);
+    result.set(rawMidi, { stringIndex: bestStringIdx, fret: bestFret });
+  }
+
+  return result;
+}
+
+export function detectChordSymbol(
+  midiNotes: number[],
+  preferFlats: boolean = false
+): ChordSymbolInfo {
+  if (!midiNotes || midiNotes.length === 0) {
+    return { rootLetter: '—', rootAccidental: '', quality: '', fullText: '—' };
+  }
+
+  const sorted = [...midiNotes].sort((a, b) => a - b);
+  const bassPc = ((sorted[0] % 12) + 12) % 12;
+  const uniquePcs = Array.from(new Set(sorted.map((m) => ((m % 12) + 12) % 12)));
+
+  if (uniquePcs.length === 1) {
+    const p = formatPitchClassDisplay(uniquePcs[0], preferFlats);
+    return { rootLetter: p.letter, rootAccidental: p.acc, quality: '', fullText: p.text };
+  }
+
+  if (uniquePcs.length === 2) {
+    const interval = (uniquePcs[1] - uniquePcs[0] + 12) % 12;
+    const p0 = formatPitchClassDisplay(uniquePcs[0], preferFlats);
+    const p1 = formatPitchClassDisplay(uniquePcs[1], preferFlats);
+    if (interval === 7) return { rootLetter: p0.letter, rootAccidental: p0.acc, quality: '5', fullText: `${p0.text}5` };
+    if (interval === 5) return { rootLetter: p1.letter, rootAccidental: p1.acc, quality: '5', fullText: `${p1.text}5` };
+    if (interval === 3) return { rootLetter: p0.letter, rootAccidental: p0.acc, quality: 'm', fullText: `${p0.text}m` };
+    if (interval === 4) return { rootLetter: p0.letter, rootAccidental: p0.acc, quality: '', fullText: p0.text };
+  }
+
+  const templates: Array<{
+    intervals: number[];
+    quality: string;
+    scoreBonus: number;
+  }> = [
+    { intervals: [0, 4, 7, 11, 2], quality: 'maj9', scoreBonus: 1.42 },
+    { intervals: [0, 3, 7, 10, 2], quality: 'm9', scoreBonus: 1.42 },
+    { intervals: [0, 4, 7, 10, 2], quality: '9', scoreBonus: 1.4 },
+    { intervals: [0, 4, 7, 11], quality: 'maj7', scoreBonus: 1.32 },
+    { intervals: [0, 3, 7, 9], quality: 'm6', scoreBonus: 1.35 },
+    { intervals: [0, 5, 7, 10], quality: '7sus', scoreBonus: 1.35 },
+    { intervals: [0, 4, 7, 10], quality: '7', scoreBonus: 1.28 },
+    { intervals: [0, 3, 7, 10], quality: 'm7', scoreBonus: 1.28 },
+    { intervals: [0, 4, 7, 9], quality: '6', scoreBonus: 1.2 },
+    { intervals: [0, 4, 7, 2], quality: 'add9', scoreBonus: 1.22 },
+    { intervals: [0, 3, 7, 2], quality: 'm(add9)', scoreBonus: 1.22 },
+    { intervals: [0, 3, 6, 10], quality: 'm7♭5', scoreBonus: 1.25 },
+    { intervals: [0, 3, 6, 9], quality: 'dim7', scoreBonus: 1.25 },
+    { intervals: [0, 4, 7], quality: '', scoreBonus: 1.15 },
+    { intervals: [0, 3, 7], quality: 'm', scoreBonus: 1.15 },
+    { intervals: [0, 5, 7], quality: 'sus4', scoreBonus: 1.1 },
+    { intervals: [0, 2, 7], quality: 'sus2', scoreBonus: 1.1 },
+    { intervals: [0, 3, 6], quality: 'dim', scoreBonus: 1.08 },
+    { intervals: [0, 4, 8], quality: 'aug', scoreBonus: 1.08 },
+  ];
+
+  let bestRootPc = bassPc;
+  let bestQuality = '';
+  let bestScore = -Infinity;
+
+  for (const candidateRoot of uniquePcs) {
+    const relSet = new Set(uniquePcs.map((pc) => (pc - candidateRoot + 12) % 12));
+
+    for (const tpl of templates) {
+      let matched = 0;
+      for (const req of tpl.intervals) {
+        if (relSet.has(req)) matched++;
+      }
+      const coverage = matched / tpl.intervals.length;
+      const unmatchedNotes = Math.max(0, uniquePcs.length - matched);
+      const bassBonus = candidateRoot === bassPc ? 0.34 : 0;
+      const totalScore = coverage * tpl.scoreBonus + bassBonus - unmatchedNotes * 0.16;
+
+      if (totalScore > bestScore) {
+        bestScore = totalScore;
+        bestRootPc = candidateRoot;
+        bestQuality = tpl.quality;
+      }
+    }
+  }
+
+  const rootDisp = formatPitchClassDisplay(bestRootPc, preferFlats);
+  const bassDisp = formatPitchClassDisplay(bassPc, preferFlats);
+
+  const isSlashInversion = bestRootPc !== bassPc && uniquePcs.length >= 3;
+  const slashBass = isSlashInversion ? bassDisp.text : undefined;
+  const qualityWithSlash = slashBass ? `${bestQuality}/${slashBass}` : bestQuality;
+
+  return {
+    rootLetter: rootDisp.letter,
+    rootAccidental: rootDisp.acc,
+    quality: qualityWithSlash,
+    slashBass,
+    fullText: `${rootDisp.text}${qualityWithSlash}`,
+  };
+}
+
+export function computeGuitarVoicing(
+  midiNotes: number[],
+  preferFlats: boolean = false
+): GuitarVoicingDiagram {
+  if (!midiNotes || midiNotes.length === 0) {
+    return {
+      baseFret: 1,
+      strings: STANDARD_GUITAR_OPEN_MIDI.map((_, idx) => ({
+        stringNumber: 6 - idx,
+        fret: 'x',
+        midi: null,
+        noteLabel: '',
+      })),
+    };
+  }
+
+  const foldedNotes = Array.from(
+    new Set(midiNotes.map((m) => foldMidiIntoGuitarRange(m)))
+  ).sort((a, b) => a - b);
+
+  const uniquePcs = Array.from(new Set(foldedNotes.map((m) => ((m % 12) + 12) % 12)));
+  const bassNote = foldedNotes[0];
+
+  const fretOn6 = bassNote - STANDARD_GUITAR_OPEN_MIDI[0];
+  const fretOn5 = bassNote - STANDARD_GUITAR_OPEN_MIDI[1];
+  let anchorFret = 1;
+  if (fretOn6 >= 1 && fretOn6 <= 11) {
+    anchorFret = fretOn6;
+  } else if (fretOn5 >= 1 && fretOn5 <= 11) {
+    anchorFret = fretOn5;
+  } else {
+    anchorFret = ((bassNote - 40) % 12 + 12) % 12 || 1;
+  }
+
+  const baseFret = anchorFret <= 3 ? 1 : Math.max(1, anchorFret - 1);
+
+  const strings: GuitarStringState[] = [];
+  let hasAtLeastOneFrettedString = false;
+
+  for (let sIdx = 0; sIdx < 6; sIdx++) {
+    const openMidi = STANDARD_GUITAR_OPEN_MIDI[sIdx];
+    let bestFret: number | 'x' = 'x';
+    let bestMidi: number | null = null;
+    let minFretDist = Infinity;
+
+    if (foldedNotes.length === 1) {
+      const exactFret = bassNote - openMidi;
+      if (
+        !hasAtLeastOneFrettedString &&
+        exactFret >= 0 &&
+        exactFret >= baseFret - 1 &&
+        exactFret <= baseFret + 4
+      ) {
+        bestFret = exactFret;
+        bestMidi = bassNote;
+        hasAtLeastOneFrettedString = true;
+      }
+    } else if (sIdx === 0) {
+      const f = bassNote - openMidi;
+      if (f >= 0 && f <= 15) {
+        bestFret = f;
+        bestMidi = bassNote;
+        hasAtLeastOneFrettedString = true;
+      }
+    } else if (sIdx === 1 && foldedNotes.length >= 4 && foldedNotes[1] - foldedNotes[0] >= 6) {
+      const f5 = foldedNotes[1] - openMidi;
+      if (f5 >= baseFret && f5 <= baseFret + 4) {
+        bestFret = f5;
+        bestMidi = foldedNotes[1];
+        hasAtLeastOneFrettedString = true;
+      } else {
+        bestFret = 'x';
+      }
+    } else {
+      const minFretSearch = baseFret === 1 ? 0 : baseFret;
+      for (let f = minFretSearch; f <= baseFret + 4; f++) {
+        const candidateMidi = openMidi + f;
+        const pc = ((candidateMidi % 12) + 12) % 12;
+        if (uniquePcs.includes(pc)) {
+          const dist = Math.abs(f - (baseFret + 1.5));
+          if (dist < minFretDist) {
+            minFretDist = dist;
+            bestFret = f;
+            bestMidi = candidateMidi;
+            hasAtLeastOneFrettedString = true;
+          }
+        }
+      }
+    }
+
+    const noteLabel =
+      bestMidi !== null
+        ? formatPitchClassDisplay(bestMidi % 12, preferFlats).text
+        : '';
+
+    strings.push({
+      stringNumber: 6 - sIdx,
+      fret: bestFret,
+      midi: bestMidi,
+      noteLabel,
+    });
+  }
+
+  if (!hasAtLeastOneFrettedString && strings.length === 6) {
+    const fallbackFret = Math.max(0, Math.min(12, ((bassNote - 40) % 12 + 12) % 12));
+    const fallbackMidi = 40 + fallbackFret;
+    strings[0] = {
+      stringNumber: 6,
+      fret: fallbackFret,
+      midi: fallbackMidi,
+      noteLabel: formatPitchClassDisplay(fallbackMidi % 12, preferFlats).text,
+    };
+  }
+
+  return {
+    baseFret,
+    strings,
+  };
+}
+
+export function extractCodeChordSlices(
+  events: any[],
+  preferFlats: boolean = false,
+  selectedTrackId: string | null = null
+): ChordFlowSlice[] {
+  const filteredEvents = (events || []).filter((ev) => {
+    if (!ev?.pitch || ev.pitch.isRest || ev.pitch.isSpacer || ev.pitch.midi <= 0) return false;
+    if (selectedTrackId && (ev.trackId || 'pno') !== selectedTrackId) return false;
+    if (!selectedTrackId && (ev.style === 'grid' || ev.pitch.gridKey)) return false;
+    return true;
+  });
+
+  if (filteredEvents.length === 0) return [];
+
+  const halfBarPointsSet = new Set<number>();
+  let maxEndWhole = 0.5;
+
+  for (const ev of filteredEvents) {
+    const st = ev.startTime ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator) : 0;
+    const dur = ev.duration ? ev.duration.numerator / Math.max(1, ev.duration.denominator) : 0.25;
+    const qSt = Math.floor(st * 2) / 2;
+    const qEnd = Math.ceil((st + dur) * 2) / 2;
+    halfBarPointsSet.add(qSt);
+    if (qEnd > maxEndWhole) maxEndWhole = qEnd;
+  }
+
+  const sortedStarts = Array.from(halfBarPointsSet).sort((a, b) => a - b);
+  const rawSlices: Array<{
+    startWhole: number;
+    endWhole: number;
+    measureNumber: number;
+    midiNotes: number[];
+    hasGlide: boolean;
+  }> = [];
+
+  for (let i = 0; i < sortedStarts.length; i++) {
+    const sliceStart = sortedStarts[i];
+    const sliceEnd =
+      i + 1 < sortedStarts.length ? sortedStarts[i + 1] : Math.max(sliceStart + 0.5, maxEndWhole);
+    if (sliceEnd - sliceStart < 1e-4) continue;
+
+    const activeMidis = new Set<number>();
+    let hasGlide = false;
+    let measureNum = Math.floor(sliceStart) + 1;
+
+    for (const ev of filteredEvents) {
+      const st = ev.startTime ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator) : 0;
+      const dur = ev.duration ? ev.duration.numerator / Math.max(1, ev.duration.denominator) : 0.25;
+      if (st < sliceEnd - 1e-4 && st + dur > sliceStart + 1e-4) {
+        activeMidis.add(Math.round(ev.pitch.midi));
+        if (ev.measureNumber) measureNum = ev.measureNumber;
+        if ((ev.physics?.glideMs ?? 0) > 0 || Boolean(ev.physics?.mpe?.bend)) {
+          hasGlide = true;
+        }
+      }
+    }
+
+    if (activeMidis.size === 0) continue;
+    const sortedMidis = Array.from(activeMidis).sort((a, b) => a - b);
+    const sym = detectChordSymbol(sortedMidis, preferFlats);
+
+    const prev = rawSlices[rawSlices.length - 1];
+    const prevSym = prev ? detectChordSymbol(prev.midiNotes, preferFlats) : null;
+    if (
+      prev &&
+      prev.measureNumber === measureNum &&
+      Math.abs(prev.endWhole - sliceStart) < 1e-4 &&
+      prevSym?.fullText === sym.fullText
+    ) {
+      prev.endWhole = sliceEnd;
+      const combined = new Set([...prev.midiNotes, ...sortedMidis]);
+      prev.midiNotes = Array.from(combined).sort((a, b) => a - b);
+      if (hasGlide) prev.hasGlide = true;
+    } else {
+      rawSlices.push({
+        startWhole: sliceStart,
+        endWhole: sliceEnd,
+        measureNumber: measureNum,
+        midiNotes: sortedMidis,
+        hasGlide,
+      });
+    }
+  }
+
+  return rawSlices.map((rs, idx) => ({
+    index: idx,
+    measureNumber: rs.measureNumber,
+    startWhole: rs.startWhole,
+    endWhole: rs.endWhole,
+    durationWhole: Math.max(0.25, rs.endWhole - rs.startWhole),
+    midiNotes: rs.midiNotes,
+    hasGlide: rs.hasGlide,
+    symbol: detectChordSymbol(rs.midiNotes, preferFlats),
+    guitar: computeGuitarVoicing(rs.midiNotes, preferFlats),
+  }));
+}
+
+/**
+ * Builds per-instrument, per-voice note trajectory segments (`TrackedVoiceEvent[]`).
+ * CRITICAL RULE: Notes stay 100% flat (`targetMidi === startMidi`) unless the note
+ * explicitly carries `.detune(...)`, `.glide(...)`, or `.mpe(bend)`.
+ */
+export function buildTrueVoiceTrajectories(
+  events: any[],
+  selectedTrackId: string | null = null
+): TrackedVoiceEvent[] {
+  const valid = (events || []).filter((ev) => {
+    if (!ev?.pitch || ev.pitch.isRest || ev.pitch.isSpacer || ev.pitch.midi <= 0) return false;
+    if (selectedTrackId && (ev.trackId || 'pno') !== selectedTrackId) return false;
+    return true;
+  });
+
+  const trackIndexMap = new Map<string, number>();
+  const stepsByTrackVoice = new Map<
+    string,
+    Map<number, { startWhole: number; endWhole: number; notes: any[] }>
+  >();
+
+  for (const ev of valid) {
+    const tId = ev.trackId || 'pno';
+    if (!trackIndexMap.has(tId)) {
+      trackIndexMap.set(tId, trackIndexMap.size);
+    }
+    const vId = ev.voiceId || 'v1';
+    const key = `${tId}::${vId}`;
+
+    let stepMap = stepsByTrackVoice.get(key);
+    if (!stepMap) {
+      stepMap = new Map();
+      stepsByTrackVoice.set(key, stepMap);
+    }
+
+    const st = ev.startTime ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator) : 0;
+    const dur = ev.duration ? ev.duration.numerator / Math.max(1, ev.duration.denominator) : 0.25;
+    const endW = st + Math.max(0.03125, dur);
+    const quantKey = Math.round(st * 1920);
+
+    const existing = stepMap.get(quantKey);
+    if (existing) {
+      existing.notes.push(ev);
+      if (endW > existing.endWhole) existing.endWhole = endW;
+    } else {
+      stepMap.set(quantKey, { startWhole: st, endWhole: endW, notes: [ev] });
+    }
+  }
+
+  const trajectories: TrackedVoiceEvent[] = [];
+  let globalId = 0;
+
+  for (const [key, stepMap] of stepsByTrackVoice.entries()) {
+    const steps = Array.from(stepMap.values()).sort((a, b) => a.startWhole - b.startWhole);
+    const [trackId, voiceId] = key.split('::');
+    const color = getInstrumentColor(trackId, trackIndexMap.get(trackId) ?? 0);
+
+    for (let i = 0; i < steps.length; i++) {
+      const currStep = steps[i];
+      const nextStep = i + 1 < steps.length ? steps[i + 1] : null;
+      const isContiguousToNext =
+        nextStep !== null && Math.abs(nextStep.startWhole - currStep.endWhole) <= 0.08;
+
+      const sortedCurr = [...currStep.notes].sort((a, b) => a.pitch.midi - b.pitch.midi);
+      const sortedNext =
+        isContiguousToNext && nextStep
+          ? [...nextStep.notes].sort((a, b) => a.pitch.midi - b.pitch.midi)
+          : [];
+
+      const currStringMap = allocateNotesToTabStrings(
+        sortedCurr.map((n) => Math.round(n.pitch.midi))
+      );
+      const nextStringMap =
+        sortedNext.length > 0
+          ? allocateNotesToTabStrings(sortedNext.map((n) => Math.round(n.pitch.midi)))
+          : null;
+
+      for (let vIdx = 0; vIdx < sortedCurr.length; vIdx++) {
+        const ev = sortedCurr[vIdx];
+        const st = ev.startTime ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator) : 0;
+        const dur = ev.duration ? ev.duration.numerator / Math.max(1, ev.duration.denominator) : 0.25;
+        const endW = st + Math.max(0.03125, dur);
+        const startMidi = Math.round(ev.pitch.midi);
+
+        const bendArr = ev.physics?.mpe?.bend;
+        const hasDetune = Boolean(
+          ev.physics?.detune !== undefined ||
+            ev.physics?.detuneMod !== undefined ||
+            ev.physics?.detuneCents !== undefined ||
+            ev.physics?.detuneCentsMod !== undefined
+        );
+        const hasExplicitSlide =
+          hasDetune ||
+          (ev.physics?.glideMs ?? 0) > 0 ||
+          Boolean(bendArr && bendArr.length > 1);
+
+        let targetMidi = startMidi;
+        if (bendArr && bendArr.length > 0) {
+          targetMidi = startMidi + bendArr[bendArr.length - 1];
+        } else if (hasExplicitSlide && sortedNext.length > 0) {
+          const dstEv = sortedNext[Math.min(sortedNext.length - 1, vIdx)];
+          if (dstEv) {
+            targetMidi = Math.round(dstEv.pitch.midi);
+          }
+        }
+
+        const currTab = currStringMap.get(startMidi) || { stringIndex: 3, fret: 0 };
+        const nextTab =
+          nextStringMap?.get(targetMidi) || {
+            stringIndex: currTab.stringIndex,
+            fret: Math.max(0, currTab.fret + (targetMidi - startMidi)),
+          };
+
+        trajectories.push({
+          id: `traj-${globalId++}`,
+          trackId,
+          voiceId,
+          color,
+          startWhole: st,
+          endWhole: endW,
+          durationWhole: Math.max(0.03125, endW - st),
+          startMidi,
+          targetMidi,
+          stringIndex: currTab.stringIndex,
+          targetStringIndex: targetMidi !== startMidi ? nextTab.stringIndex : currTab.stringIndex,
+          fret: currTab.fret,
+          targetFret: targetMidi !== startMidi ? nextTab.fret : currTab.fret,
+          mpeBend: bendArr,
+          hasGlide: targetMidi !== startMidi || Boolean(hasExplicitSlide),
+          hasDetune,
+          detunePct: ev.physics?.detune ?? ev.physics?.detuneMod?.peak,
+          detuneMod: ev.physics?.detuneMod,
+          rawToken: ev.rawToken,
+        });
+      }
+    }
+  }
+
+  return trajectories;
+}
+
+/**
+ * Evaluates the MIDI pitch of a `TrackedVoiceEvent` at `wholeTime`.
+ * Non-sliding notes return their exact `startMidi` across 100% of their duration.
+ */
+export function evaluateTrackedEventMidiAtWhole(
+  item: TrackedVoiceEvent,
+  wholeTime: number
+): number {
+  const u = Math.max(
+    0,
+    Math.min(1, (wholeTime - item.startWhole) / Math.max(1e-5, item.durationWhole))
+  );
+
+  if (item.mpeBend && item.mpeBend.length > 1) {
+    const glideStartU = 0.78;
+    if (
+      item.mpeBend.length === 5 &&
+      item.mpeBend[0] === 0 &&
+      item.mpeBend[1] === 0 &&
+      item.mpeBend[2] === 0 &&
+      item.mpeBend[3] === 0
+    ) {
+      if (u <= glideStartU) return item.startMidi;
+      const gU = (u - glideStartU) / (1 - glideStartU);
+      const smooth = gU * gU * (3 - 2 * gU);
+      return item.startMidi + item.mpeBend[4] * smooth;
+    }
+
+    const scaled = u * (item.mpeBend.length - 1);
+    const i0 = Math.floor(scaled);
+    const i1 = Math.min(item.mpeBend.length - 1, i0 + 1);
+    const frac = scaled - i0;
+    const smooth = frac * frac * (3 - 2 * frac);
+    const bendSt = item.mpeBend[i0] + (item.mpeBend[i1] - item.mpeBend[i0]) * smooth;
+    return item.startMidi + bendSt;
+  }
+
+  if (item.targetMidi !== item.startMidi) {
+    const glideStartU = 0.78;
+    if (u <= glideStartU) return item.startMidi;
+    const gU = (u - glideStartU) / (1 - glideStartU);
+    const smooth = gU * gU * (3 - 2 * gU);
+    return item.startMidi + (item.targetMidi - item.startMidi) * smooth;
+  }
+
+  return item.startMidi;
+}
+
+export default function TabChordFlowView({
+  score,
+  events = [],
+  playheadBeat = 0,
+  isPlaying = false,
+  rootKey,
+}: TabChordFlowViewProps) {
+  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+  const [zoomLevel, setZoomLevel] = useState<number>(1.0);
+  const scrollViewportRef = useRef<HTMLDivElement>(null);
+  const trackPillsRef = useRef<HTMLDivElement>(null);
+
+  const preferFlats = useMemo(() => {
+    const k = (rootKey || score?.meta?.key || '').trim();
+    if (['F', 'Bb', 'Eb', 'Ab', 'Db', 'Gb', 'Dm', 'Gm', 'Cm', 'Fm', 'Bbm'].includes(k)) {
+      return true;
+    }
+    return (events || []).some((ev) => /[a-g]b\d/i.test(ev?.rawToken || ''));
+  }, [rootKey, score?.meta?.key, events]);
+
+  const availableTracks = useMemo(() => {
+    const map = new Map<
+      string,
+      { id: string; name: string; style?: string; patch?: string; count: number; color: string }
+    >();
+    for (const def of score?.defs || []) {
+      if (def.isReturn) continue;
+      map.set(def.id, {
+        id: def.id,
+        name: def.name || def.id,
+        style: def.style,
+        patch: def.patch,
+        count: 0,
+        color: getInstrumentColor(def.id, map.size),
+      });
+    }
+    for (const ev of events || []) {
+      if (!ev?.pitch || ev.pitch.isRest || ev.pitch.isSpacer) continue;
+      const id = ev.trackId || 'pno';
+      const existing = map.get(id);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        map.set(id, {
+          id,
+          name: id.toUpperCase(),
+          style: ev.style,
+          patch: ev.patch,
+          count: 1,
+          color: getInstrumentColor(id, map.size),
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [score, events]);
+
+  useEffect(() => {
+    if (selectedTrackId && !availableTracks.some((t) => t.id === selectedTrackId)) {
+      setSelectedTrackId(null);
+    }
+  }, [availableTracks, selectedTrackId]);
+
+  // Desktop trackpad pinch-to-zoom AND mobile two-finger touch pinch-to-zoom
+  useEffect(() => {
+    const viewport = scrollViewportRef.current;
+    if (!viewport) return;
+
+    let initialPinchDistance: number | null = null;
+    let initialPinchZoom: number = 1.0;
+
+    const getTouchDistance = (touches: TouchList): number => {
+      if (touches.length < 2) return 0;
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      return Math.hypot(dx, dy);
+    };
+
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const factor = e.deltaY < 0 ? 1.1 : 0.9;
+        setZoomLevel((prev) => Math.max(0.25, Math.min(3.0, Number((prev * factor).toFixed(2)))));
+      }
+    };
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches && e.touches.length === 2) {
+        const dist = getTouchDistance(e.touches);
+        if (dist > 8) {
+          initialPinchDistance = dist;
+          setZoomLevel((currentZoom) => {
+            initialPinchZoom = currentZoom;
+            return currentZoom;
+          });
+        }
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches && e.touches.length === 2 && initialPinchDistance !== null && initialPinchDistance > 8) {
+        if (e.cancelable) e.preventDefault();
+        const currentDist = getTouchDistance(e.touches);
+        if (currentDist > 8) {
+          const ratio = currentDist / initialPinchDistance;
+          const nextZoom = Math.max(0.25, Math.min(3.0, Number((initialPinchZoom * ratio).toFixed(2))));
+          setZoomLevel(nextZoom);
+        }
+      }
+    };
+
+    const handleTouchEnd = () => {
+      initialPinchDistance = null;
+    };
+
+    viewport.addEventListener('wheel', handleWheel, { passive: false });
+    viewport.addEventListener('touchstart', handleTouchStart, { passive: true });
+    viewport.addEventListener('touchmove', handleTouchMove, { passive: false });
+    viewport.addEventListener('touchend', handleTouchEnd);
+    viewport.addEventListener('touchcancel', handleTouchEnd);
+    return () => {
+      viewport.removeEventListener('wheel', handleWheel);
+      viewport.removeEventListener('touchstart', handleTouchStart);
+      viewport.removeEventListener('touchmove', handleTouchMove);
+      viewport.removeEventListener('touchend', handleTouchEnd);
+      viewport.removeEventListener('touchcancel', handleTouchEnd);
+    };
+  }, []);
+
+  const visibleTracks = useMemo(() => {
+    if (!selectedTrackId) return availableTracks;
+    return availableTracks.filter((t) => t.id === selectedTrackId);
+  }, [availableTracks, selectedTrackId]);
+
+  const chordSlices = useMemo(
+    () => extractCodeChordSlices(events, preferFlats, selectedTrackId),
+    [events, preferFlats, selectedTrackId]
+  );
+
+  const allTrajectories = useMemo(
+    () => buildTrueVoiceTrajectories(events, selectedTrackId),
+    [events, selectedTrackId]
+  );
+
+  const trajectoriesByTrack = useMemo(() => {
+    const map = new Map<string, TrackedVoiceEvent[]>();
+    for (const item of allTrajectories) {
+      let list = map.get(item.trackId);
+      if (!list) {
+        list = [];
+        map.set(item.trackId, list);
+      }
+      list.push(item);
+    }
+    return map;
+  }, [allTrajectories]);
+
+  const maxEndWhole = useMemo(() => {
+    let maxW = 4;
+    for (const item of allTrajectories) {
+      if (item.endWhole > maxW) maxW = item.endWhole;
+    }
+    return maxW;
+  }, [allTrajectories]);
+
+  const currentWhole = Math.max(0, playheadBeat / 4);
+
+  const activeSliceIndex = useMemo(() => {
+    if (chordSlices.length === 0) return 0;
+    for (let i = 0; i < chordSlices.length; i++) {
+      const s = chordSlices[i];
+      if (currentWhole >= s.startWhole && currentWhole < s.endWhole) {
+        return i;
+      }
+    }
+    if (currentWhole >= chordSlices[chordSlices.length - 1].endWhole) {
+      return chordSlices.length - 1;
+    }
+    return 0;
+  }, [chordSlices, currentWhole]);
+
+  const activeSlice = chordSlices[activeSliceIndex];
+
+  const headerWidthPx = 228;
+  // Minimum 96px per whole note (24px per quarter beat) so measures and beats never crush into unreadable stacks
+  const wholeNoteScale = Math.max(96, Math.round(240 * zoomLevel));
+  const isSingleTrackFocus = visibleTracks.length === 1;
+  const staffHeightPx = isSingleTrackFocus
+    ? Math.max(180, Math.round(230 * zoomLevel))
+    : Math.max(92, Math.round(128 * zoomLevel));
+  const timelineWidthPx = Math.max(720, Math.ceil(maxEndWhole * wholeNoteScale) + 160);
+  const playheadX = (playheadBeat / 4) * wholeNoteScale;
+
+  const handleFitAll = useCallback(() => {
+    const viewport = scrollViewportRef.current;
+    const availW = (viewport?.clientWidth || 760) - headerWidthPx - 36;
+    const availH = (viewport?.clientHeight || 460) - 48;
+
+    const idealHoriz = availW / Math.max(1, maxEndWhole * 240);
+    const idealVert = availH / Math.max(1, visibleTracks.length * 128);
+    const fitted = Math.max(0.4, Math.min(2.5, Math.min(idealHoriz, idealVert)));
+    setZoomLevel(Number(fitted.toFixed(2)));
+    if (viewport) {
+      viewport.scrollLeft = 0;
+      viewport.scrollTop = 0;
+    }
+  }, [maxEndWhole, visibleTracks.length]);
+
+  useEffect(() => {
+    const el = scrollViewportRef.current;
+    if (!el) return;
+    if (!isPlaying && playheadBeat === 0) {
+      el.scrollLeft = 0;
+      return;
+    }
+    if (isPlaying) {
+      const viewportW = (el.clientWidth || 720) - headerWidthPx;
+      const targetScroll = Math.max(0, playheadX - viewportW * 0.35);
+      el.scrollLeft = targetScroll;
+    }
+  }, [playheadX, isPlaying, playheadBeat]);
+
+  const activeGlobalItems = useMemo(() => {
+    const active = allTrajectories.filter(
+      (item) => currentWhole >= item.startWhole - 1e-4 && currentWhole < item.endWhole - 1e-4
+    );
+    return active.length > 0
+      ? active
+      : allTrajectories.filter((item) => item.startWhole < 0.25);
+  }, [allTrajectories, currentWhole]);
+
+  // Use each active note's written `startMidi` for harmonic chord detection so mid-glide
+  // passing frequencies never produce false chord symbols like Emaj7 at M8:4
+  const livePlayheadMidis = useMemo(() => {
+    const pitched = activeGlobalItems.filter((item) => item.trackId !== 'drums');
+    const source = pitched.length > 0 ? pitched : activeGlobalItems;
+    if (source.length > 0) {
+      return Array.from(new Set(source.map((it) => Math.round(it.startMidi)))).sort(
+        (a, b) => a - b
+      );
+    }
+    return activeSlice?.midiNotes || [];
+  }, [activeGlobalItems, activeSlice]);
+
+  const liveSymbol = useMemo(
+    () =>
+      livePlayheadMidis.length > 0
+        ? detectChordSymbol(livePlayheadMidis, preferFlats)
+        : activeSlice?.symbol,
+    [livePlayheadMidis, preferFlats, activeSlice]
+  );
+
+  const liveGuitar = useMemo(
+    () =>
+      livePlayheadMidis.length > 0
+        ? computeGuitarVoicing(livePlayheadMidis, preferFlats)
+        : activeSlice?.guitar,
+    [livePlayheadMidis, preferFlats, activeSlice]
+  );
+
+  let globalOrbCounter = 0;
+
+  return (
+    <div
+      data-testid="tab-chord-flow-view"
+      style={{
+        background:
+          'radial-gradient(circle at 38% 36%, #C85A17 0%, #8F390A 48%, #4A1B04 100%)',
+      }}
+      className="w-full h-full flex flex-col justify-between text-amber-50 overflow-hidden relative select-none"
+    >
+      {/* Top Piano-Roll-Parity Control Bar */}
+      <div className="bg-black/35 border-b border-amber-300/20 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 z-20">
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+          <button
+            type="button"
+            onClick={() => setSelectedTrackId(null)}
+            className={`px-2.5 py-1 rounded text-[11px] font-mono font-semibold shrink-0 cursor-pointer border transition-colors ${
+              selectedTrackId === null
+                ? 'bg-white text-amber-950 border-white shadow-xs'
+                : 'bg-black/40 text-amber-100/85 border-amber-300/25 hover:bg-black/60'
+            }`}
+          >
+            All ({availableTracks.length})
+          </button>
+
+          <select
+            aria-label="Chord Flow Track Filter"
+            value={selectedTrackId || ''}
+            onChange={(e) => {
+              const val = e.target.value || null;
+              setSelectedTrackId(val);
+            }}
+            className="bg-black/45 border border-amber-300/35 text-amber-100 text-[11px] font-mono rounded px-2 py-1 outline-none cursor-pointer shrink-0"
+          >
+            <option value="">All Instruments ({availableTracks.length})</option>
+            {availableTracks.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name} ({t.id} • {t.count}n)
+              </option>
+            ))}
+          </select>
+
+          {availableTracks.length > 3 && (
+            <button
+              type="button"
+              aria-label="Scroll Tab Tracks Left"
+              onClick={() =>
+                trackPillsRef.current?.scrollBy({ left: -180, behavior: 'smooth' })
+              }
+              className="px-1.5 py-1 rounded bg-black/40 border border-amber-300/25 text-amber-100 hover:bg-black/60 text-[10px] font-mono cursor-pointer shrink-0"
+              title="Scroll instrument list left"
+            >
+              ◀
+            </button>
+          )}
+
+          <div
+            ref={trackPillsRef}
+            className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 min-w-0"
+          >
+            {availableTracks.map((trk) => {
+              const isSel = selectedTrackId === trk.id;
+              return (
+                <button
+                  key={trk.id}
+                  type="button"
+                  aria-label={`Filter chord flow by ${trk.id}`}
+                  onClick={() => setSelectedTrackId(isSel ? null : trk.id)}
+                  className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono shrink-0 cursor-pointer border transition-colors ${
+                    isSel
+                      ? 'bg-amber-100 text-amber-950 border-white font-bold shadow-xs'
+                      : 'bg-black/35 text-amber-100/85 border-amber-300/20 hover:bg-black/55'
+                  }`}
+                >
+                  <span
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{ backgroundColor: trk.color }}
+                  />
+                  <span>{trk.id}</span>
+                  <span className="opacity-65">({trk.count})</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {availableTracks.length > 3 && (
+            <button
+              type="button"
+              aria-label="Scroll Tab Tracks Right"
+              onClick={() =>
+                trackPillsRef.current?.scrollBy({ left: 180, behavior: 'smooth' })
+              }
+              className="px-1.5 py-1 rounded bg-black/40 border border-amber-300/25 text-amber-100 hover:bg-black/60 text-[10px] font-mono cursor-pointer shrink-0"
+              title="Scroll instrument list right"
+            >
+              ▶
+            </button>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1 shrink-0 bg-black/45 border border-amber-300/30 rounded px-1.5 py-0.5 font-mono">
+          <button
+            type="button"
+            aria-label="Tab Zoom Out"
+            onClick={() => setZoomLevel((z) => Math.max(0.4, Number((z - 0.15).toFixed(2))))}
+            className="text-amber-200 hover:text-white px-1.5 py-0.5 text-xs font-bold cursor-pointer"
+            title="Zoom Out (or Pinch In on Trackpad)"
+          >
+            -
+          </button>
+          <button
+            type="button"
+            aria-label="Tab Reset Zoom"
+            onClick={() => setZoomLevel(1.0)}
+            className="text-amber-100 hover:text-white px-1.5 py-0.5 text-[11px] cursor-pointer min-w-[44px] text-center"
+            title="Reset Zoom to 100%"
+          >
+            {Math.round(zoomLevel * 100)}%
+          </button>
+          <button
+            type="button"
+            aria-label="Tab Zoom In"
+            onClick={() => setZoomLevel((z) => Math.min(3.0, Number((z + 0.15).toFixed(2))))}
+            className="text-amber-200 hover:text-white px-1.5 py-0.5 text-xs font-bold cursor-pointer"
+            title="Zoom In (or Pinch Out on Trackpad)"
+          >
+            +
+          </button>
+          <div className="w-px h-3.5 bg-amber-300/25 mx-0.5" />
+          <button
+            type="button"
+            aria-label="Fit All Tab View"
+            onClick={handleFitAll}
+            className="text-emerald-300 hover:text-emerald-200 px-1.5 py-0.5 text-[11px] font-semibold cursor-pointer"
+            title="Fit all instrument tab staves and measures into view"
+          >
+            Fit All
+          </button>
+        </div>
+      </div>
+
+      {/* Compact Harmonic Summary Banner */}
+      <div className="px-4 py-2 bg-black/20 border-b border-amber-200/15 flex items-center justify-between gap-4 shrink-0 z-10">
+        <div className="flex items-center gap-3 min-w-0">
+          <div
+            data-testid="active-chord-symbol"
+            className="flex items-baseline tracking-tight drop-shadow-[0_2px_12px_rgba(255,255,255,0.3)] shrink-0"
+          >
+            <span className="text-2xl sm:text-3xl font-bold text-white font-sans">
+              {liveSymbol ? liveSymbol.rootLetter : '—'}
+            </span>
+            {liveSymbol?.rootAccidental && (
+              <span className="text-lg sm:text-xl font-semibold text-amber-100 mr-0.5">
+                {liveSymbol.rootAccidental}
+              </span>
+            )}
+            <span className="text-xl sm:text-2xl font-medium text-amber-100/95">
+              {liveSymbol ? liveSymbol.quality : ''}
+            </span>
+          </div>
+
+          <div className="flex flex-col min-w-0">
+            <span className="text-[10px] font-mono text-amber-200 uppercase tracking-wider">
+              {selectedTrackId
+                ? `Isolated Instrument: ${selectedTrackId.toUpperCase()}`
+                : `Multi-Instrument Tab Staves (${visibleTracks.length} Tracks)`}
+            </span>
+            <span className="text-[11px] font-mono text-amber-100/85 truncate">
+              {livePlayheadMidis.length > 0
+                ? `M${Math.floor(currentWhole) + 1} • Notes: ${livePlayheadMidis
+                    .map((m) => formatMidiPitchDisplay(m, preferFlats))
+                    .join(' – ')}`
+                : 'No Active Notes at Playhead'}
+            </span>
+          </div>
+        </div>
+
+        {/* Reference 6-String Guitar Fretboard Diagram */}
+        <div
+          data-testid="guitar-fretboard-diagram"
+          className="flex items-center gap-2 bg-black/30 border border-amber-300/25 rounded px-2.5 py-1 shrink-0"
+        >
+          <div className="flex flex-col items-end">
+            <span className="text-[9px] font-sans font-bold tracking-[0.2em] text-amber-200 uppercase">
+              GUITAR
+            </span>
+            {liveGuitar && liveGuitar.baseFret > 1 && (
+              <span
+                data-testid="guitar-base-fret"
+                className="text-[10px] font-mono font-bold text-white"
+              >
+                {liveGuitar.baseFret}fr
+              </span>
+            )}
+          </div>
+
+          <svg
+            width={116}
+            height={54}
+            viewBox="0 0 200 130"
+            aria-label="6-String Guitar Chord Diagram"
+          >
+            {Array.from({ length: 5 }).map((_, fIdx) => {
+              const y = 18 + fIdx * 20;
+              return (
+                <line
+                  key={`fret-${fIdx}`}
+                  x1={25}
+                  y1={y}
+                  x2={175}
+                  y2={y}
+                  stroke="rgba(255, 247, 237, 0.85)"
+                  strokeWidth={
+                    fIdx === 0 && (!liveGuitar || liveGuitar.baseFret === 1) ? 3 : 1.3
+                  }
+                />
+              );
+            })}
+
+            {(liveGuitar?.strings || []).map((str, sIdx) => {
+              const x = 25 + sIdx * 30;
+              const baseFret = liveGuitar?.baseFret || 1;
+              return (
+                <g key={`str-${str.stringNumber}`}>
+                  <line
+                    x1={x}
+                    y1={18}
+                    x2={x}
+                    y2={98}
+                    stroke="rgba(255, 247, 237, 0.85)"
+                    strokeWidth={1.3}
+                  />
+                  {str.fret === 'x' && (
+                    <text
+                      x={x}
+                      y={12}
+                      textAnchor="middle"
+                      className="fill-amber-100/90 font-sans text-[11px] font-bold"
+                    >
+                      ×
+                    </text>
+                  )}
+                  {str.fret === 0 && (
+                    <circle
+                      cx={x}
+                      cy={10}
+                      r={3.5}
+                      fill="none"
+                      stroke="#FFFFFF"
+                      strokeWidth={1.5}
+                    />
+                  )}
+                  {typeof str.fret === 'number' && str.fret > 0 && (
+                    <circle
+                      cx={x}
+                      cy={18 + (str.fret - baseFret + 0.5) * 20}
+                      r={6}
+                      fill="#FFFFFF"
+                    />
+                  )}
+                  {str.noteLabel && (
+                    <text
+                      x={x}
+                      y={118}
+                      textAnchor="middle"
+                      className="fill-white font-sans text-[11px] font-semibold"
+                    >
+                      {str.noteLabel}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+      </div>
+
+      {/* Main Scrollable & Pinch-Zoomable Multi-Instrument Tab Staff Viewport */}
+      <div
+        ref={scrollViewportRef}
+        data-testid="tab-flow-scroll-viewport"
+        className="flex-1 w-full overflow-auto relative"
+      >
+        <div
+          className="relative min-w-full"
+          style={{ width: `${headerWidthPx + timelineWidthPx}px` }}
+        >
+          {/* Sticky Top Measure & Chord Ruler */}
+          <div className="flex sticky top-0 z-30 bg-[#3B1503] border-b border-amber-200/25 h-7 items-center">
+            <div
+              style={{ width: `${headerWidthPx}px` }}
+              className="sticky left-0 z-40 bg-[#3B1503] h-full px-3 border-r border-amber-200/25 flex items-center justify-between text-[10px] font-mono text-amber-200/90 uppercase tracking-wider shrink-0"
+            >
+              <span>Instrument / Fretboard</span>
+              <span>6-Str Tab</span>
+            </div>
+
+            <div className="relative h-full overflow-hidden" style={{ width: `${timelineWidthPx}px` }}>
+              {Array.from({ length: Math.ceil(maxEndWhole) + 1 }).map((_, mIdx) => {
+                const x = mIdx * wholeNoteScale;
+                const sliceAtMeasure = chordSlices.find(
+                  (s) => Math.abs(s.startWhole - mIdx) < 0.26
+                );
+                return (
+                  <div
+                    key={mIdx}
+                    style={{ left: `${x}px` }}
+                    className="absolute top-0 bottom-0 border-l border-amber-200/25 pl-1.5 flex items-center gap-1.5 pointer-events-none"
+                  >
+                    <span className="text-[10px] font-mono font-bold text-amber-200/90">
+                      M{mIdx + 1}
+                    </span>
+                    {sliceAtMeasure && wholeNoteScale >= 84 && (
+                      <span className="text-[10px] font-sans font-bold px-1.5 py-0.2 rounded bg-white/15 text-white truncate max-w-[68px]">
+                        {sliceAtMeasure.symbol.fullText}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Dedicated Per-Instrument 6-String Tab Staff Rows */}
+          {visibleTracks.map((track) => {
+            const trackTrajectories = trajectoriesByTrack.get(track.id) || [];
+            const activeTrackItems = trackTrajectories.filter(
+              (item) =>
+                currentWhole >= item.startWhole - 1e-4 &&
+                currentWhole < item.endWhole - 1e-4
+            );
+            const fallbackTrackItems =
+              activeTrackItems.length > 0
+                ? activeTrackItems
+                : trackTrajectories.filter((item) => item.startWhole < 0.25);
+
+            const trackActiveMidis = Array.from(
+              new Set(fallbackTrackItems.map((it) => Math.round(it.startMidi)))
+            ).sort((a, b) => a - b);
+
+            const trackChordSymbol =
+              trackActiveMidis.length > 0
+                ? detectChordSymbol(trackActiveMidis, preferFlats)
+                : null;
+            const trackGuitarVoicing = computeGuitarVoicing(
+              trackActiveMidis,
+              preferFlats
+            );
+
+            let tMinMidi = 127;
+            let tMaxMidi = 0;
+            for (const item of trackTrajectories) {
+              if (item.startMidi < tMinMidi) tMinMidi = item.startMidi;
+              if (item.startMidi > tMaxMidi) tMaxMidi = item.startMidi;
+              if (item.targetMidi < tMinMidi) tMinMidi = item.targetMidi;
+              if (item.targetMidi > tMaxMidi) tMaxMidi = item.targetMidi;
+            }
+            if (tMinMidi > tMaxMidi) {
+              tMinMidi = 48;
+              tMaxMidi = 72;
+            }
+            const midCenter = (tMinMidi + tMaxMidi) * 0.5;
+            const halfRange = Math.max(6, (tMaxMidi - tMinMidi) * 0.5 + 2);
+            const effectiveMinMidi = midCenter - halfRange;
+            const effectiveMaxMidi = midCenter + halfRange;
+
+            const topPad = 16;
+            const bottomPad = 16;
+            const usableH = Math.max(44, staffHeightPx - topPad - bottomPad);
+            const stringSpacing = usableH / 5;
+            const stringIndexToY = (sIdx: number) =>
+              Number((topPad + Math.max(0, Math.min(5, sIdx)) * stringSpacing).toFixed(1));
+
+            const trackMidiToY = (midiVal: number): number => {
+              const norm =
+                (midiVal - effectiveMinMidi) /
+                Math.max(1, effectiveMaxMidi - effectiveMinMidi);
+              const clampedNorm = Math.max(0, Math.min(1, norm));
+              return Number((topPad + (1 - clampedNorm) * usableH).toFixed(1));
+            };
+
+            const sortedOrbs = [...fallbackTrackItems]
+              .map((item) => {
+                const exactMidi = evaluateTrackedEventMidiAtWhole(item, currentWhole);
+                const orbY = trackMidiToY(exactMidi);
+                return {
+                  item,
+                  exactMidi,
+                  orbY,
+                  labelY: orbY,
+                  orbLabel: formatMidiPitchDisplay(Math.round(item.startMidi), preferFlats),
+                };
+              })
+              .sort((a, b) => a.orbY - b.orbY);
+
+            const minLabelGapPx = 12;
+            for (let k = 1; k < sortedOrbs.length; k++) {
+              if (sortedOrbs[k].labelY - sortedOrbs[k - 1].labelY < minLabelGapPx) {
+                sortedOrbs[k].labelY = sortedOrbs[k - 1].labelY + minLabelGapPx;
+              }
+            }
+
+            return (
+              <div
+                key={track.id}
+                data-testid={`instrument-tab-staff-${track.id}`}
+                style={{ height: `${staffHeightPx}px` }}
+                className="flex border-b border-amber-100/20 relative bg-black/10 hover:bg-black/20 transition-colors"
+              >
+                {/* Opaque Sticky Left Per-Instrument Header + Mini 6-String Fretboard */}
+                <div
+                  style={{
+                    width: `${headerWidthPx}px`,
+                    borderLeft: `4px solid ${track.color}`,
+                  }}
+                  className="sticky left-0 z-20 bg-[#3B1503] shadow-[4px_0_12px_rgba(0,0,0,0.45)] border-r border-amber-200/25 px-2.5 py-1.5 flex flex-col justify-between shrink-0"
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span
+                        className="w-2.5 h-2.5 rounded-full shrink-0"
+                        style={{ backgroundColor: track.color }}
+                      />
+                      <span className="font-mono font-bold text-xs text-white truncate">
+                        {track.name}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedTrackId(selectedTrackId === track.id ? null : track.id)
+                      }
+                      className="px-1.5 py-0.2 rounded bg-black/40 hover:bg-white/20 text-[9px] font-mono text-amber-200 border border-amber-300/25 cursor-pointer shrink-0"
+                      title="Isolate or restore this instrument tab staff"
+                    >
+                      {selectedTrackId === track.id ? 'All' : 'Focus'}
+                    </button>
+                  </div>
+
+                  {/* Per-Instrument Active Chord & Octave-Folded Mini 6-String Fretboard */}
+                  <div className="flex items-center justify-between gap-2 my-auto">
+                    <div className="min-w-0">
+                      <div className="text-sm font-sans font-bold text-amber-100 truncate">
+                        {trackChordSymbol ? trackChordSymbol.fullText : '—'}
+                      </div>
+                      <div className="text-[9px] font-mono text-amber-200/75 truncate">
+                        {trackActiveMidis.length > 0
+                          ? trackActiveMidis
+                              .slice(0, 4)
+                              .map((m) => formatMidiPitchDisplay(m, preferFlats))
+                              .join(' ')
+                          : `${track.id} (${track.count}n)`}
+                      </div>
+                    </div>
+
+                    <svg
+                      data-testid={`mini-fretboard-${track.id}`}
+                      width={64}
+                      height={36}
+                      viewBox="0 0 130 76"
+                      className="shrink-0 bg-black/30 rounded p-0.5 border border-amber-200/20"
+                    >
+                      {Array.from({ length: 4 }).map((_, fIdx) => (
+                        <line
+                          key={fIdx}
+                          x1={15}
+                          y1={12 + fIdx * 16}
+                          x2={115}
+                          y2={12 + fIdx * 16}
+                          stroke="rgba(255,247,237,0.65)"
+                          strokeWidth={fIdx === 0 ? 2 : 1}
+                        />
+                      ))}
+                      {trackGuitarVoicing.strings.map((st, sIdx) => {
+                        const x = 15 + sIdx * 20;
+                        const bf = trackGuitarVoicing.baseFret || 1;
+                        return (
+                          <g key={sIdx}>
+                            <line
+                              x1={x}
+                              y1={12}
+                              x2={x}
+                              y2={60}
+                              stroke="rgba(255,247,237,0.65)"
+                              strokeWidth={1}
+                            />
+                            {st.fret === 0 && (
+                              <circle
+                                cx={x}
+                                cy={6}
+                                r={3}
+                                fill="none"
+                                stroke={track.color}
+                                strokeWidth={1.5}
+                              />
+                            )}
+                            {typeof st.fret === 'number' && st.fret > 0 && (
+                              <circle
+                                cx={x}
+                                cy={12 + Math.min(3.5, Math.max(0.5, st.fret - bf + 0.5)) * 16}
+                                r={4.5}
+                                fill={track.color}
+                              />
+                            )}
+                          </g>
+                        );
+                      })}
+                    </svg>
+                  </div>
+
+                  <div className="flex items-center justify-between text-[8px] font-mono text-amber-200/60">
+                    <span>{track.id}</span>
+                    <span>e B G D A E</span>
+                  </div>
+                </div>
+
+                {/* Right Horizontal 6-String Tab Staff & Proportional Beat Bars */}
+                <div
+                  className="relative overflow-hidden"
+                  style={{ width: `${timelineWidthPx}px` }}
+                >
+                  <svg
+                    width={timelineWidthPx}
+                    height={staffHeightPx}
+                    className="block"
+                    aria-label={`Tab Staff for ${track.id}`}
+                  >
+                    {/* 6 Horizontal Guitar Tab Reference Lines */}
+                    {TAB_STAFF_STRING_LABELS.map((sLabel, sIdx) => {
+                      const y = stringIndexToY(sIdx);
+                      return (
+                        <g key={sIdx}>
+                          <line
+                            x1={0}
+                            y1={y}
+                            x2={timelineWidthPx}
+                            y2={y}
+                            stroke="rgba(255, 237, 213, 0.22)"
+                            strokeWidth={sIdx >= 4 ? 1.15 : 0.8}
+                          />
+                          <text
+                            x={4}
+                            y={y + 3}
+                            className="fill-amber-200/50 font-mono text-[9px]"
+                          >
+                            {sLabel}
+                          </text>
+                        </g>
+                      );
+                    })}
+
+                    {/* Vertical Measure & Quarter-Beat Grid Lines */}
+                    {Array.from({ length: Math.ceil(maxEndWhole * 4) }).map((_, bIdx) => {
+                      const isBar = bIdx % 4 === 0;
+                      const x = (bIdx / 4) * wholeNoteScale;
+                      return (
+                        <line
+                          key={bIdx}
+                          x1={x}
+                          y1={topPad - 4}
+                          x2={x}
+                          y2={staffHeightPx - bottomPad + 4}
+                          stroke={
+                            isBar
+                              ? 'rgba(255, 237, 213, 0.35)'
+                              : 'rgba(255, 237, 213, 0.12)'
+                          }
+                          strokeWidth={isBar ? 1.3 : 0.6}
+                        />
+                      );
+                    })}
+
+                    {/* Proportional Beat Bars, Detune Shimmer Envelopes & Explicit Slides */}
+                    {trackTrajectories.map((item) => {
+                      const xStart = item.startWhole * wholeNoteScale;
+                      const xEnd = item.endWhole * wholeNoteScale;
+                      const wPx = Math.max(4, xEnd - xStart - 1.5);
+                      const yStart = trackMidiToY(item.startMidi);
+
+                      let dPath = '';
+                      const numSteps = item.hasGlide ? 14 : 2;
+                      for (let s = 0; s <= numSteps; s++) {
+                        const u = s / numSteps;
+                        const wTime = item.startWhole + u * item.durationWhole;
+                        const x = xStart + u * wPx;
+                        const y = trackMidiToY(evaluateTrackedEventMidiAtWhole(item, wTime));
+                        dPath += `${s === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)} `;
+                      }
+
+                      // If this note has `.detune(...)`, build a visual unison detune shimmer wave
+                      // over its active `startNorm..endNorm` window (e.g. 0.3..0.9 in Measure 9!)
+                      let detuneWavePath = '';
+                      if (item.hasDetune && wPx > 14) {
+                        const sNorm = item.detuneMod?.startNorm ?? 0.0;
+                        const eNorm = item.detuneMod?.endNorm ?? 1.0;
+                        const waveSteps = 20;
+                        for (let w = 0; w <= waveSteps; w++) {
+                          const u = sNorm + (w / waveSteps) * (eNorm - sNorm);
+                          const x = xStart + u * wPx;
+                          const windowEnv = Math.sin((w / waveSteps) * Math.PI);
+                          const spreadPx =
+                            Math.sin(w * 1.6) *
+                            windowEnv *
+                            Math.min(7, 2.5 + ((item.detunePct ?? 75) / 100) * 4.5);
+                          const baseMidiAtU = evaluateTrackedEventMidiAtWhole(
+                            item,
+                            item.startWhole + u * item.durationWhole
+                          );
+                          const y = trackMidiToY(baseMidiAtU) + spreadPx;
+                          detuneWavePath += `${w === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)} `;
+                        }
+                      }
+
+                      const pitchText = formatMidiPitchDisplay(
+                        item.startMidi,
+                        preferFlats
+                      );
+                      const badgeW = Math.min(
+                        Math.max(12, wPx - 2),
+                        wPx >= 44 ? 40 : wPx >= 22 ? 20 : Math.max(10, wPx - 1)
+                      );
+
+                      return (
+                        <g key={item.id}>
+                          {/* Proportional Beat Duration Bar */}
+                          <path
+                            d={dPath}
+                            fill="none"
+                            stroke={track.color}
+                            strokeOpacity={0.62}
+                            strokeWidth={2.6}
+                            strokeLinecap="butt"
+                          />
+                          {detuneWavePath && (
+                            <path
+                              data-testid={`detune-wave-${item.trackId}`}
+                              d={detuneWavePath}
+                              fill="none"
+                              stroke="#FDE047"
+                              strokeOpacity={0.85}
+                              strokeWidth={1.8}
+                            />
+                          )}
+                          {playheadX > xStart && (
+                            <path
+                              d={dPath}
+                              fill="none"
+                              stroke="#FFFFFF"
+                              strokeWidth={3.4}
+                              strokeLinecap="butt"
+                              style={{
+                                clipPath: `inset(0px ${Math.max(
+                                  0,
+                                  timelineWidthPx - playheadX
+                                )}px 0px 0px)`,
+                              }}
+                            />
+                          )}
+
+                          {/* Beat Onset Pill (Always visible; scales width to wPx so dense notes never overlap) */}
+                          <rect
+                            x={xStart + 1}
+                            y={yStart - 6.5}
+                            width={badgeW}
+                            height={13}
+                            rx={2.5}
+                            fill="#3B1503"
+                            stroke={track.color}
+                            strokeWidth={1}
+                          />
+                          {wPx >= 13 && (
+                            <text
+                              x={xStart + 3.5}
+                              y={yStart + 3}
+                              className="fill-white font-mono text-[8.5px] font-bold pointer-events-none"
+                            >
+                              {wPx >= 44 ? `${item.fret} ${pitchText}` : `${item.fret}`}
+                            </text>
+                          )}
+                        </g>
+                      );
+                    })}
+
+                    {/* Active Playhead Line & Left-Aligned De-Collided Orb Badges */}
+                    <line
+                      x1={playheadX}
+                      y1={0}
+                      x2={playheadX}
+                      y2={staffHeightPx}
+                      stroke="#FFFFFF"
+                      strokeOpacity={0.8}
+                      strokeWidth={1.8}
+                    />
+
+                    {sortedOrbs.map(({ item, orbY, labelY, orbLabel }) => {
+                      const orbIdx = globalOrbCounter++;
+                      const tagX = playheadX >= 42 ? playheadX - 38 : playheadX + 8;
+                      return (
+                        <g
+                          key={`orb-${item.id}`}
+                          data-testid={`voice-orb-${orbIdx}`}
+                        >
+                          <circle
+                            cx={playheadX}
+                            cy={orbY}
+                            r={7}
+                            fill={track.color}
+                            fillOpacity={0.6}
+                          />
+                          <circle cx={playheadX} cy={orbY} r={4} fill="#FFFFFF" />
+                          <rect
+                            x={tagX}
+                            y={labelY - 6.5}
+                            width={32}
+                            height={12}
+                            rx={3}
+                            fill="rgba(20, 7, 1, 0.92)"
+                            stroke="#FFFFFF"
+                            strokeOpacity={0.4}
+                            strokeWidth={0.7}
+                          />
+                          <text
+                            x={tagX + 3.5}
+                            y={labelY + 2.5}
+                            className="fill-amber-200 font-mono text-[9px] font-bold"
+                          >
+                            {orbLabel}
+                          </text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+3.8 tests/tab_chord_flow_view.test.tsx, tests/multi_view_shell.test.tsx, tests/studio_engine_and_ui.test.tsx & tests/documentation_integrity.test.ts - Verify Detune-Only Sliding, Fullscreen & Mobile (v5.2.0)
+In tests/tab_chord_flow_view.test.tsx, update the suite to verify that normal contiguous notes (f2:2 g2:2) stay 100% flat (targetMidi === startMidi), whereas notes with .detune(...) or .glide(...) activate sliding/detune modulation:
+code
+TypeScript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import TabChordFlowView, {
+  detectChordSymbol,
+  computeGuitarVoicing,
+  buildTrueVoiceTrajectories,
+  evaluateTrackedEventMidiAtWhole,
+  allocateNotesToTabStrings,
+} from '../src/components/TabChordFlowView';
+import { DocumentParser } from '../src/parser/DocumentParser';
+import SplitWorkspace from '../src/components/SplitWorkspace';
+import '@testing-library/jest-dom';
+
+vi.mock('@monaco-editor/react', () => ({
+  default: ({ value, onChange, defaultLanguage }: any) => (
+    <textarea
+      data-testid="monaco-mock"
+      aria-label="Tenuto Source Editor"
+      data-language={defaultLanguage}
+      value={value || ''}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  ),
+}));
+
+HTMLCanvasElement.prototype.getContext = vi.fn();
+
+describe('TDB-733, TDB-736, TDB-739 & TDB-741: Detune-Only Tab Sliding, Sub-Bass Fretboard Folding & Proportional Beat Bars', () => {
+  it('keeps normal contiguous notes 100% flat (no false sliding) and only slides/modulates when .detune or .glide is present', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Detune vs Plain Note Test", tempo: 68, time: "4/4" }
+        def horns "French Horn Choir" style=standard patch="french_horn"
+        def saws  "Ascendant Supersaw" style=synth patch="supersaw"
+        measure 1 {
+          horns: a4:2 b4:2 |
+          saws:  [f3 c4 a4]:2.detune(85%, 0.3..0.9) [g3 d4 b4]:2 |
+        }
+      }
+    `);
+
+    const trajectories = buildTrueVoiceTrajectories(score.events);
+    // Plain horn note a4:2 (MIDI 69) followed by b4:2 (MIDI 71) WITHOUT .detune or .glide must NOT slide:
+    const hornFirst = trajectories.find((t) => t.trackId === 'horns' && t.startWhole === 0)!;
+    expect(hornFirst.startMidi).toBe(69);
+    expect(hornFirst.targetMidi).toBe(69);
+    expect(hornFirst.hasGlide).toBe(false);
+    // At 90% through the first half-note (wholeTime = 0.45), horn pitch stays 69 (A4), never sliding to 70/71
+    expect(evaluateTrackedEventMidiAtWhole(hornFirst, 0.45)).toBe(69);
+
+    // Saws note with .detune(85%, 0.3..0.9) DOES have hasDetune=true and slides to the next chord:
+    const sawFirst = trajectories.find(
+      (t) => t.trackId === 'saws' && t.startWhole === 0 && t.startMidi === 53
+    )!;
+    expect(sawFirst.hasDetune).toBe(true);
+    expect(sawFirst.targetMidi).toBe(55);
+  });
+
+  it('folds low sub-bass (Bb0 = MIDI 22) and viola/cello (Bb1 = MIDI 34) notes onto playable fretboards so they never render empty', () => {
+    const violaVoicing = computeGuitarVoicing([34], true);
+    const violaFretted = violaVoicing.strings.filter((s) => typeof s.fret === 'number');
+    expect(violaFretted.length).toBeGreaterThanOrEqual(1);
+    expect(violaFretted[0].noteLabel).toBe('B♭');
+
+    const subVoicing = computeGuitarVoicing([22], true);
+    const subFretted = subVoicing.strings.filter((s) => typeof s.fret === 'number');
+    expect(subFretted.length).toBeGreaterThanOrEqual(1);
+    expect(subFretted[0].noteLabel).toBe('B♭');
+  });
+
+  it('renders dedicated 6-string Tab Staff lanes, detune shimmer waves, and supports Pinch-to-Zoom and Fit All', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Multi-Track Tab Staff Test", tempo: 128, time: "4/4", key: "D" }
+        def saws  "Supersaw" style=synth patch="supersaw"
+        def reese "Reese"    style=synth patch="reese_bass"
+        def lead  "Lead"     style=synth patch="pluck_lead"
+        def drums "Kit"      style=grid  patch="tenuto_808_kit"
+
+        measure 1 {
+          saws:  [d3 a3 d4 f#4 a4 c#5]:1.detune(85%, 0.3..0.9) |
+          reese: d1:1.glide(160ms) |
+          lead:  f#5:2 a5:2 |
+          drums: k:4 s:4 k:4 s:4 |
+        }
+        measure 2 {
+          saws:  [g2 d3 g3 b3 d4 f#4]:1 |
+          reese: g0:1 |
+          lead:  b5:1 |
+          drums: k:4 s:4 k:4 s:4 |
+        }
+      }
+    `);
+
+    const allocated = allocateNotesToTabStrings([50, 57, 62, 66, 69, 73]);
+    expect(allocated.size).toBe(6);
+
+    render(
+      <TabChordFlowView
+        events={score.events}
+        isPlaying={true}
+        playheadBeat={1.0}
+        rootKey="D"
+        score={score}
+      />
+    );
+
+    expect(screen.getByText(/All \(4\)/i)).toBeInTheDocument();
+    expect(screen.getByTestId('instrument-tab-staff-saws')).toBeInTheDocument();
+    expect(screen.getByTestId('instrument-tab-staff-reese')).toBeInTheDocument();
+    expect(screen.getByTestId('instrument-tab-staff-lead')).toBeInTheDocument();
+    expect(screen.getByTestId('instrument-tab-staff-drums')).toBeInTheDocument();
+    expect(screen.getAllByTestId('detune-wave-saws').length).toBeGreaterThanOrEqual(1);
+
+    const viewport = screen.getByTestId('tab-flow-scroll-viewport');
+    expect(screen.getByRole('button', { name: /Tab Reset Zoom/i })).toHaveTextContent('100%');
+
+    fireEvent.wheel(viewport, { deltaY: -100, ctrlKey: true });
+    expect(screen.getByRole('button', { name: /Tab Reset Zoom/i })).not.toHaveTextContent('100%');
+
+    fireEvent.click(screen.getByRole('button', { name: /Tab Reset Zoom/i }));
+    expect(screen.getByRole('button', { name: /Tab Reset Zoom/i })).toHaveTextContent('100%');
+
+    fireEvent.click(screen.getByRole('button', { name: /Fit All Tab View/i }));
+    expect(screen.getByRole('button', { name: /Tab Reset Zoom/i })).not.toHaveTextContent('100%');
+
+    fireEvent.click(screen.getByRole('button', { name: /Filter chord flow by lead/i }));
+    expect(screen.getByTestId('instrument-tab-staff-lead')).toBeInTheDocument();
+    expect(screen.queryByTestId('instrument-tab-staff-saws')).not.toBeInTheDocument();
+    expect(screen.getByTestId('voice-orb-0')).toHaveTextContent('F♯5');
+  });
+
+  it('dynamically updates chord symbols when the user edits code in SplitWorkspace', () => {
+    render(<SplitWorkspace />);
+    fireEvent.click(screen.getByRole('button', { name: /Switch to Tab \/ Chord Flow View/i }));
+    expect(screen.getByTestId('active-chord-symbol')).toHaveTextContent('C');
+
+    const editor = screen.getByTestId('monaco-mock') as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: 'pno: [f3 a3 c4 e4]:1' } });
+    expect(screen.getByTestId('active-chord-symbol')).toHaveTextContent('Fmaj7');
+
+    expect(detectChordSymbol([44, 51, 60, 67, 72], true).fullText).toBe('A♭maj7');
+    expect(detectChordSymbol([43, 58, 63, 67, 70], true).fullText).toBe('E♭/G');
+  });
+});
+In tests/multi_view_shell.test.tsx, ensure the Fullscreen and mobile grid test is present:
+code
+TypeScript
+it('toggles Fullscreen Studio mode and applies mobile-responsive stacked/split grid classes', async () => {
+    render(<SplitWorkspace />);
+
+    const mainGrid = screen.getByTestId('workspace-main-grid');
+    expect(mainGrid).toHaveClass('grid-cols-1', 'grid-rows-2', 'md:grid-cols-2');
+
+    const fsBtn = screen.getByRole('button', { name: /Toggle Fullscreen/i });
+    expect(fsBtn).toBeInTheDocument();
+
+    fireEvent.click(fsBtn);
+    const exitFsBtn = await screen.findByRole('button', { name: /Exit Fullscreen/i });
+    expect(exitFsBtn).toBeInTheDocument();
+
+    fireEvent.click(exitFsBtn);
+    expect(await screen.findByRole('button', { name: /Toggle Fullscreen/i })).toBeInTheDocument();
+  });
+In tests/documentation_integrity.test.ts, update the expected version to '5.2.0' and verify `'v5.2.
+Citations
+
+https://github.com/evanschoffstall/Librerss
+https://github.com/AguzzTN54/gcsbhelper

@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { CompiledScore } from '../parser/DocumentParser';
+import { WindowedModulationSpec } from '../parser/ASTSerializer';
 
 export interface ChordSymbolInfo {
   rootLetter: string;
@@ -49,6 +50,9 @@ export interface TrackedVoiceEvent {
   targetFret: number;
   mpeBend?: number[];
   hasGlide: boolean;
+  hasDetune: boolean;
+  detunePct?: number;
+  detuneMod?: WindowedModulationSpec;
   rawToken?: string;
 }
 
@@ -108,7 +112,11 @@ const TRACK_COLORS: Record<string, string> = {
   vc: '#FBBF24',
   cb: '#FB923C',
   strings: '#F472B6',
+  str_hi: '#38BDF8',
+  str_lo: '#F97316',
   hn: '#FACC15',
+  horns: '#FACC15',
+  brass: '#F59E0B',
   tpt: '#F87171',
   tbn: '#FB923C',
   tba: '#F59E0B',
@@ -146,11 +154,6 @@ const STANDARD_GUITAR_OPEN_MIDI = [40, 45, 50, 55, 59, 64];
 const TAB_STAFF_OPEN_MIDI_TOP_DOWN = [64, 59, 55, 50, 45, 40];
 const TAB_STAFF_STRING_LABELS = ['e', 'B', 'G', 'D', 'A', 'E'];
 
-/**
- * Folds extreme sub-bass (< E2 = 40, e.g. Bb0 = 22, Bb1 = 34) or high piccolo (> G6 = 91)
- * pitches by octaves into the playable 6-string fretboard range [40..86] so bass, cello,
- * and viola tracks always produce valid fretted dots and fret numbers.
- */
 export function foldMidiIntoGuitarRange(midi: number): number {
   let folded = Math.round(midi);
   while (folded < 40) folded += 12;
@@ -178,11 +181,6 @@ export function formatPitchClassDisplay(
   return { letter: step.letter, acc: step.acc, text: `${step.letter}${step.acc}` };
 }
 
-/**
- * Allocates a set of simultaneous MIDI pitches on a single instrument track across the
- * 6 guitar tab strings (`stringIndex`: 0 = top High E string .. 5 = bottom Low E string)
- * with automatic sub-bass/cello octave folding so every note gets an accurate fret number.
- */
 export function allocateNotesToTabStrings(
   midiNotes: number[]
 ): Map<number, { stringIndex: number; fret: number }> {
@@ -319,11 +317,6 @@ export function detectChordSymbol(
   };
 }
 
-/**
- * Computes a playable 6-string guitar fretboard diagram for any set of MIDI notes,
- * automatically folding sub-bass (`Bb0 = 22`) and low cello/viola (`Bb1 = 34`) registers
- * into the fretboard window so low-register instruments never display an empty fretboard.
- */
 export function computeGuitarVoicing(
   midiNotes: number[],
   preferFlats: boolean = false
@@ -340,7 +333,6 @@ export function computeGuitarVoicing(
     };
   }
 
-  // Fold sub-bass (< E2 = 40) and extreme high notes (> D6 = 86) into playable fretboard range
   const foldedNotes = Array.from(
     new Set(midiNotes.map((m) => foldMidiIntoGuitarRange(m)))
   ).sort((a, b) => a - b);
@@ -371,7 +363,6 @@ export function computeGuitarVoicing(
     let minFretDist = Infinity;
 
     if (foldedNotes.length === 1) {
-      // Single-note line (e.g. Viola, Cello, Reese Sub, Solo Lead): place on the lowest matching string
       const exactFret = bassNote - openMidi;
       if (
         !hasAtLeastOneFrettedString &&
@@ -429,7 +420,6 @@ export function computeGuitarVoicing(
     });
   }
 
-  // Guarantee that if midiNotes is non-empty, at least one string is fretted on the diagram
   if (!hasAtLeastOneFrettedString && strings.length === 6) {
     const fallbackFret = Math.max(0, Math.min(12, ((bassNote - 40) % 12 + 12) % 12));
     const fallbackMidi = 40 + fallbackFret;
@@ -545,9 +535,9 @@ export function extractCodeChordSlices(
 }
 
 /**
- * Builds true per-instrument, per-voice note trajectory segments (`TrackedVoiceEvent[]`)
- * linking each note/chord voice on `(trackId, voiceId)` to the next contiguous note/chord
- * voice on that same `(trackId, voiceId)` so melodic steps and glides are always continuous.
+ * Builds per-instrument, per-voice note trajectory segments (`TrackedVoiceEvent[]`).
+ * CRITICAL RULE: Notes stay 100% flat (`targetMidi === startMidi`) unless the note
+ * explicitly carries `.detune(...)`, `.glide(...)`, or `.mpe(bend)`.
  */
 export function buildTrueVoiceTrajectories(
   events: any[],
@@ -562,7 +552,7 @@ export function buildTrueVoiceTrajectories(
   const trackIndexMap = new Map<string, number>();
   const stepsByTrackVoice = new Map<
     string,
-    Array<{ startWhole: number; endWhole: number; notes: any[] }>
+    Map<number, { startWhole: number; endWhole: number; notes: any[] }>
   >();
 
   for (const ev of valid) {
@@ -573,30 +563,31 @@ export function buildTrueVoiceTrajectories(
     const vId = ev.voiceId || 'v1';
     const key = `${tId}::${vId}`;
 
-    let steps = stepsByTrackVoice.get(key);
-    if (!steps) {
-      steps = [];
-      stepsByTrackVoice.set(key, steps);
+    let stepMap = stepsByTrackVoice.get(key);
+    if (!stepMap) {
+      stepMap = new Map();
+      stepsByTrackVoice.set(key, stepMap);
     }
 
     const st = ev.startTime ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator) : 0;
     const dur = ev.duration ? ev.duration.numerator / Math.max(1, ev.duration.denominator) : 0.25;
     const endW = st + Math.max(0.03125, dur);
+    const quantKey = Math.round(st * 1920);
 
-    const last = steps[steps.length - 1];
-    if (last && Math.abs(last.startWhole - st) < 1e-4) {
-      last.notes.push(ev);
-      if (endW > last.endWhole) last.endWhole = endW;
+    const existing = stepMap.get(quantKey);
+    if (existing) {
+      existing.notes.push(ev);
+      if (endW > existing.endWhole) existing.endWhole = endW;
     } else {
-      steps.push({ startWhole: st, endWhole: endW, notes: [ev] });
+      stepMap.set(quantKey, { startWhole: st, endWhole: endW, notes: [ev] });
     }
   }
 
   const trajectories: TrackedVoiceEvent[] = [];
   let globalId = 0;
 
-  for (const [key, steps] of stepsByTrackVoice.entries()) {
-    steps.sort((a, b) => a.startWhole - b.startWhole);
+  for (const [key, stepMap] of stepsByTrackVoice.entries()) {
+    const steps = Array.from(stepMap.values()).sort((a, b) => a.startWhole - b.startWhole);
     const [trackId, voiceId] = key.split('::');
     const color = getInstrumentColor(trackId, trackIndexMap.get(trackId) ?? 0);
 
@@ -612,7 +603,9 @@ export function buildTrueVoiceTrajectories(
           ? [...nextStep.notes].sort((a, b) => a.pitch.midi - b.pitch.midi)
           : [];
 
-      const currStringMap = allocateNotesToTabStrings(sortedCurr.map((n) => Math.round(n.pitch.midi)));
+      const currStringMap = allocateNotesToTabStrings(
+        sortedCurr.map((n) => Math.round(n.pitch.midi))
+      );
       const nextStringMap =
         sortedNext.length > 0
           ? allocateNotesToTabStrings(sortedNext.map((n) => Math.round(n.pitch.midi)))
@@ -626,13 +619,21 @@ export function buildTrueVoiceTrajectories(
         const startMidi = Math.round(ev.pitch.midi);
 
         const bendArr = ev.physics?.mpe?.bend;
-        const hasExplicitGlide =
-          (ev.physics?.glideMs ?? 0) > 0 || (bendArr && bendArr.length > 1);
+        const hasDetune = Boolean(
+          ev.physics?.detune !== undefined ||
+            ev.physics?.detuneMod !== undefined ||
+            ev.physics?.detuneCents !== undefined ||
+            ev.physics?.detuneCentsMod !== undefined
+        );
+        const hasExplicitSlide =
+          hasDetune ||
+          (ev.physics?.glideMs ?? 0) > 0 ||
+          Boolean(bendArr && bendArr.length > 1);
 
         let targetMidi = startMidi;
         if (bendArr && bendArr.length > 0) {
           targetMidi = startMidi + bendArr[bendArr.length - 1];
-        } else if (sortedNext.length > 0) {
+        } else if (hasExplicitSlide && sortedNext.length > 0) {
           const dstEv = sortedNext[Math.min(sortedNext.length - 1, vIdx)];
           if (dstEv) {
             targetMidi = Math.round(dstEv.pitch.midi);
@@ -661,7 +662,10 @@ export function buildTrueVoiceTrajectories(
           fret: currTab.fret,
           targetFret: targetMidi !== startMidi ? nextTab.fret : currTab.fret,
           mpeBend: bendArr,
-          hasGlide: targetMidi !== startMidi || Boolean(hasExplicitGlide),
+          hasGlide: targetMidi !== startMidi || Boolean(hasExplicitSlide),
+          hasDetune,
+          detunePct: ev.physics?.detune ?? ev.physics?.detuneMod?.peak,
+          detuneMod: ev.physics?.detuneMod,
           rawToken: ev.rawToken,
         });
       }
@@ -672,8 +676,8 @@ export function buildTrueVoiceTrajectories(
 }
 
 /**
- * Single source of truth for both the SVG voice line Y-coordinate and the playhead orb Y-coordinate:
- * evaluates the exact MIDI pitch of a `TrackedVoiceEvent` at `wholeTime`.
+ * Evaluates the MIDI pitch of a `TrackedVoiceEvent` at `wholeTime`.
+ * Non-sliding notes return their exact `startMidi` across 100% of their duration.
  */
 export function evaluateTrackedEventMidiAtWhole(
   item: TrackedVoiceEvent,
@@ -763,7 +767,7 @@ export default function TabChordFlowView({
         existing.count += 1;
       } else {
         map.set(id, {
-          id: id,
+          id,
           name: id.toUpperCase(),
           style: ev.style,
           patch: ev.patch,
@@ -781,21 +785,69 @@ export default function TabChordFlowView({
     }
   }, [availableTracks, selectedTrackId]);
 
+  // Desktop trackpad pinch-to-zoom AND mobile two-finger touch pinch-to-zoom
   useEffect(() => {
     const viewport = scrollViewportRef.current;
     if (!viewport) return;
+
+    let initialPinchDistance: number | null = null;
+    let initialPinchZoom: number = 1.0;
+
+    const getTouchDistance = (touches: TouchList): number => {
+      if (touches.length < 2) return 0;
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      return Math.hypot(dx, dy);
+    };
 
     const handleWheel = (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         const factor = e.deltaY < 0 ? 1.1 : 0.9;
-        setZoomLevel((prev) => Math.max(0.2, Math.min(3.0, Number((prev * factor).toFixed(2)))));
+        setZoomLevel((prev) => Math.max(0.25, Math.min(3.0, Number((prev * factor).toFixed(2)))));
       }
     };
 
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches && e.touches.length === 2) {
+        const dist = getTouchDistance(e.touches);
+        if (dist > 8) {
+          initialPinchDistance = dist;
+          setZoomLevel((currentZoom) => {
+            initialPinchZoom = currentZoom;
+            return currentZoom;
+          });
+        }
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches && e.touches.length === 2 && initialPinchDistance !== null && initialPinchDistance > 8) {
+        if (e.cancelable) e.preventDefault();
+        const currentDist = getTouchDistance(e.touches);
+        if (currentDist > 8) {
+          const ratio = currentDist / initialPinchDistance;
+          const nextZoom = Math.max(0.25, Math.min(3.0, Number((initialPinchZoom * ratio).toFixed(2))));
+          setZoomLevel(nextZoom);
+        }
+      }
+    };
+
+    const handleTouchEnd = () => {
+      initialPinchDistance = null;
+    };
+
     viewport.addEventListener('wheel', handleWheel, { passive: false });
+    viewport.addEventListener('touchstart', handleTouchStart, { passive: true });
+    viewport.addEventListener('touchmove', handleTouchMove, { passive: false });
+    viewport.addEventListener('touchend', handleTouchEnd);
+    viewport.addEventListener('touchcancel', handleTouchEnd);
     return () => {
       viewport.removeEventListener('wheel', handleWheel);
+      viewport.removeEventListener('touchstart', handleTouchStart);
+      viewport.removeEventListener('touchmove', handleTouchMove);
+      viewport.removeEventListener('touchend', handleTouchEnd);
+      viewport.removeEventListener('touchcancel', handleTouchEnd);
     };
   }, []);
 
@@ -854,11 +906,12 @@ export default function TabChordFlowView({
   const activeSlice = chordSlices[activeSliceIndex];
 
   const headerWidthPx = 228;
-  const wholeNoteScale = Math.max(56, Math.round(240 * zoomLevel));
+  // Minimum 96px per whole note (24px per quarter beat) so measures and beats never crush into unreadable stacks
+  const wholeNoteScale = Math.max(96, Math.round(240 * zoomLevel));
   const isSingleTrackFocus = visibleTracks.length === 1;
   const staffHeightPx = isSingleTrackFocus
     ? Math.max(180, Math.round(230 * zoomLevel))
-    : Math.max(88, Math.round(128 * zoomLevel));
+    : Math.max(92, Math.round(128 * zoomLevel));
   const timelineWidthPx = Math.max(720, Math.ceil(maxEndWhole * wholeNoteScale) + 160);
   const playheadX = (playheadBeat / 4) * wholeNoteScale;
 
@@ -869,7 +922,7 @@ export default function TabChordFlowView({
 
     const idealHoriz = availW / Math.max(1, maxEndWhole * 240);
     const idealVert = availH / Math.max(1, visibleTracks.length * 128);
-    const fitted = Math.max(0.2, Math.min(2.5, Math.min(idealHoriz, idealVert)));
+    const fitted = Math.max(0.4, Math.min(2.5, Math.min(idealHoriz, idealVert)));
     setZoomLevel(Number(fitted.toFixed(2)));
     if (viewport) {
       viewport.scrollLeft = 0;
@@ -893,23 +946,25 @@ export default function TabChordFlowView({
 
   const activeGlobalItems = useMemo(() => {
     const active = allTrajectories.filter(
-      (item) => currentWhole >= item.startWhole - 1e-4 && currentWhole <= item.endWhole + 1e-4
+      (item) => currentWhole >= item.startWhole - 1e-4 && currentWhole < item.endWhole - 1e-4
     );
     return active.length > 0
       ? active
       : allTrajectories.filter((item) => item.startWhole < 0.25);
   }, [allTrajectories, currentWhole]);
 
+  // Use each active note's written `startMidi` for harmonic chord detection so mid-glide
+  // passing frequencies never produce false chord symbols like Emaj7 at M8:4
   const livePlayheadMidis = useMemo(() => {
     const pitched = activeGlobalItems.filter((item) => item.trackId !== 'drums');
     const source = pitched.length > 0 ? pitched : activeGlobalItems;
     if (source.length > 0) {
-      return Array.from(
-        new Set(source.map((it) => Math.round(evaluateTrackedEventMidiAtWhole(it, currentWhole))))
-      ).sort((a, b) => a - b);
+      return Array.from(new Set(source.map((it) => Math.round(it.startMidi)))).sort(
+        (a, b) => a - b
+      );
     }
     return activeSlice?.midiNotes || [];
-  }, [activeGlobalItems, currentWhole, activeSlice]);
+  }, [activeGlobalItems, activeSlice]);
 
   const liveSymbol = useMemo(
     () =>
@@ -1032,7 +1087,7 @@ export default function TabChordFlowView({
           <button
             type="button"
             aria-label="Tab Zoom Out"
-            onClick={() => setZoomLevel((z) => Math.max(0.2, Number((z - 0.15).toFixed(2))))}
+            onClick={() => setZoomLevel((z) => Math.max(0.4, Number((z - 0.15).toFixed(2))))}
             className="text-amber-200 hover:text-white px-1.5 py-0.5 text-xs font-bold cursor-pointer"
             title="Zoom Out (or Pinch In on Trackpad)"
           >
@@ -1076,15 +1131,15 @@ export default function TabChordFlowView({
             data-testid="active-chord-symbol"
             className="flex items-baseline tracking-tight drop-shadow-[0_2px_12px_rgba(255,255,255,0.3)] shrink-0"
           >
-            <span className="text-3xl font-bold text-white font-sans">
+            <span className="text-2xl sm:text-3xl font-bold text-white font-sans">
               {liveSymbol ? liveSymbol.rootLetter : '—'}
             </span>
             {liveSymbol?.rootAccidental && (
-              <span className="text-xl font-semibold text-amber-100 mr-0.5">
+              <span className="text-lg sm:text-xl font-semibold text-amber-100 mr-0.5">
                 {liveSymbol.rootAccidental}
               </span>
             )}
-            <span className="text-2xl font-medium text-amber-100/95">
+            <span className="text-xl sm:text-2xl font-medium text-amber-100/95">
               {liveSymbol ? liveSymbol.quality : ''}
             </span>
           </div>
@@ -1235,13 +1290,13 @@ export default function TabChordFlowView({
                   <div
                     key={mIdx}
                     style={{ left: `${x}px` }}
-                    className="absolute top-0 bottom-0 border-l border-amber-200/25 pl-1.5 flex items-center gap-2 pointer-events-none"
+                    className="absolute top-0 bottom-0 border-l border-amber-200/25 pl-1.5 flex items-center gap-1.5 pointer-events-none"
                   >
                     <span className="text-[10px] font-mono font-bold text-amber-200/90">
                       M{mIdx + 1}
                     </span>
-                    {sliceAtMeasure && (
-                      <span className="text-[10px] font-sans font-bold px-1.5 py-0.2 rounded bg-white/15 text-white">
+                    {sliceAtMeasure && wholeNoteScale >= 84 && (
+                      <span className="text-[10px] font-sans font-bold px-1.5 py-0.2 rounded bg-white/15 text-white truncate max-w-[68px]">
                         {sliceAtMeasure.symbol.fullText}
                       </span>
                     )}
@@ -1257,7 +1312,7 @@ export default function TabChordFlowView({
             const activeTrackItems = trackTrajectories.filter(
               (item) =>
                 currentWhole >= item.startWhole - 1e-4 &&
-                currentWhole <= item.endWhole + 1e-4
+                currentWhole < item.endWhole - 1e-4
             );
             const fallbackTrackItems =
               activeTrackItems.length > 0
@@ -1265,11 +1320,7 @@ export default function TabChordFlowView({
                 : trackTrajectories.filter((item) => item.startWhole < 0.25);
 
             const trackActiveMidis = Array.from(
-              new Set(
-                fallbackTrackItems.map((it) =>
-                  Math.round(evaluateTrackedEventMidiAtWhole(it, currentWhole))
-                )
-              )
+              new Set(fallbackTrackItems.map((it) => Math.round(it.startMidi)))
             ).sort((a, b) => a - b);
 
             const trackChordSymbol =
@@ -1281,8 +1332,6 @@ export default function TabChordFlowView({
               preferFlats
             );
 
-            // Compute this track's exact MIDI pitch range so trajectory lines and orbs map
-            // 100% accurately to continuous musical pitch (higher pitch = higher on staff)
             let tMinMidi = 127;
             let tMaxMidi = 0;
             for (const item of trackTrajectories) {
@@ -1315,7 +1364,6 @@ export default function TabChordFlowView({
               return Number((topPad + (1 - clampedNorm) * usableH).toFixed(1));
             };
 
-            // De-collide vertical label positions for playhead orbs on this track
             const sortedOrbs = [...fallbackTrackItems]
               .map((item) => {
                 const exactMidi = evaluateTrackedEventMidiAtWhole(item, currentWhole);
@@ -1325,7 +1373,7 @@ export default function TabChordFlowView({
                   exactMidi,
                   orbY,
                   labelY: orbY,
-                  orbLabel: formatMidiPitchDisplay(Math.round(exactMidi), preferFlats),
+                  orbLabel: formatMidiPitchDisplay(Math.round(item.startMidi), preferFlats),
                 };
               })
               .sort((a, b) => a.orbY - b.orbY);
@@ -1451,7 +1499,7 @@ export default function TabChordFlowView({
                   </div>
                 </div>
 
-                {/* Right Horizontal 6-String Tab Staff & Pitch-Accurate Voice-Leading SVG */}
+                {/* Right Horizontal 6-String Tab Staff & Proportional Beat Bars */}
                 <div
                   className="relative overflow-hidden"
                   style={{ width: `${timelineWidthPx}px` }}
@@ -1486,10 +1534,9 @@ export default function TabChordFlowView({
                       );
                     })}
 
-                    {/* Vertical Measure & Beat Grid Lines */}
+                    {/* Vertical Measure & Quarter-Beat Grid Lines */}
                     {Array.from({ length: Math.ceil(maxEndWhole * 4) }).map((_, bIdx) => {
                       const isBar = bIdx % 4 === 0;
-                      if (!isBar && wholeNoteScale < 110) return null;
                       const x = (bIdx / 4) * wholeNoteScale;
                       return (
                         <line
@@ -1500,24 +1547,23 @@ export default function TabChordFlowView({
                           y2={staffHeightPx - bottomPad + 4}
                           stroke={
                             isBar
-                              ? 'rgba(255, 237, 213, 0.32)'
-                              : 'rgba(255, 237, 213, 0.09)'
+                              ? 'rgba(255, 237, 213, 0.35)'
+                              : 'rgba(255, 237, 213, 0.12)'
                           }
-                          strokeWidth={isBar ? 1.2 : 0.6}
+                          strokeWidth={isBar ? 1.3 : 0.6}
                         />
                       );
                     })}
 
-                    {/* Pitch-Accurate Per-Instrument Voice-Leading Trajectories & Fret Pills */}
+                    {/* Proportional Beat Bars, Detune Shimmer Envelopes & Explicit Slides */}
                     {trackTrajectories.map((item) => {
                       const xStart = item.startWhole * wholeNoteScale;
                       const xEnd = item.endWhole * wholeNoteScale;
-                      const wPx = Math.max(8, xEnd - xStart);
+                      const wPx = Math.max(4, xEnd - xStart - 1.5);
+                      const yStart = trackMidiToY(item.startMidi);
 
-                      // Sample the exact same `evaluateTrackedEventMidiAtWhole` + `trackMidiToY`
-                      // used by the playhead orbs so the line is 100% faithful to the musical pitch!
                       let dPath = '';
-                      const numSteps = item.hasGlide ? 12 : 2;
+                      const numSteps = item.hasGlide ? 14 : 2;
                       for (let s = 0; s <= numSteps; s++) {
                         const u = s / numSteps;
                         const wTime = item.startWhole + u * item.durationWhole;
@@ -1526,35 +1572,67 @@ export default function TabChordFlowView({
                         dPath += `${s === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)} `;
                       }
 
-                      const yStart = trackMidiToY(item.startMidi);
+                      // If this note has `.detune(...)`, build a visual unison detune shimmer wave
+                      // over its active `startNorm..endNorm` window (e.g. 0.3..0.9 in Measure 9!)
+                      let detuneWavePath = '';
+                      if (item.hasDetune && wPx > 14) {
+                        const sNorm = item.detuneMod?.startNorm ?? 0.0;
+                        const eNorm = item.detuneMod?.endNorm ?? 1.0;
+                        const waveSteps = 20;
+                        for (let w = 0; w <= waveSteps; w++) {
+                          const u = sNorm + (w / waveSteps) * (eNorm - sNorm);
+                          const x = xStart + u * wPx;
+                          const windowEnv = Math.sin((w / waveSteps) * Math.PI);
+                          const spreadPx =
+                            Math.sin(w * 1.6) *
+                            windowEnv *
+                            Math.min(7, 2.5 + ((item.detunePct ?? 75) / 100) * 4.5);
+                          const baseMidiAtU = evaluateTrackedEventMidiAtWhole(
+                            item,
+                            item.startWhole + u * item.durationWhole
+                          );
+                          const y = trackMidiToY(baseMidiAtU) + spreadPx;
+                          detuneWavePath += `${w === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)} `;
+                        }
+                      }
+
                       const pitchText = formatMidiPitchDisplay(
                         item.startMidi,
                         preferFlats
                       );
-                      // Hide the static start-of-note pill when the playhead orb is right over it
-                      // so the white playhead orb text and static pill never overlap!
-                      const isPlayheadOverStartPill =
-                        Math.abs(playheadX - (xStart + 20)) < 36 &&
-                        currentWhole >= item.startWhole - 0.02 &&
-                        currentWhole <= item.endWhole + 0.02;
+                      const badgeW = Math.min(
+                        Math.max(12, wPx - 2),
+                        wPx >= 44 ? 40 : wPx >= 22 ? 20 : Math.max(10, wPx - 1)
+                      );
 
                       return (
                         <g key={item.id}>
+                          {/* Proportional Beat Duration Bar */}
                           <path
                             d={dPath}
                             fill="none"
                             stroke={track.color}
-                            strokeOpacity={0.58}
-                            strokeWidth={2.4}
-                            strokeLinecap="round"
+                            strokeOpacity={0.62}
+                            strokeWidth={2.6}
+                            strokeLinecap="butt"
                           />
+                          {detuneWavePath && (
+                            <path
+                              data-testid={`detune-wave-${item.trackId}`}
+                              d={detuneWavePath}
+                              fill="none"
+                              stroke="#FDE047"
+                              strokeOpacity={0.85}
+                              strokeWidth={1.8}
+                            />
+                          )}
                           {playheadX > xStart && (
                             <path
                               d={dPath}
                               fill="none"
                               stroke="#FFFFFF"
-                              strokeWidth={3.2}
-                              strokeLinecap="round"
+                              strokeWidth={3.4}
+                              strokeLinecap="butt"
                               style={{
                                 clipPath: `inset(0px ${Math.max(
                                   0,
@@ -1564,44 +1642,44 @@ export default function TabChordFlowView({
                             />
                           )}
 
-                          {!isPlayheadOverStartPill && (
-                            <>
-                              <rect
-                                x={xStart + 2}
-                                y={yStart - 7}
-                                width={wPx > 46 ? 40 : 18}
-                                height={14}
-                                rx={3}
-                                fill="#3B1503"
-                                stroke={track.color}
-                                strokeWidth={1}
-                              />
-                              <text
-                                x={xStart + 6}
-                                y={yStart + 3}
-                                className="fill-white font-mono text-[9px] font-bold pointer-events-none"
-                              >
-                                {wPx > 46 ? `${item.fret} ${pitchText}` : `${item.fret}`}
-                              </text>
-                            </>
+                          {/* Beat Onset Pill (Always visible; scales width to wPx so dense notes never overlap) */}
+                          <rect
+                            x={xStart + 1}
+                            y={yStart - 6.5}
+                            width={badgeW}
+                            height={13}
+                            rx={2.5}
+                            fill="#3B1503"
+                            stroke={track.color}
+                            strokeWidth={1}
+                          />
+                          {wPx >= 13 && (
+                            <text
+                              x={xStart + 3.5}
+                              y={yStart + 3}
+                              className="fill-white font-mono text-[8.5px] font-bold pointer-events-none"
+                            >
+                              {wPx >= 44 ? `${item.fret} ${pitchText}` : `${item.fret}`}
+                            </text>
                           )}
                         </g>
                       );
                     })}
 
-                    {/* Active Playhead Line & De-Collided Per-Instrument Orbs */}
+                    {/* Active Playhead Line & Left-Aligned De-Collided Orb Badges */}
                     <line
                       x1={playheadX}
                       y1={0}
                       x2={playheadX}
                       y2={staffHeightPx}
                       stroke="#FFFFFF"
-                      strokeOpacity={0.75}
+                      strokeOpacity={0.8}
                       strokeWidth={1.8}
                     />
 
                     {sortedOrbs.map(({ item, orbY, labelY, orbLabel }) => {
                       const orbIdx = globalOrbCounter++;
+                      const tagX = playheadX >= 42 ? playheadX - 38 : playheadX + 8;
                       return (
                         <g
                           key={`orb-${item.id}`}
@@ -1610,23 +1688,26 @@ export default function TabChordFlowView({
                           <circle
                             cx={playheadX}
                             cy={orbY}
-                            r={7.5}
+                            r={7}
                             fill={track.color}
-                            fillOpacity={0.55}
+                            fillOpacity={0.6}
                           />
-                          <circle cx={playheadX} cy={orbY} r={4.2} fill="#FFFFFF" />
+                          <circle cx={playheadX} cy={orbY} r={4} fill="#FFFFFF" />
                           <rect
-                            x={playheadX + 8}
+                            x={tagX}
                             y={labelY - 6.5}
-                            width={34}
+                            width={32}
                             height={12}
                             rx={3}
-                            fill="rgba(28, 10, 2, 0.88)"
+                            fill="rgba(20, 7, 1, 0.92)"
+                            stroke="#FFFFFF"
+                            strokeOpacity={0.4}
+                            strokeWidth={0.7}
                           />
                           <text
-                            x={playheadX + 11}
+                            x={tagX + 3.5}
                             y={labelY + 2.5}
-                            className="fill-white font-mono text-[9.5px] font-bold"
+                            className="fill-amber-200 font-mono text-[9px] font-bold"
                           >
                             {orbLabel}
                           </text>

@@ -33,6 +33,8 @@ interface TransportProps {
   onCountInBarsChange?: (bars: number) => void;
   onTapTempo?: () => void;
   onCaptureMidi?: () => void;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
 }
 
 export default function Transport({
@@ -64,6 +66,8 @@ export default function Transport({
   onCountInBarsChange,
   onTapTempo,
   onCaptureMidi,
+  isFullscreen = false,
+  onToggleFullscreen,
 }: TransportProps) {
   const measureNum = Math.floor(currentBeat / 4) + 1;
   const beatInMeasure = Math.floor(currentBeat % 4) + 1;
@@ -244,6 +248,22 @@ export default function Transport({
               className="bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/50 text-emerald-300 text-xs font-semibold py-1 px-3 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               Export WAV
+            </button>
+          )}
+
+          {onToggleFullscreen && (
+            <button
+              type="button"
+              aria-label={isFullscreen ? 'Exit Fullscreen' : 'Toggle Fullscreen'}
+              onClick={onToggleFullscreen}
+              className={`${
+                isFullscreen
+                  ? 'bg-indigo-600/30 border-indigo-400 text-indigo-200'
+                  : 'bg-slate-950 hover:bg-slate-800 border-slate-700 text-slate-200'
+              } border text-xs font-semibold py-1 px-2.5 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0`}
+              title={isFullscreen ? 'Exit Fullscreen (Esc)' : 'Enter Fullscreen Studio Mode'}
+            >
+              {isFullscreen ? '✕ Exit' : '⛶ Fullscreen'}
             </button>
           )}
         </div>

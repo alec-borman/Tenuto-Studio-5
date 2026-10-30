@@ -18,3 +18,22 @@
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
+/* Mobile 100dvh Dynamic Viewport & Fullscreen Shell (TDB-741) */
+.tenuto-dvh-shell {
+  height: 100vh;
+  height: 100dvh;
+  width: 100vw;
+  max-width: 100%;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  touch-action: manipulation;
+}
+
+.tenuto-fullscreen-active {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100dvh !important;
+  z-index: 9999 !important;
+}
+

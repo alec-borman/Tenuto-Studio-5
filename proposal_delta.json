@@ -1,42 +1,28 @@
 {
-  "proposal_id": "tdb-740-shift-beat-wide-pitch-transposition-v5.1.8",
-  "target_intent": "TDB-740 Shift-Click & Shift-Drag Beat-Wide Pitch Transposition on the Piano Roll",
-  "delta_before": 0.1800,
+  "proposal_id": "tdb-741-detune-only-tab-sliding-fullscreen-mobile-v5.2.0",
+  "target_intent": "TDB-741: Detune-Only Tab Sliding, Zero-Missing-Beat Proportional Tab Bars, Fullscreen Toggle & Mobile Support (v5.2.0)",
+  "delta_before": 0.1450,
   "mutations": [
     {
-      "file": "package.json",
-      "function": "version",
-      "ast_depth": 1,
-      "decay_weight": 0.95,
-      "patch": "@@ -4 +4 @@\n-  \"version\": \"5.1.6\",\n+  \"version\": \"5.1.8\","
-    },
-    {
-      "file": "electron-builder.json",
-      "function": "extraMetadata.version",
+      "file": "src/components/TabChordFlowView.tsx",
+      "function": "buildTrueVoiceTrajectories & TabChordFlowView",
       "ast_depth": 2,
       "decay_weight": 0.90,
-      "patch": "@@ -11 +11 @@\n-    \"version\": \"5.1.6\"\n+    \"version\": \"5.1.8\""
+      "patch": "--- a/src/components/TabChordFlowView.tsx\n+++ b/src/components/TabChordFlowView.tsx\n@@ -608,16 +608,21 @@\n-        let targetMidi = startMidi;\n-        const dstEv = sortedNext[Math.min(sortedNext.length - 1, vIdx)];\n-        if (dstEv) {\n-          targetMidi = Math.round(dstEv.pitch.midi);\n-        }\n+        const hasDetune = Boolean(ev.physics?.detune !== undefined || ev.physics?.detuneMod !== undefined);\n+        const hasExplicitSlide = hasDetune || (ev.physics?.glideMs ?? 0) > 0 || Boolean(bendArr && bendArr.length > 1);\n+        let targetMidi = startMidi;\n+        if (hasExplicitSlide && sortedNext.length > 0) {\n+          const dstEv = sortedNext[Math.min(sortedNext.length - 1, vIdx)];\n+          if (dstEv) targetMidi = Math.round(dstEv.pitch.midi);\n+        }"
     },
     {
-      "file": "src/mutator/TopologicalMutator.ts",
-      "function": "transposeBeatEventsInSource",
+      "file": "src/components/Transport.tsx",
+      "function": "Transport",
       "ast_depth": 2,
       "decay_weight": 0.90,
-      "patch": "@@ -486,3 +486,91 @@\n+  public transposeBeatEventsInSource(sourceCode: string, allEvents: Array<...>, targetStartWhole: number, semitoneDelta: number, preferFlats?: boolean): string"
-    },
-    {
-      "file": "src/components/WebGPUCanvas.tsx",
-      "function": "handleShiftRepitchBeatToMidi & staticPianoRollContent",
-      "ast_depth": 3,
-      "decay_weight": 0.85,
-      "patch": "@@ -480,20 +480,120 @@\n+  const handleShiftRepitchBeatToMidi = useCallback(...);\n+  piano-roll-row-${midi} & piano-key-${midi} Shift+Click + Shift+Drag isBeatWide ensemble preview"
+      "patch": "--- a/src/components/Transport.tsx\n+++ b/src/components/Transport.tsx\n@@ -249,0 +250,15 @@\n+          {onToggleFullscreen && (\n+            <button type=\"button\" aria-label={isFullscreen ? 'Exit Fullscreen' : 'Toggle Fullscreen'} onClick={onToggleFullscreen}>\n+              {isFullscreen ? '✕ Exit' : '⛶ Fullscreen'}\n+            </button>\n+          )}"
     },
     {
       "file": "src/components/SplitWorkspace.tsx",
-      "function": "handleCanvasMutation",
+      "function": "SplitWorkspace",
       "ast_depth": 2,
       "decay_weight": 0.90,
-      "patch": "@@ -543,15 +543,40 @@\n+  if (eventData.isBeatWideMutation && semitoneDelta !== 0) { ... topologicalMutator.transposeBeatEventsInSource(...) }"
+      "patch": "--- a/src/components/SplitWorkspace.tsx\n+++ b/src/components/SplitWorkspace.tsx\n@@ -140,0 +141,25 @@\n+  const handleToggleFullscreen = async () => { ... };"
     }
   ]
 }

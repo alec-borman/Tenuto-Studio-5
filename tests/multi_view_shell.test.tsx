@@ -84,4 +84,21 @@ describe('TDB-706: Multi-View Studio Shell & Tab View Switcher', () => {
     fireEvent.change(cutoffMacro, { target: { value: '95' } });
     expect(editor.value).toContain('macros=@{cutoff: 95}');
   });
+
+  it('toggles Fullscreen Studio mode and applies mobile-responsive stacked/split grid classes', async () => {
+    render(<SplitWorkspace />);
+
+    const mainGrid = screen.getByTestId('workspace-main-grid');
+    expect(mainGrid).toHaveClass('grid-cols-1', 'grid-rows-2', 'md:grid-cols-2');
+
+    const fsBtn = screen.getByRole('button', { name: /Toggle Fullscreen/i });
+    expect(fsBtn).toBeInTheDocument();
+
+    fireEvent.click(fsBtn);
+    const exitFsBtn = await screen.findByRole('button', { name: /Exit Fullscreen/i });
+    expect(exitFsBtn).toBeInTheDocument();
+
+    fireEvent.click(exitFsBtn);
+    expect(await screen.findByRole('button', { name: /Toggle Fullscreen/i })).toBeInTheDocument();
+  });
 });

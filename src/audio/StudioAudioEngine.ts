@@ -2708,7 +2708,7 @@ export class StudioAudioEngine {
     this.stop(false);
 
     const ctx = this.ensureContext();
-    if (ctx.state === 'suspended') {
+    if (ctx.state === 'suspended' || (ctx.state as string) === 'interrupted') {
       await ctx.resume();
     }
 

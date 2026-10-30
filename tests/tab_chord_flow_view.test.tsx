@@ -26,20 +26,51 @@ vi.mock('@monaco-editor/react', () => ({
 
 HTMLCanvasElement.prototype.getContext = vi.fn();
 
-describe('TDB-733, TDB-736 & TDB-739: Multi-Instrument Tab Staff Lanes, Sub-Bass/Viola Fretboard Folding & Pitch-Accurate Lines', () => {
+describe('TDB-733, TDB-736, TDB-739 & TDB-741: Detune-Only Tab Sliding, Sub-Bass Fretboard Folding & Proportional Beat Bars', () => {
+  it('keeps normal contiguous notes 100% flat (no false sliding) and only slides/modulates when .detune or .glide is present', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Detune vs Plain Note Test", tempo: 68, time: "4/4" }
+        def horns "French Horn Choir" style=standard patch="french_horn"
+        def saws  "Ascendant Supersaw" style=synth patch="supersaw"
+        measure 1 {
+          horns: a4:2 b4:2 |
+          saws:  [f3 c4 a4]:2.detune(85%, 0.3..0.9) [g3 d4 b4]:2 |
+        }
+      }
+    `);
+
+    const trajectories = buildTrueVoiceTrajectories(score.events);
+    // Plain horn note a4:2 (MIDI 69) followed by b4:2 (MIDI 71) WITHOUT .detune or .glide must NOT slide:
+    const hornFirst = trajectories.find((t) => t.trackId === 'horns' && t.startWhole === 0)!;
+    expect(hornFirst.startMidi).toBe(69);
+    expect(hornFirst.targetMidi).toBe(69);
+    expect(hornFirst.hasGlide).toBe(false);
+    // At 90% through the first half-note (wholeTime = 0.45), horn pitch stays 69 (A4), never sliding to 70/71
+    expect(evaluateTrackedEventMidiAtWhole(hornFirst, 0.45)).toBe(69);
+
+    // Saws note with .detune(85%, 0.3..0.9) DOES have hasDetune=true and slides to the next chord:
+    const sawFirst = trajectories.find(
+      (t) => t.trackId === 'saws' && t.startWhole === 0 && t.startMidi === 53
+    )!;
+    expect(sawFirst.hasDetune).toBe(true);
+    expect(sawFirst.targetMidi).toBe(55);
+  });
+
   it('folds low sub-bass (Bb0 = MIDI 22) and viola/cello (Bb1 = MIDI 34) notes onto playable fretboards so they never render empty', () => {
-    const violaVoicing = computeGuitarVoicing([34], true); // Bb1 (MIDI 34)
+    const violaVoicing = computeGuitarVoicing([34], true);
     const violaFretted = violaVoicing.strings.filter((s) => typeof s.fret === 'number');
     expect(violaFretted.length).toBeGreaterThanOrEqual(1);
     expect(violaFretted[0].noteLabel).toBe('B♭');
 
-    const subVoicing = computeGuitarVoicing([22], true); // Bb0 (MIDI 22)
+    const subVoicing = computeGuitarVoicing([22], true);
     const subFretted = subVoicing.strings.filter((s) => typeof s.fret === 'number');
     expect(subFretted.length).toBeGreaterThanOrEqual(1);
     expect(subFretted[0].noteLabel).toBe('B♭');
   });
 
-  it('renders a dedicated horizontal 6-string Tab Staff lane for each instrument and supports Pinch-to-Zoom and Fit All', () => {
+  it('renders dedicated 6-string Tab Staff lanes, detune shimmer waves, and supports Pinch-to-Zoom and Fit All', () => {
     const parser = new DocumentParser();
     const score = parser.compile(`
       tenuto "6.0" {
@@ -50,7 +81,7 @@ describe('TDB-733, TDB-736 & TDB-739: Multi-Instrument Tab Staff Lanes, Sub-Bass
         def drums "Kit"      style=grid  patch="tenuto_808_kit"
 
         measure 1 {
-          saws:  [d3 a3 d4 f#4 a4 c#5]:1.glide(160ms) |
+          saws:  [d3 a3 d4 f#4 a4 c#5]:1.detune(85%, 0.3..0.9) |
           reese: d1:1.glide(160ms) |
           lead:  f#5:2 a5:2 |
           drums: k:4 s:4 k:4 s:4 |
@@ -63,14 +94,6 @@ describe('TDB-733, TDB-736 & TDB-739: Multi-Instrument Tab Staff Lanes, Sub-Bass
         }
       }
     `);
-
-    const trajectories = buildTrueVoiceTrajectories(score.events);
-    expect(trajectories.length).toBeGreaterThan(10);
-
-    const leadFirst = trajectories.find((t) => t.trackId === 'lead' && t.startWhole === 0)!;
-    expect(evaluateTrackedEventMidiAtWhole(leadFirst, 0.25)).toBe(78); // F#5 = 78
-    // Because f#5:2 is followed contiguously by a5:2 on 'lead', targetMidi links to 81 (A5)
-    expect(leadFirst.targetMidi).toBe(81);
 
     const allocated = allocateNotesToTabStrings([50, 57, 62, 66, 69, 73]);
     expect(allocated.size).toBe(6);
@@ -90,10 +113,7 @@ describe('TDB-733, TDB-736 & TDB-739: Multi-Instrument Tab Staff Lanes, Sub-Bass
     expect(screen.getByTestId('instrument-tab-staff-reese')).toBeInTheDocument();
     expect(screen.getByTestId('instrument-tab-staff-lead')).toBeInTheDocument();
     expect(screen.getByTestId('instrument-tab-staff-drums')).toBeInTheDocument();
-
-    // Verify reese (d1 = MIDI 26) mini fretboard has a fretted circle dot
-    const reeseFretboard = screen.getByTestId('mini-fretboard-reese');
-    expect(reeseFretboard.querySelectorAll('circle').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByTestId('detune-wave-saws').length).toBeGreaterThanOrEqual(1);
 
     const viewport = screen.getByTestId('tab-flow-scroll-viewport');
     expect(screen.getByRole('button', { name: /Tab Reset Zoom/i })).toHaveTextContent('100%');

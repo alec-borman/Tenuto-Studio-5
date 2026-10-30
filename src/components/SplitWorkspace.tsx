@@ -51,6 +51,8 @@ export default function SplitWorkspace() {
   const [loopEndMeasure, setLoopEndMeasure] = useState<number | null>(null);
   const [isMetronomeEnabled, setIsMetronomeEnabled] = useState<boolean>(false);
   const [countInBars, setCountInBars] = useState<number>(0);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const workspaceRootRef = useRef<HTMLDivElement>(null);
   const isAudioInitialized = useRef<boolean>(false);
 
   const [astState, setAstState] = useState<ASTState>({
@@ -132,6 +134,44 @@ export default function SplitWorkspace() {
       codeMemory.cancelPending();
     };
   }, [codeMemory]);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const doc: any = document;
+      const activeFs = Boolean(doc.fullscreenElement || doc.webkitFullscreenElement);
+      setIsFullscreen(activeFs);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+    };
+  }, []);
+
+  const handleToggleFullscreen = async () => {
+    const doc: any = document;
+    const el: any = workspaceRootRef.current || document.documentElement;
+    try {
+      if (!isFullscreen && !doc.fullscreenElement && !doc.webkitFullscreenElement) {
+        if (typeof el.requestFullscreen === 'function') {
+          await el.requestFullscreen();
+        } else if (typeof el.webkitRequestFullscreen === 'function') {
+          await el.webkitRequestFullscreen();
+        }
+        setIsFullscreen(true);
+      } else {
+        if (typeof doc.exitFullscreen === 'function' && doc.fullscreenElement) {
+          await doc.exitFullscreen();
+        } else if (typeof doc.webkitExitFullscreen === 'function' && doc.webkitFullscreenElement) {
+          await doc.webkitExitFullscreen();
+        }
+        setIsFullscreen(false);
+      }
+    } catch {
+      setIsFullscreen((prev) => !prev);
+    }
+  };
 
   const handleResetCodeMemory = () => {
     codeMemory.clear();
@@ -754,7 +794,12 @@ export default function SplitWorkspace() {
   ]);
 
   return (
-    <div className="h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden flex flex-col">
+    <div
+      ref={workspaceRootRef}
+      className={`tenuto-dvh-shell bg-slate-950 text-slate-100 overflow-hidden flex flex-col ${
+        isFullscreen ? 'tenuto-fullscreen-active' : ''
+      }`}
+    >
       {/* Top Bar: Transport Controls & Demo Selector */}
       <Transport
         isPlaying={isPlaying}
@@ -785,12 +830,17 @@ export default function SplitWorkspace() {
         onCountInBarsChange={handleCountInBarsChange}
         onTapTempo={handleTapTempo}
         onCaptureMidi={handleCaptureMidi}
+        isFullscreen={isFullscreen}
+        onToggleFullscreen={handleToggleFullscreen}
       />
 
       {/* Main Split Workspace */}
       <main
+        data-testid="workspace-main-grid"
         className={`flex-1 grid ${
-          isCodeVisible ? 'grid-cols-2' : 'grid-cols-1'
+          isCodeVisible
+            ? 'grid-cols-1 grid-rows-2 md:grid-cols-2 md:grid-rows-1'
+            : 'grid-cols-1 grid-rows-1'
         } min-h-0 overflow-hidden`}
       >
         {/* Left Side: Tenuto Code Editor */}
@@ -798,7 +848,7 @@ export default function SplitWorkspace() {
           data-testid="code-editor-pane"
           className={`${
             isCodeVisible ? 'flex' : 'hidden'
-          } h-full w-full border-r border-slate-800 bg-[#0B0F19] flex-col min-h-0 overflow-hidden`}
+          } h-full w-full border-b md:border-b-0 md:border-r border-slate-800 bg-[#0B0F19] flex-col min-h-0 overflow-hidden`}
         >
           <div className="h-8 bg-slate-900 border-b border-slate-800 px-4 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2.5">
