@@ -8,7 +8,7 @@
   },
   "extraMetadata": {
     "main": "electron/main.cjs",
-    "version": "5.0.4"
+    "version": "5.0.6"
   },
   "files": [
     "dist/**/*",

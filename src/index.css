@@ -1,69 +1,16 @@
 @import "tailwindcss";
 
-/* Theater-Grade Real-Time Code Highlighting (TDB-731) */
-.tenuto-editor-playback .monaco-editor {
-  transition: opacity 160ms ease-in-out;
-}
-
-/* 28% Opacity theater dim for inactive rows */
-.tenuto-karaoke-subdued {
-  opacity: 0.28 !important;
-  filter: blur(0.12px) grayscale(40%) !important;
-  transition: opacity 300ms ease, filter 300ms ease;
-}
-
-/* Glow outline for the entire active measure measure N { ... } */
-.tenuto-karaoke-measure-active {
-  background: linear-gradient(
-    90deg,
-    rgba(16, 185, 129, 0.05) 0%,
-    rgba(56, 189, 248, 0.01) 80%,
-    transparent 100%
-  ) !important;
-  border-left: 4px solid #34d399 !important;
-  border-right: 1px dashed rgba(52, 211, 153, 0.15) !important;
-  box-shadow: 
-    inset 8px 0 20px rgba(52, 211, 153, 0.04),
-    0 0 15px rgba(16, 185, 129, 0.04);
-  transition: background 180ms ease, border 180ms ease;
-}
-
-/* Pulsing highlight on currently sounding track lines */
-.tenuto-karaoke-line-active {
-  background: linear-gradient(
-    90deg,
-    rgba(52, 211, 153, 0.14) 0%,
-    rgba(56, 189, 248, 0.05) 50%,
-    transparent 100%
-  ) !important;
-  border-left: 4px solid #10B981 !important;
-  box-shadow: inset 4px 0 12px rgba(16, 185, 129, 0.1);
-  animation: linePulse 2.4s infinite alternate ease-in-out;
-}
-
-/* Luminous Active Token Progress / Sweep */
+/* Surgical Core-Note Playback Highlight in Monaco Editor (TDB-734) */
 .tenuto-karaoke-token-active {
-  background: linear-gradient(
-    90deg,
-    rgba(16, 185, 129, 0.38) 0%,
-    rgba(52, 211, 153, 0.22) 100%
-  ) !important;
-  color: #FFFFFF !important;
+  background-color: rgba(16, 185, 129, 0.38) !important;
+  color: #ffffff !important;
   font-weight: 700 !important;
-  border-bottom: 2px solid #10B981 !important;
-  border-radius: 4px;
-  box-shadow: 
-    0 0 8px rgba(16, 185, 129, 0.45),
-    inset 0 1px 0 rgba(255, 255, 255, 0.15);
-  transition: all 100ms ease;
+  border-bottom: 2px solid #34d399 !important;
+  border-radius: 3px;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.45);
 }
 
-@keyframes linePulse {
-  0% { opacity: 0.94; }
-  100% { opacity: 1.0; background-color: rgba(52, 211, 153, 0.18) !important; }
-}
-
-/* Hide scrollbars for tight aesthetic spaces */
+/* Hide scrollbars for compact studio toolbars */
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }

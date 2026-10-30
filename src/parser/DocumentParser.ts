@@ -852,7 +852,7 @@ export class DocumentParser {
 
       const mergedSketchEvents = this.mergeTiedEvents(allEvents);
       ContinuousSynthEngine.linkPolyphonicChordGlides(mergedSketchEvents);
-      this.attachSourceLocations(rawSource, mergedSketchEvents);
+      this.attachSourceLocations(sanitized, mergedSketchEvents);
       const automationLanes = compileAutomationLanes(mergedSketchEvents);
 
       return {
@@ -1584,7 +1584,7 @@ export class DocumentParser {
 
     const mergedEvents = this.mergeTiedEvents(allEvents);
     ContinuousSynthEngine.linkPolyphonicChordGlides(mergedEvents);
-    this.attachSourceLocations(rawSource, mergedEvents);
+    this.attachSourceLocations(sanitized, mergedEvents);
     const automationLanes = compileAutomationLanes(mergedEvents);
 
     return {
@@ -1603,100 +1603,171 @@ export class DocumentParser {
   }
 
   /**
-   * Maps each compiled AtomicEvent in order to its exact character span (`sourceStartOffset`, `sourceEndOffset`)
-   * and 1-based `(line, col)` coordinates in the raw source string, skipping comments (`%%` and `//`).
+   * Maps each compiled AtomicEvent to its exact 1-based `(line, col)` coordinates in `rawSource`
+   * by scoping lookup to the event's `measure N { ... }` block and `trackId:` line, ignoring `%%`
+   * and `//` comments, and advancing the line cursor past rests (`r:...`) so subsequent notes on
+   * the same line resolve to their exact column.
    */
   private attachSourceLocations(rawSource: string, events: AtomicEvent[]): void {
     if (!rawSource || events.length === 0) return;
 
+    const normalizedSource = rawSource.replace(/\r\n?/g, '\n');
+    const lines = normalizedSource.split('\n');
     const lineStarts: number[] = [0];
-    for (let i = 0; i < rawSource.length; i++) {
-      if (rawSource[i] === '\n') {
+    for (let i = 0; i < normalizedSource.length; i++) {
+      if (normalizedSource[i] === '\n') {
         lineStarts.push(i + 1);
       }
     }
 
-    const offsetToLineCol = (offset: number): { line: number; col: number } => {
-      let low = 0;
-      let high = lineStarts.length - 1;
-      while (low <= high) {
-        const mid = (low + high) >> 1;
-        if (lineStarts[mid] <= offset) {
-          low = mid + 1;
-        } else {
-          high = mid - 1;
-        }
-      }
-      const lineIdx = Math.max(0, high);
-      return {
-        line: lineIdx + 1,
-        col: offset - lineStarts[lineIdx] + 1,
-      };
+    const stripLineComment = (lineStr: string): string => {
+      const pct = lineStr.indexOf('%%');
+      const sl = lineStr.indexOf('//');
+      if (pct !== -1 && sl !== -1) return lineStr.slice(0, Math.min(pct, sl));
+      if (pct !== -1) return lineStr.slice(0, pct);
+      if (sl !== -1) return lineStr.slice(0, sl);
+      return lineStr;
     };
 
-    let searchCursor = 0;
-    let lastRawToken = '';
-    let lastFoundStart = -1;
-    let lastFoundEnd = -1;
+    // Index the start and end line numbers (0-based) for each `measure N` block
+    const measureLineBounds = new Map<number, { startLineIdx: number; endLineIdx: number }>();
+    const measureHeaderLineRegex = /^\s*measure\s+(\d+)(?:\s*-\s*(\d+))?\s*\{/i;
+
+    for (let i = 0; i < lines.length; i++) {
+      const cleanLine = stripLineComment(lines[i]);
+      const m = cleanLine.match(measureHeaderLineRegex);
+      if (!m) continue;
+      const startM = parseInt(m[1], 10);
+      const endM = m[2] ? parseInt(m[2], 10) : startM;
+
+      let braceDepth = 0;
+      let endIdx = lines.length - 1;
+      for (let j = i; j < lines.length; j++) {
+        const cl = stripLineComment(lines[j]);
+        for (let c = 0; c < cl.length; c++) {
+          if (cl[c] === '{') braceDepth++;
+          else if (cl[c] === '}') braceDepth--;
+        }
+        if (j > i && braceDepth <= 0) {
+          endIdx = j;
+          break;
+        }
+      }
+
+      for (let mNum = startM; mNum <= endM; mNum++) {
+        measureLineBounds.set(mNum, { startLineIdx: i, endLineIdx: endIdx });
+      }
+    }
+
+    // Track cursor position per (measureNumber, trackId)
+    const cursors = new Map<string, { lineIdx: number; colIdx: number }>();
+    const lastChordSpan = new Map<
+      string,
+      { rawToken: string; startWhole: number; line: number; col: number; offset: number }
+    >();
 
     for (const ev of events) {
       const tokenStr = ev.rawToken;
       if (!tokenStr) continue;
 
-      // Chords share the same rawToken across simultaneous chord notes at the same startTime
+      const mNum = ev.measureNumber || 1;
+      const tId = ev.trackId || 'pno';
+      const cursorKey = `${mNum}::${tId}`;
+      const stWhole = ev.startTime
+        ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator)
+        : 0;
+
+      // Simultaneous notes in a chord `[c4 e4 g4]:2` share the exact same source span
+      const prevChord = lastChordSpan.get(cursorKey);
       if (
-        tokenStr === lastRawToken &&
-        lastFoundStart !== -1 &&
-        tokenStr.startsWith('[')
+        prevChord &&
+        tokenStr.startsWith('[') &&
+        prevChord.rawToken === tokenStr &&
+        Math.abs(prevChord.startWhole - stWhole) < 1e-6
       ) {
-        ev.sourceStartOffset = lastFoundStart;
-        ev.sourceEndOffset = lastFoundEnd;
-        const loc = offsetToLineCol(lastFoundStart);
-        ev.line = loc.line;
-        ev.col = loc.col;
+        ev.line = prevChord.line;
+        ev.col = prevChord.col;
+        ev.sourceStartOffset = prevChord.offset;
+        ev.sourceEndOffset = prevChord.offset + tokenStr.length;
         continue;
       }
 
-      let foundIdx = -1;
-      let probe = searchCursor;
-      while (probe < rawSource.length) {
-        const idx = rawSource.indexOf(tokenStr, probe);
-        if (idx === -1) break;
+      const bounds = measureLineBounds.get(mNum) || {
+        startLineIdx: 0,
+        endLineIdx: lines.length - 1,
+      };
 
-        // Ensure match is not inside a %% or // comment on the same line
-        const { line } = offsetToLineCol(idx);
-        const lineStart = lineStarts[line - 1];
-        const linePrefix = rawSource.slice(lineStart, idx);
-        if (linePrefix.includes('%%') || linePrefix.includes('//')) {
-          const nextNl = rawSource.indexOf('\n', idx);
-          if (nextNl === -1) break;
-          probe = nextNl + 1;
-          continue;
+      let cur = cursors.get(cursorKey);
+      if (!cur) {
+        const trackPrefixRegex = new RegExp(`^(\\s*${tId}\\s*:\\s*)`, 'i');
+        let foundTrackLine = bounds.startLineIdx;
+        let foundTrackCol = 0;
+        for (let lIdx = bounds.startLineIdx; lIdx <= bounds.endLineIdx; lIdx++) {
+          const codePart = stripLineComment(lines[lIdx]);
+          if (!codePart.trim()) continue;
+          const tm = codePart.match(trackPrefixRegex);
+          if (tm) {
+            foundTrackLine = lIdx;
+            foundTrackCol = tm[1].length;
+            break;
+          }
         }
-
-        const charBefore = idx > 0 ? rawSource[idx - 1] : ' ';
-        const endIdx = idx + tokenStr.length;
-        const charAfter = endIdx < rawSource.length ? rawSource[endIdx] : ' ';
-        const validBefore = /[\s:{\[(|<>]/.test(charBefore);
-        const validAfter = /[\s|}\])>~]/.test(charAfter);
-
-        if (validBefore && validAfter) {
-          foundIdx = idx;
-          break;
-        }
-        probe = idx + 1;
+        cur = { lineIdx: foundTrackLine, colIdx: foundTrackCol };
+        cursors.set(cursorKey, cur);
       }
 
-      if (foundIdx !== -1) {
-        ev.sourceStartOffset = foundIdx;
-        ev.sourceEndOffset = foundIdx + tokenStr.length;
-        const loc = offsetToLineCol(foundIdx);
-        ev.line = loc.line;
-        ev.col = loc.col;
-        lastRawToken = tokenStr;
-        lastFoundStart = foundIdx;
-        lastFoundEnd = foundIdx + tokenStr.length;
-        searchCursor = foundIdx + tokenStr.length;
+      let matchedLineIdx = -1;
+      let matchedColIdx = -1;
+
+      for (let lIdx = cur.lineIdx; lIdx <= bounds.endLineIdx; lIdx++) {
+        const codePart = stripLineComment(lines[lIdx]);
+        const startSearchCol = lIdx === cur.lineIdx ? cur.colIdx : 0;
+        if (startSearchCol >= codePart.length) continue;
+
+        let probe = startSearchCol;
+        while (probe < codePart.length) {
+          const idx = codePart.indexOf(tokenStr, probe);
+          if (idx === -1) break;
+
+          const charBefore = idx > 0 ? codePart[idx - 1] : ' ';
+          const endIdx = idx + tokenStr.length;
+          const charAfter = endIdx < codePart.length ? codePart[endIdx] : ' ';
+          const validBefore = /[\s:{\[(|<>]/.test(charBefore);
+          const validAfter = /[\s|}\])>~]/.test(charAfter);
+
+          if (validBefore && validAfter) {
+            matchedLineIdx = lIdx;
+            matchedColIdx = idx;
+            break;
+          }
+          probe = idx + 1;
+        }
+
+        if (matchedLineIdx !== -1) break;
+      }
+
+      if (matchedLineIdx !== -1 && matchedColIdx !== -1) {
+        const line1Based = matchedLineIdx + 1;
+        const col1Based = matchedColIdx + 1;
+        const absOffset = (lineStarts[matchedLineIdx] ?? 0) + matchedColIdx;
+
+        ev.line = line1Based;
+        ev.col = col1Based;
+        ev.sourceStartOffset = absOffset;
+        ev.sourceEndOffset = absOffset + tokenStr.length;
+
+        cur.lineIdx = matchedLineIdx;
+        cur.colIdx = matchedColIdx + tokenStr.length;
+
+        if (tokenStr.startsWith('[')) {
+          lastChordSpan.set(cursorKey, {
+            rawToken: tokenStr,
+            startWhole: stWhole,
+            line: line1Based,
+            col: col1Based,
+            offset: absOffset,
+          });
+        }
       }
     }
   }

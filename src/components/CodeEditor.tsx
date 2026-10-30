@@ -4,13 +4,12 @@ import Editor from '@monaco-editor/react';
 export interface ActiveKaraokeToken {
   trackId: string;
   rawToken: string;
+  coreToken: string;
   lyric?: string;
   measureNumber: number;
   line: number;
   col: number;
   endCol: number;
-  sourceStartOffset?: number;
-  sourceEndOffset?: number;
   progressPct: number;
 }
 
@@ -22,12 +21,55 @@ interface CodeEditorProps {
   isPlaying?: boolean;
 }
 
+/**
+ * Extracts strictly the playable pitch/chord + duration prefix from a raw Tenuto token,
+ * stripping all trailing `.modifier(...)` chains and `~` ties.
+ *
+ * Examples:
+ * - `d1:1.mp.cresc.detune(76%, 0.25..0.90).warble(24, 1.6).drive([0.25, 0.62]).glide(200ms)` -> `d1:1`
+ * - `[f#3 c#4 f#4 a4 c#5]:1.p.cresc.open_voice.detune([0, 78, 25])` -> `[f#3 c#4 f#4 a4 c#5]:1`
+ * - `f#2:2..mp.vib` -> `f#2:2.`
+ * - `c#3:8` -> `c#3:8`
+ */
+export function extractCoreNoteAndDurationToken(rawToken: string): string {
+  const trimmed = (rawToken || '').trim().replace(/~/g, '');
+  if (!trimmed) return '';
+
+  // 1. Chord token: `[f#3 c#4 f#4 a4 c#5]:1.p.cresc...`
+  if (trimmed.startsWith('[')) {
+    const closeBracketIdx = trimmed.indexOf(']');
+    if (closeBracketIdx !== -1) {
+      const chordPart = trimmed.slice(0, closeBracketIdx + 1);
+      const afterChord = trimmed.slice(closeBracketIdx + 1);
+      const durMatch = afterChord.match(
+        /^(:(?:grace|\d+(?:\/\d+)?(?:\.(?!\w))?(?:\*\d+)?))/
+      );
+      return durMatch ? `${chordPart}${durMatch[1]}` : chordPart;
+    }
+  }
+
+  // 2. Single note / drum trigger / slice token: `d1:1.mp...` or `f#2:2..mp.vib` or `c4`
+  const singleMatch = trimmed.match(
+    /^([a-zA-Z0-9_#b+-]+(?::(?:grace|\d+(?:\/\d+)?(?:\.(?!\w))?(?:\*\d+)?))?)/
+  );
+  if (singleMatch && singleMatch[1]) {
+    return singleMatch[1];
+  }
+
+  return trimmed;
+}
+
+/**
+ * Computes the deduplicated list of currently sounding `.ten` core note tokens at `playheadBeat`.
+ * Only includes notes actively sounding at `playheadBeat` (`startWhole <= t < startWhole + durWhole`),
+ * never rests (`r:2`), spacers (`s:1`), comments, or future notes after the current beat.
+ */
 export function computeActiveKaraokeTokens(
   events: any[] = [],
   playheadBeat: number = 0,
   isPlaying: boolean = false
 ): ActiveKaraokeToken[] {
-  if ((!isPlaying && playheadBeat <= 0) || !events || events.length === 0) {
+  if (!isPlaying || !events || events.length === 0) {
     return [];
   }
 
@@ -37,6 +79,7 @@ export function computeActiveKaraokeTokens(
 
   for (const ev of events) {
     if (!ev || !ev.rawToken || ev.pitch?.isRest || ev.pitch?.isSpacer) continue;
+    if (/^r(?::|$|\.)/i.test(ev.rawToken.trim())) continue;
 
     const startWhole = ev.startTime
       ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator)
@@ -45,10 +88,15 @@ export function computeActiveKaraokeTokens(
       ? ev.duration.numerator / Math.max(1, ev.duration.denominator)
       : 0.25;
 
-    if (currentWholeTime >= startWhole && currentWholeTime <= startWhole + durWhole) {
-      const line = ev.line ?? 1;
-      const col = ev.col ?? 1;
-      const spanKey = `${ev.trackId || 'pno'}:${line}:${col}:${ev.rawToken}`;
+    if (currentWholeTime >= startWhole && currentWholeTime < startWhole + durWhole - 1e-5) {
+      const line = ev.line ?? 0;
+      const col = ev.col ?? 0;
+      if (line <= 0 || col <= 0) continue;
+
+      const coreToken = extractCoreNoteAndDurationToken(ev.rawToken);
+      if (!coreToken) continue;
+
+      const spanKey = `${line}:${col}:${coreToken}`;
       if (seenSpans.has(spanKey)) continue;
       seenSpans.add(spanKey);
 
@@ -59,13 +107,12 @@ export function computeActiveKaraokeTokens(
       active.push({
         trackId: ev.trackId || 'pno',
         rawToken: ev.rawToken,
+        coreToken,
         lyric: ev.physics?.lyric,
         measureNumber: ev.measureNumber || Math.floor(startWhole) + 1,
         line,
         col,
-        endCol: col + ev.rawToken.length,
-        sourceStartOffset: ev.sourceStartOffset,
-        sourceEndOffset: ev.sourceEndOffset,
+        endCol: col + coreToken.length,
         progressPct,
       });
     }
@@ -74,15 +121,12 @@ export function computeActiveKaraokeTokens(
   return active;
 }
 
-/**
- * Scan editor code text to detect exactly where "measure N" starts and ends (until next measure or end of wrapper).
- */
 export function findMeasureLineRange(
   code: string,
   measureNumber: number
 ): { startLine: number; endLine: number } | null {
   if (measureNumber <= 0) return null;
-  const lines = code.split('\n');
+  const lines = code.replace(/\r\n?/g, '\n').split('\n');
   const startRegex = new RegExp(`^\\s*measure\\s+${measureNumber}\\b`, 'i');
   const anyMeasureRegex = /^\s*measure\s+\d+/i;
 
@@ -99,11 +143,11 @@ export function findMeasureLineRange(
   let endLine = lines.length;
   for (let j = startLine; j < lines.length; j++) {
     const trim = lines[j].trim();
-    if (trim === '}') {
-      endLine = j + 1;
-      break;
-    }
-    if (anyMeasureRegex.test(lines[j]) || (trim.startsWith('def') && j > startLine + 1)) {
+    if (
+      anyMeasureRegex.test(lines[j]) ||
+      trim === '}' ||
+      (trim.startsWith('def') && j > startLine + 1)
+    ) {
       endLine = j;
       break;
     }
@@ -240,7 +284,7 @@ export function configureTenutoMonaco(monaco: any): void {
       },
     });
   } catch {
-    // Graceful fallback for mocked environments
+    // Ignore in mocked test environments
   }
 }
 
@@ -254,14 +298,13 @@ export default function CodeEditor({
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
   const decorationIdsRef = useRef<string[]>([]);
-  const lastRevealedLineRef = useRef<number>(0);
+  const lastRevealedMeasureRef = useRef<number>(0);
 
   const activeTokens = useMemo(
     () => computeActiveKaraokeTokens(events, playheadBeat, isPlaying),
     [events, playheadBeat, isPlaying]
   );
 
-  // Synchronize Theater-Spotlight Delta Decorations, Measure Fades, and smooth Scroll Position centering
   useEffect(() => {
     const editor = editorRef.current;
     const monaco = monacoRef.current;
@@ -272,94 +315,61 @@ export default function CodeEditor({
         if (decorationIdsRef.current.length > 0) {
           decorationIdsRef.current = editor.deltaDecorations(decorationIdsRef.current, []);
         }
-        lastRevealedLineRef.current = 0;
+        lastRevealedMeasureRef.current = 0;
         return;
       }
 
       const model = editor.getModel?.();
-      const numLines = model ? model.getLineCount() : code.split('\n').length;
+      const codeLines = code.replace(/\r\n?/g, '\n').split('\n');
       const newDecorations: any[] = [];
 
-      // Determine active measure boundary
-      const measureNum = activeTokens[0].measureNumber;
-      const mRange = findMeasureLineRange(code, measureNum);
-
-      if (mRange) {
-        // 1. Wrap the active measure in the high-contrast back-glow outlining box
-        newDecorations.push({
-          range: new monaco.Range(mRange.startLine, 1, mRange.endLine, 1),
-          options: {
-            isWholeLine: true,
-            className: 'tenuto-karaoke-measure-active',
-          },
-        });
-
-        // 2. Heavy 28% Opacity dim on all previous unplayed measures
-        if (mRange.startLine > 1) {
-          newDecorations.push({
-            range: new monaco.Range(1, 1, mRange.startLine - 1, 1),
-            options: {
-              isWholeLine: true,
-              className: 'tenuto-karaoke-subdued',
-            },
-          });
-        }
-
-        // 3. Heavy 28% Opacity dim on all subsequent measures
-        if (mRange.endLine < numLines) {
-          newDecorations.push({
-            range: new monaco.Range(mRange.endLine + 1, 1, numLines, 1),
-            options: {
-              isWholeLine: true,
-              className: 'tenuto-karaoke-subdued',
-            },
-          });
-        }
-      }
-
-      // 4. Spotlight the specific active track lines within that measure with pulsing green gradient
-      const activeLines = new Set<number>();
       for (const tok of activeTokens) {
-        let ln = tok.line;
-        if (model && typeof model.getPositionAt === 'function' && typeof tok.sourceStartOffset === 'number') {
-          ln = model.getPositionAt(tok.sourceStartOffset).lineNumber;
-        }
-        activeLines.add(ln);
-      }
+        const lineNum = tok.line;
+        if (lineNum < 1 || lineNum > codeLines.length) continue;
 
-      for (const al of activeLines) {
-        newDecorations.push({
-          range: new monaco.Range(al, 1, al, 1),
-          options: {
-            isWholeLine: true,
-            className: 'tenuto-karaoke-line-active',
-          },
-        });
-      }
+        const rawLineText: string =
+          model && typeof model.getLineContent === 'function'
+            ? model.getLineContent(lineNum)
+            : codeLines[lineNum - 1] || '';
 
-      // 5. Highlight sounding tokens in white-gold with smooth progress underlining
-      for (const tok of activeTokens) {
-        let startLine = tok.line;
-        let startCol = tok.col;
-        let endLine = tok.line;
-        let endCol = tok.endCol;
-
+        const trimmedLine = rawLineText.trim();
         if (
-          model &&
-          typeof model.getPositionAt === 'function' &&
-          typeof tok.sourceStartOffset === 'number' &&
-          typeof tok.sourceEndOffset === 'number'
+          !trimmedLine ||
+          trimmedLine.startsWith('%%') ||
+          trimmedLine.startsWith('//') ||
+          /^(?:measure|tenuto|meta|def|return|group|locator|groove)\b/i.test(trimmedLine)
         ) {
-          const pStart = model.getPositionAt(tok.sourceStartOffset);
-          const pEnd = model.getPositionAt(tok.sourceEndOffset);
-          startLine = pStart.lineNumber;
-          startCol = pStart.column;
-          endLine = pEnd.lineNumber;
-          endCol = pEnd.column;
+          continue;
         }
 
+        const pctCommentIdx = rawLineText.indexOf('%%');
+        const slashCommentIdx = rawLineText.indexOf('//');
+        const commentCutIdx =
+          pctCommentIdx !== -1 && slashCommentIdx !== -1
+            ? Math.min(pctCommentIdx, slashCommentIdx)
+            : pctCommentIdx !== -1
+              ? pctCommentIdx
+              : slashCommentIdx;
+
+        let startCol0 = Math.max(0, tok.col - 1);
+        if (rawLineText.slice(startCol0, startCol0 + tok.coreToken.length) !== tok.coreToken) {
+          const exactIdx = rawLineText.indexOf(tok.coreToken, Math.max(0, startCol0 - 4));
+          if (exactIdx !== -1) {
+            startCol0 = exactIdx;
+          } else {
+            continue;
+          }
+        }
+
+        if (commentCutIdx !== -1 && startCol0 >= commentCutIdx) {
+          continue;
+        }
+
+        const startCol1 = startCol0 + 1;
+        const endCol1 = startCol1 + tok.coreToken.length;
+
         newDecorations.push({
-          range: new monaco.Range(startLine, startCol, endLine, endCol),
+          range: new monaco.Range(lineNum, startCol1, lineNum, endCol1),
           options: {
             inlineClassName: 'tenuto-karaoke-token-active',
           },
@@ -371,27 +381,25 @@ export default function CodeEditor({
         newDecorations
       );
 
-      // Smooth Centering: keeps the active playing rows comfortably in focus (centered around 1/3 top)
-      const centerLine = mRange ? mRange.startLine : activeTokens[0].line;
-      if (centerLine > 0 && Math.abs(centerLine - lastRevealedLineRef.current) >= 2) {
-        lastRevealedLineRef.current = centerLine;
-        const targetViewLine = Math.max(1, centerLine - 2);
-        editor.revealLineInCenterIfOutsideViewport?.(targetViewLine, 0);
+      const currentMeasure = activeTokens[0].measureNumber;
+      if (currentMeasure > 0 && currentMeasure !== lastRevealedMeasureRef.current) {
+        lastRevealedMeasureRef.current = currentMeasure;
+        editor.revealLineInCenterIfOutsideViewport?.(activeTokens[0].line, 0);
       }
     } catch {
-      // Graceful fallback for mocked environments
+      // Ignore decoration errors in headless test environments
     }
   }, [activeTokens, code]);
 
   return (
-    <div className="w-full h-full flex flex-col overflow-hidden relative tenuto-editor-playback">
-      {/* Top compact Horizontal Karaoke progress ticker ribbon */}
+    <div className="w-full h-full flex flex-col overflow-hidden relative">
+      {/* Top Compact Now-Playing Ribbon (Shows Core Note Token Only) */}
       {activeTokens.length > 0 && (
         <div
           data-testid="karaoke-code-ribbon"
           className="bg-slate-900/95 border-b border-emerald-500/40 px-3 py-1.5 flex items-center gap-2 overflow-x-auto no-scrollbar shrink-0 z-10 select-none"
         >
-          <span className="px-2 py-0.5 rounded bg-emerald-500/25 border border-emerald-500/50 text-emerald-300 text-[10px] font-mono font-bold uppercase tracking-wider shrink-0 shadow-[0_0_8px_rgba(16,185,129,0.25)]">
+          <span className="px-2 py-0.5 rounded bg-emerald-500/25 border border-emerald-500/50 text-emerald-300 text-[10px] font-mono font-bold uppercase tracking-wider shrink-0">
             ♫ Now Playing M{activeTokens[0].measureNumber}
           </span>
 
@@ -400,7 +408,7 @@ export default function CodeEditor({
               <div
                 key={`${tok.trackId}-${tok.line}-${tok.col}-${idx}`}
                 data-testid={`karaoke-pill-${tok.trackId}`}
-                className="relative overflow-hidden rounded bg-slate-950 border border-emerald-500/50 px-2.5 py-0.5 text-[11px] font-mono flex items-center gap-1.5 shrink-0 shadow-[0_0_6px_rgba(16,185,129,0.15)]"
+                className="relative overflow-hidden rounded bg-slate-950 border border-emerald-500/50 px-2.5 py-0.5 text-[11px] font-mono flex items-center gap-1.5 shrink-0"
               >
                 <div
                   data-testid={`karaoke-fill-${tok.trackId}`}
@@ -416,7 +424,7 @@ export default function CodeEditor({
                   </span>
                 )}
                 <span className="relative z-10 text-white font-semibold">
-                  {tok.rawToken}
+                  {tok.coreToken}
                 </span>
                 <span className="relative z-10 text-[9px] text-slate-400">
                   L{tok.line}
@@ -452,7 +460,7 @@ export default function CodeEditor({
             lineHeight: 22,
             fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
             padding: { top: 16, bottom: 16 },
-            renderLineHighlight: 'all',
+            renderLineHighlight: 'none',
             smoothScrolling: true,
           }}
         />

@@ -1,0 +1,1000 @@
+I have updated the **`implementer-contract-oracle`** skill so that **every** contract going forward automatically updates and appends `README.md` to match the new `+0.0.2` version, documents the newly added features, and keeps the live web app link (`[https://tenuto-studio-5-production.up.railway.app/](https://tenuto-studio-5-production.up.railway.app/)`) prominently featured.
+
+Here is the updated **Implementation Contract (`TDB-734`)** combining the **Surgical Core-Note-Only Highlighting (`d1:1`)** fix with the full **`README.md` v5.0.6 synchronization & Live Railway Web Studio link**:
+
+```markdown
+# Implementation Contract: Surgical Core-Note-Only Highlighting (`d1:1`), Zero Comment/Modifier Bleed & Full README.md v5.0.6 Synchronization (TDB-734)
+
+**Project:** Tenuto Studio 5
+**Scope:** Upgrade `src/parser/DocumentParser.ts`, `src/components/CodeEditor.tsx`, `src/index.css`, `README.md`, `tests/code_editor_matrix.test.tsx`, `tests/documentation_integrity.test.ts`, `package.json`, and `electron-builder.json` so playback highlighting in the Monaco editor highlights ONLY the active core note/chord and duration token (e.g. `d1:1` or `[f#3 c#4 f#4 a4 c#5]:1`) without highlighting chained modifiers (`.mp.cresc.detune(...)`), whole lines, rests (`r:2`), subsequent notes on the same line, or `%%` comments, while synchronizing `README.md` to `v5.0.6` with the live Railway production link (`https://tenuto-studio-5-production.up.railway.app/`).
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+**Version Bump:** 5.0.4 -> 5.0.6 (+0.0.2 step; rolls X.Y.8 -> X.(Y+1).0 and X.9.8 -> (X+1).0.0)
+**Execution Mode:** Parallel Batch Edits (Read all target files in parallel in a single turn, then apply all file edits in parallel in a single batched tool-call turn. NEVER edit files sequentially one by one).
+
+---
+
+## 1. Objective
+Currently, during playback in `src/components/CodeEditor.tsx`:
+1. Whole-line decorations (`isWholeLine: true` for `tenuto-karaoke-line-active` and `tenuto-karaoke-measure-active`) highlight entire lines, including `measure 1 {` headers and tracks that only contain rests (`tpt: r:1 |`).
+2. Inline token decorations use the full `rawToken` length, highlighting long modifier chains (`.mp.cresc.detune(76%, 0.25..0.90).warble(24, 1.6).drive([0.25, 0.62]).glide(200ms)`) instead of just the core note and duration (`d1:1`).
+3. Using `model.getPositionAt(tok.sourceStartOffset)` when `sanitizeLLMInput` normalized `\r\n` to `\n` causes character offsets on Windows to drift backward by 1 byte per line, shifting highlights onto `%%` comments and adjacent lines (such as highlighting `lead: r:2 c#5:2` during beat 1 while `lead` is resting on `r:2`).
+
+This contract fixes all three highlighting issues, bumps the repository version from `5.0.4` to `5.0.6`, and updates `README.md` with the live production link (`https://tenuto-studio-5-production.up.railway.app/`) and complete documentation of all `v5.0.6` features.
+
+---
+
+## 2. Root Cause
+1. `src/components/CodeEditor.tsx` pushes `isWholeLine: true` decorations and sets `endCol = col + ev.rawToken.length` (which includes all chained `.modifiers`).
+2. `src/components/CodeEditor.tsx` converts `tok.sourceStartOffset` via `model.getPositionAt(...)`, which drifts on Windows CRLF (`\r\n`) documents because `DocumentParser.sanitizeLLMInput` strips `\r` before calculating `sourceStartOffset`.
+3. `src/parser/DocumentParser.ts` (`attachSourceLocations`) uses a single global `searchCursor` across `rawSource` without scoping to each `measure N` block and `trackId:` assignment line.
+
+---
+
+## 3. Files To Modify
+
+> **PARALLEL EXECUTION DIRECTIVE:** You MUST read all target files in a single parallel batch call, and you MUST apply all file edits below (including the `package.json`, `electron-builder.json`, and `README.md` updates to `5.0.6`) simultaneously in a single parallel tool-call turn. Do NOT apply edits sequentially one file per turn.
+
+### 3.1 `package.json` & `electron-builder.json` - Bump repository version from `5.0.4` to `5.0.6`
+1. In `package.json`, update `"version"` from `"5.0.4"` to `"5.0.6"`:
+```json
+  "name": "tenuto-studio-5",
+  "private": true,
+  "version": "5.0.6",
+
+```
+
+2. In `electron-builder.json`, update `"extraMetadata.version"` from `"5.0.4"` to `"5.0.6"`:
+
+```json
+  "extraMetadata": {
+    "main": "electron/main.cjs",
+    "version": "5.0.6"
+  },
+
+```
+
+### 3.2 `src/index.css` - Style Only the Surgical Core Note Token Highlight
+
+Replace `src/index.css` with clean styling for only the active core note/chord token (removing whole-line and measure-box backgrounds):
+
+```css
+@import "tailwindcss";
+
+/* Surgical Core-Note Playback Highlight in Monaco Editor (TDB-734) */
+.tenuto-karaoke-token-active {
+  background-color: rgba(16, 185, 129, 0.38) !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  border-bottom: 2px solid #34d399 !important;
+  border-radius: 3px;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.45);
+}
+
+/* Hide scrollbars for compact studio toolbars */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+```
+
+### 3.3 `src/parser/DocumentParser.ts` - Scope `attachSourceLocations` by Measure & Track Line (Skipping Comments & Advancing Past Rests)
+
+In `src/parser/DocumentParser.ts`, replace `private attachSourceLocations(rawSource: string, events: AtomicEvent[]): void` with the following line-accurate, measure-scoped and track-scoped implementation (and pass `sanitized` into `this.attachSourceLocations(sanitized, ...)` inside `compile()`):
+
+```typescript
+  /**
+   * Maps each compiled AtomicEvent to its exact 1-based `(line, col)` coordinates in `rawSource`
+   * by scoping lookup to the event's `measure N { ... }` block and `trackId:` line, ignoring `%%`
+   * and `//` comments, and advancing the line cursor past rests (`r:...`) so subsequent notes on
+   * the same line resolve to their exact column.
+   */
+  private attachSourceLocations(rawSource: string, events: AtomicEvent[]): void {
+    if (!rawSource || events.length === 0) return;
+
+    const normalizedSource = rawSource.replace(/\r\n?/g, '\n');
+    const lines = normalizedSource.split('\n');
+    const lineStarts: number[] = [0];
+    for (let i = 0; i < normalizedSource.length; i++) {
+      if (normalizedSource[i] === '\n') {
+        lineStarts.push(i + 1);
+      }
+    }
+
+    const stripLineComment = (lineStr: string): string => {
+      const pct = lineStr.indexOf('%%');
+      const sl = lineStr.indexOf('//');
+      if (pct !== -1 && sl !== -1) return lineStr.slice(0, Math.min(pct, sl));
+      if (pct !== -1) return lineStr.slice(0, pct);
+      if (sl !== -1) return lineStr.slice(0, sl);
+      return lineStr;
+    };
+
+    // Index the start and end line numbers (0-based) for each `measure N` block
+    const measureLineBounds = new Map<number, { startLineIdx: number; endLineIdx: number }>();
+    const measureHeaderLineRegex = /^\s*measure\s+(\d+)(?:\s*-\s*(\d+))?\s*\{/i;
+
+    for (let i = 0; i < lines.length; i++) {
+      const cleanLine = stripLineComment(lines[i]);
+      const m = cleanLine.match(measureHeaderLineRegex);
+      if (!m) continue;
+      const startM = parseInt(m[1], 10);
+      const endM = m[2] ? parseInt(m[2], 10) : startM;
+
+      let braceDepth = 0;
+      let endIdx = lines.length - 1;
+      for (let j = i; j < lines.length; j++) {
+        const cl = stripLineComment(lines[j]);
+        for (let c = 0; c < cl.length; c++) {
+          if (cl[c] === '{') braceDepth++;
+          else if (cl[c] === '}') braceDepth--;
+        }
+        if (j > i && braceDepth <= 0) {
+          endIdx = j;
+          break;
+        }
+      }
+
+      for (let mNum = startM; mNum <= endM; mNum++) {
+        measureLineBounds.set(mNum, { startLineIdx: i, endLineIdx: endIdx });
+      }
+    }
+
+    // Track cursor position per (measureNumber, trackId)
+    const cursors = new Map<string, { lineIdx: number; colIdx: number }>();
+    const lastChordSpan = new Map<
+      string,
+      { rawToken: string; startWhole: number; line: number; col: number; offset: number }
+    >();
+
+    for (const ev of events) {
+      const tokenStr = ev.rawToken;
+      if (!tokenStr) continue;
+
+      const mNum = ev.measureNumber || 1;
+      const tId = ev.trackId || 'pno';
+      const cursorKey = `${mNum}::${tId}`;
+      const stWhole = ev.startTime
+        ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator)
+        : 0;
+
+      // Simultaneous notes in a chord `[c4 e4 g4]:2` share the exact same source span
+      const prevChord = lastChordSpan.get(cursorKey);
+      if (
+        prevChord &&
+        tokenStr.startsWith('[') &&
+        prevChord.rawToken === tokenStr &&
+        Math.abs(prevChord.startWhole - stWhole) < 1e-6
+      ) {
+        ev.line = prevChord.line;
+        ev.col = prevChord.col;
+        ev.sourceStartOffset = prevChord.offset;
+        ev.sourceEndOffset = prevChord.offset + tokenStr.length;
+        continue;
+      }
+
+      const bounds = measureLineBounds.get(mNum) || {
+        startLineIdx: 0,
+        endLineIdx: lines.length - 1,
+      };
+
+      let cur = cursors.get(cursorKey);
+      if (!cur) {
+        const trackPrefixRegex = new RegExp(`^(\\s*${tId}\\s*:\\s*)`, 'i');
+        let foundTrackLine = bounds.startLineIdx;
+        let foundTrackCol = 0;
+        for (let lIdx = bounds.startLineIdx; lIdx <= bounds.endLineIdx; lIdx++) {
+          const codePart = stripLineComment(lines[lIdx]);
+          if (!codePart.trim()) continue;
+          const tm = codePart.match(trackPrefixRegex);
+          if (tm) {
+            foundTrackLine = lIdx;
+            foundTrackCol = tm[1].length;
+            break;
+          }
+        }
+        cur = { lineIdx: foundTrackLine, colIdx: foundTrackCol };
+        cursors.set(cursorKey, cur);
+      }
+
+      let matchedLineIdx = -1;
+      let matchedColIdx = -1;
+
+      for (let lIdx = cur.lineIdx; lIdx <= bounds.endLineIdx; lIdx++) {
+        const codePart = stripLineComment(lines[lIdx]);
+        const startSearchCol = lIdx === cur.lineIdx ? cur.colIdx : 0;
+        if (startSearchCol >= codePart.length) continue;
+
+        let probe = startSearchCol;
+        while (probe < codePart.length) {
+          const idx = codePart.indexOf(tokenStr, probe);
+          if (idx === -1) break;
+
+          const charBefore = idx > 0 ? codePart[idx - 1] : ' ';
+          const endIdx = idx + tokenStr.length;
+          const charAfter = endIdx < codePart.length ? codePart[endIdx] : ' ';
+          const validBefore = /[\s:{\[(\vert{}<>]/.test(charBefore); const validAfter = /[\s\vert{}}\])>~]/.test(charAfter);
+
+          if (validBefore && validAfter) {
+            matchedLineIdx = lIdx;
+            matchedColIdx = idx;
+            break;
+          }
+          probe = idx + 1;
+        }
+
+        if (matchedLineIdx !== -1) break;
+      }
+
+      if (matchedLineIdx !== -1 && matchedColIdx !== -1) {
+        const line1Based = matchedLineIdx + 1;
+        const col1Based = matchedColIdx + 1;
+        const absOffset = (lineStarts[matchedLineIdx] ?? 0) + matchedColIdx;
+
+        ev.line = line1Based;
+        ev.col = col1Based;
+        ev.sourceStartOffset = absOffset;
+        ev.sourceEndOffset = absOffset + tokenStr.length;
+
+        cur.lineIdx = matchedLineIdx;
+        cur.colIdx = matchedColIdx + tokenStr.length;
+
+        if (tokenStr.startsWith('[')) {
+          lastChordSpan.set(cursorKey, {
+            rawToken: tokenStr,
+            startWhole: stWhole,
+            line: line1Based,
+            col: col1Based,
+            offset: absOffset,
+          });
+        }
+      }
+    }
+  }
+
+```
+
+### 3.4 `src/components/CodeEditor.tsx` - Highlight Strictly the Core Note+Duration (`d1:1`) with Zero Whole-Line or Modifier Highlighting
+
+Replace `src/components/CodeEditor.tsx` with the following implementation:
+
+```typescript
+import React, { useRef, useEffect, useMemo } from 'react';
+import Editor from '@monaco-editor/react';
+
+export interface ActiveKaraokeToken {
+  trackId: string;
+  rawToken: string;
+  coreToken: string;
+  lyric?: string;
+  measureNumber: number;
+  line: number;
+  col: number;
+  endCol: number;
+  progressPct: number;
+}
+
+interface CodeEditorProps {
+  code: string;
+  onChange: (newCode: string) => void;
+  events?: any[];
+  playheadBeat?: number;
+  isPlaying?: boolean;
+}
+
+/**
+ * Extracts strictly the playable pitch/chord + duration prefix from a raw Tenuto token,
+ * stripping all trailing `.modifier(...)` chains and `~` ties.
+ *
+ * Examples:
+ * - `d1:1.mp.cresc.detune(76%, 0.25..0.90).warble(24, 1.6).drive([0.25, 0.62]).glide(200ms)` -> `d1:1`
+ * - `[f#3 c#4 f#4 a4 c#5]:1.p.cresc.open_voice.detune([0, 78, 25])` -> `[f#3 c#4 f#4 a4 c#5]:1`
+ * - `f#2:2..mp.vib` -> `f#2:2.`
+ * - `c#3:8` -> `c#3:8`
+ */
+export function extractCoreNoteAndDurationToken(rawToken: string): string {
+  const trimmed = (rawToken || '').trim().replace(/~/g, '');
+  if (!trimmed) return '';
+
+  // 1. Chord token: `[f#3 c#4 f#4 a4 c#5]:1.p.cresc...`
+  if (trimmed.startsWith('[')) {
+    const closeBracketIdx = trimmed.indexOf(']');
+    if (closeBracketIdx !== -1) {
+      const chordPart = trimmed.slice(0, closeBracketIdx + 1);
+      const afterChord = trimmed.slice(closeBracketIdx + 1);
+      const durMatch = afterChord.match(
+        /^(:(?:grace|\d+(?:\/\d+)?(?:\.(?!\w))?(?:\*\d+)?))/
+      );
+      return durMatch ? `${chordPart}${durMatch[1]}` : chordPart;
+    }
+  }
+
+  // 2. Single note / drum trigger / slice token: `d1:1.mp...` or `f#2:2..mp.vib` or `c4`
+  const singleMatch = trimmed.match(
+    /^([a-zA-Z0-9_#b+-]+(?::(?:grace|\d+(?:\/\d+)?(?:\.(?!\w))?(?:\*\d+)?))?)/
+  );
+  if (singleMatch && singleMatch[1]) {
+    return singleMatch[1];
+  }
+
+  return trimmed;
+}
+
+/**
+ * Computes the deduplicated list of currently sounding `.ten` core note tokens at `playheadBeat`.
+ * Only includes notes actively sounding at `playheadBeat` (`startWhole <= t < startWhole + durWhole`),
+ * never rests (`r:2`), spacers (`s:1`), comments, or future notes after the current beat.
+ */
+export function computeActiveKaraokeTokens(
+  events: any[] = [],
+  playheadBeat: number = 0,
+  isPlaying: boolean = false
+): ActiveKaraokeToken[] {
+  if (!isPlaying || !events || events.length === 0) {
+    return [];
+  }
+
+  const currentWholeTime = playheadBeat / 4;
+  const seenSpans = new Set<string>();
+  const active: ActiveKaraokeToken[] = [];
+
+  for (const ev of events) {
+    if (!ev || !ev.rawToken || ev.pitch?.isRest || ev.pitch?.isSpacer) continue;
+    if (/^r(?::|$|\.)/i.test(ev.rawToken.trim())) continue;
+
+    const startWhole = ev.startTime
+      ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator)
+      : 0;
+    const durWhole = ev.duration
+      ? ev.duration.numerator / Math.max(1, ev.duration.denominator)
+      : 0.25;
+
+    if (currentWholeTime >= startWhole && currentWholeTime < startWhole + durWhole - 1e-5) {
+      const line = ev.line ?? 0;
+      const col = ev.col ?? 0;
+      if (line <= 0 || col <= 0) continue;
+
+      const coreToken = extractCoreNoteAndDurationToken(ev.rawToken);
+      if (!coreToken) continue;
+
+      const spanKey = `${line}:${col}:${coreToken}`;
+      if (seenSpans.has(spanKey)) continue;
+      seenSpans.add(spanKey);
+
+      const rawProg =
+        durWhole > 1e-6 ? ((currentWholeTime - startWhole) / durWhole) * 100 : 100;
+      const progressPct = Math.max(0, Math.min(100, Math.round(rawProg)));
+
+      active.push({
+        trackId: ev.trackId || 'pno',
+        rawToken: ev.rawToken,
+        coreToken,
+        lyric: ev.physics?.lyric,
+        measureNumber: ev.measureNumber || Math.floor(startWhole) + 1,
+        line,
+        col,
+        endCol: col + coreToken.length,
+        progressPct,
+      });
+    }
+  }
+
+  return active;
+}
+
+export function findMeasureLineRange(
+  code: string,
+  measureNumber: number
+): { startLine: number; endLine: number } | null {
+  if (measureNumber <= 0) return null;
+  const lines = code.replace(/\r\n?/g, '\n').split('\n');
+  const startRegex = new RegExp(`^\\s*measure\\s+${measureNumber}\\b`, 'i');
+  const anyMeasureRegex = /^\s*measure\s+\d+/i;
+
+  let startLine = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (startRegex.test(lines[i])) {
+      startLine = i + 1;
+      break;
+    }
+  }
+
+  if (startLine === -1) return null;
+
+  let endLine = lines.length;
+  for (let j = startLine; j < lines.length; j++) {
+    const trim = lines[j].trim();
+    if (
+      anyMeasureRegex.test(lines[j]) ||
+      trim === '}' ||
+      (trim.startsWith('def') && j > startLine + 1)
+    ) {
+      endLine = j;
+      break;
+    }
+  }
+
+  return { startLine, endLine };
+}
+
+export function configureTenutoMonaco(monaco: any): void {
+  if (!monaco || !monaco.languages) return;
+
+  try {
+    const existing = monaco.languages.getLanguages?.() || [];
+    if (!existing.some((l: any) => l.id === 'tenuto')) {
+      monaco.languages.register({ id: 'tenuto' });
+    }
+
+    monaco.languages.setMonarchTokensProvider('tenuto', {
+      keywords: [
+        'tenuto',
+        'meta',
+        'def',
+        'def_return',
+        'return',
+        'group',
+        'scene',
+        'clip',
+        'locator',
+        'groove',
+        'rack',
+        'measure',
+        'macro',
+        'var',
+        'import',
+        'repeat',
+      ],
+      attributes: [
+        'style',
+        'patch',
+        'src',
+        'env',
+        'map',
+        'tempo',
+        'time',
+        'title',
+        'key',
+        'scale',
+        'tuning',
+        'quantize_launch',
+        'crossfader',
+        'sidechain',
+        'sends',
+        'crossfade',
+        'delay',
+        'groove',
+        'macros',
+        'tracks',
+        'track',
+        'scene',
+        'bars',
+        'loop',
+        'warp',
+        'transpose',
+        'gain',
+        'follow',
+        'follow_action',
+        'detune',
+        'unison',
+        'cutoff',
+        'resonance',
+        'sub',
+        'air',
+        'duck',
+        'width',
+        'slop',
+        'noise',
+      ],
+      tokenizer: {
+        root: [
+          [/%%.*$/, 'comment'],
+          [/\/\/.*$/, 'comment'],
+          [/<\[\vert{}\]>|@\{/, 'delimiter.bracket'],
+          [/"([^"\\]|\\.)*$/, 'string.invalid'],
+          [/"([^"\\]|\\.)*"/, 'string'],
+          [/[a-zA-Z_][a-zA-Z0-9_]*(?=\s*:)/, 'variable.track'],
+          [/\$[a-zA-Z_][a-zA-Z0-9_]*/, 'variable.macro'],
+          [/\.[a-zA-Z_][a-zA-Z0-9_]*/, 'support.function'],
+          [/:(?:grace|[0-9]+(?:\/[0-9]+|\.+)?(?:\*[0-9]+)?)/, 'constant.numeric'],
+          [/\b[a-gA-G][#b]*[0-9]+\b/, 'type.pitch'],
+          [/\b[a-gA-G][#b]+\b/, 'type.pitch'],
+          [/\b(?:r|s)\b/, 'keyword.operator'],
+          [/\b(?:k|bd|sd|hh|oh|cp|lt|mt|ht|cr|rd|a|b|c|d|e|f|g)\b/, 'type.pitch'],
+          [/\b[0-9]+(?:\.[0-9]+)?(?:ms|s|ticks|%)?\b/, 'number'],
+          [
+            /[a-zA-Z_][a-zA-Z0-9_]*/,
+            {
+              cases: {
+                '@keywords': 'keyword',
+                '@attributes': 'attribute.name',
+                '@default': 'identifier',
+              },
+            },
+          ],
+          [/[{}()\[\]|~*]/, 'delimiter'],
+        ],
+      },
+    });
+
+    monaco.editor.defineTheme('tenuto-dark', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [
+        { token: 'comment', foreground: '64748B', fontStyle: 'italic' },
+        { token: 'keyword', foreground: 'C084FC', fontStyle: 'bold' },
+        { token: 'attribute.name', foreground: '93C5FD' },
+        { token: 'variable.track', foreground: 'FBBF24', fontStyle: 'bold' },
+        { token: 'variable.macro', foreground: 'F59E0B', fontStyle: 'bold' },
+        { token: 'type.pitch', foreground: '38BDF8', fontStyle: 'bold' },
+        { token: 'constant.numeric', foreground: '34D399', fontStyle: 'bold' },
+        { token: 'support.function', foreground: 'F472B6' },
+        { token: 'keyword.operator', foreground: '94A3B8' },
+        { token: 'string', foreground: 'A3E635' },
+        { token: 'number', foreground: 'FB923C' },
+        { token: 'delimiter.bracket', foreground: '818CF8', fontStyle: 'bold' },
+        { token: 'delimiter', foreground: '64748B' },
+      ],
+      colors: {
+        'editor.background': '#0B0F19',
+        'editor.foreground': '#E2E8F0',
+        'editorLineNumber.foreground': '#475569',
+        'editorLineNumber.activeForeground': '#94A3B8',
+        'editor.selectionBackground': '#1E3A8A80',
+        'editor.lineHighlightBackground': '#1E293B30',
+      },
+    });
+  } catch {
+    // Ignore in mocked test environments
+  }
+}
+
+export default function CodeEditor({
+  code,
+  onChange,
+  events = [],
+  playheadBeat = 0,
+  isPlaying = false,
+}: CodeEditorProps) {
+  const editorRef = useRef<any>(null);
+  const monacoRef = useRef<any>(null);
+  const decorationIdsRef = useRef<string[]>([]);
+  const lastRevealedMeasureRef = useRef<number>(0);
+
+  const activeTokens = useMemo(
+    () => computeActiveKaraokeTokens(events, playheadBeat, isPlaying),
+    [events, playheadBeat, isPlaying]
+  );
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    if (!editor || !monaco || !monaco.Range) return;
+
+    try {
+      if (activeTokens.length === 0) {
+        if (decorationIdsRef.current.length > 0) {
+          decorationIdsRef.current = editor.deltaDecorations(decorationIdsRef.current, []);
+        }
+        lastRevealedMeasureRef.current = 0;
+        return;
+      }
+
+      const model = editor.getModel?.();
+      const codeLines = code.replace(/\r\n?/g, '\n').split('\n');
+      const newDecorations: any[] = [];
+
+      for (const tok of activeTokens) {
+        const lineNum = tok.line;
+        if (lineNum < 1 || lineNum > codeLines.length) continue;
+
+        const rawLineText: string =
+          model && typeof model.getLineContent === 'function'
+            ? model.getLineContent(lineNum)
+            : codeLines[lineNum - 1] || '';
+
+        const trimmedLine = rawLineText.trim();
+        if (
+          !trimmedLine ||
+          trimmedLine.startsWith('%%') ||
+          trimmedLine.startsWith('//') ||
+          /^(?:measure|tenuto|meta|def|return|group|locator|groove)\b/i.test(trimmedLine)
+        ) {
+          continue;
+        }
+
+        const pctCommentIdx = rawLineText.indexOf('%%');
+        const slashCommentIdx = rawLineText.indexOf('//');
+        const commentCutIdx =
+          pctCommentIdx !== -1 && slashCommentIdx !== -1
+            ? Math.min(pctCommentIdx, slashCommentIdx)
+            : pctCommentIdx !== -1
+              ? pctCommentIdx
+              : slashCommentIdx;
+
+        let startCol0 = Math.max(0, tok.col - 1);
+        if (rawLineText.slice(startCol0, startCol0 + tok.coreToken.length) !== tok.coreToken) {
+          const exactIdx = rawLineText.indexOf(tok.coreToken, Math.max(0, startCol0 - 4));
+          if (exactIdx !== -1) {
+            startCol0 = exactIdx;
+          } else {
+            continue;
+          }
+        }
+
+        if (commentCutIdx !== -1 && startCol0 >= commentCutIdx) {
+          continue;
+        }
+
+        const startCol1 = startCol0 + 1;
+        const endCol1 = startCol1 + tok.coreToken.length;
+
+        newDecorations.push({
+          range: new monaco.Range(lineNum, startCol1, lineNum, endCol1),
+          options: {
+            inlineClassName: 'tenuto-karaoke-token-active',
+          },
+        });
+      }
+
+      decorationIdsRef.current = editor.deltaDecorations(
+        decorationIdsRef.current,
+        newDecorations
+      );
+
+      const currentMeasure = activeTokens[0].measureNumber;
+      if (currentMeasure > 0 && currentMeasure !== lastRevealedMeasureRef.current) {
+        lastRevealedMeasureRef.current = currentMeasure;
+        editor.revealLineInCenterIfOutsideViewport?.(activeTokens[0].line, 0);
+      }
+    } catch {
+      // Ignore decoration errors in headless test environments
+    }
+  }, [activeTokens, code]);
+
+  return (
+    <div className="w-full h-full flex flex-col overflow-hidden relative">
+      {/* Top Compact Now-Playing Ribbon (Shows Core Note Token Only) */}
+      {activeTokens.length > 0 && (
+        <div
+          data-testid="karaoke-code-ribbon"
+          className="bg-slate-900/95 border-b border-emerald-500/40 px-3 py-1.5 flex items-center gap-2 overflow-x-auto no-scrollbar shrink-0 z-10 select-none"
+        >
+          <span className="px-2 py-0.5 rounded bg-emerald-500/25 border border-emerald-500/50 text-emerald-300 text-[10px] font-mono font-bold uppercase tracking-wider shrink-0">
+            ♫ Now Playing M{activeTokens[0].measureNumber}
+          </span>
+
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+            {activeTokens.slice(0, 8).map((tok, idx) => (
+              <div
+                key={`${tok.trackId}-${tok.line}-${tok.col}-${idx}`}
+                data-testid={`karaoke-pill-${tok.trackId}`}
+                className="relative overflow-hidden rounded bg-slate-950 border border-emerald-500/50 px-2.5 py-0.5 text-[11px] font-mono flex items-center gap-1.5 shrink-0"
+              >
+                <div
+                  data-testid={`karaoke-fill-${tok.trackId}`}
+                  style={{ width: `${tok.progressPct}%` }}
+                  className="absolute inset-y-0 left-0 bg-emerald-500/25 pointer-events-none transition-all duration-75"
+                />
+                <span className="relative z-10 text-amber-400 font-bold">
+                  {tok.trackId}:
+                </span>
+                {tok.lyric && (
+                  <span className="relative z-10 text-emerald-300 font-bold">
+                    &ldquo;{tok.lyric}&rdquo;
+                  </span>
+                )}
+                <span className="relative z-10 text-white font-semibold">
+                  {tok.coreToken}
+                </span>
+                <span className="relative z-10 text-[9px] text-slate-400">
+                  L{tok.line}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-hidden">
+        <Editor beforeMount="{configureTenutoMonaco}" defaultLanguage="tenuto" height="100%" onMount="{(editor," theme="tenuto-dark" value="{code}"> {
+            editorRef.current = editor;
+            monacoRef.current = monaco;
+          }}
+          onChange={(val) => {
+            if (val !== undefined) {
+              onChange(val);
+            }
+          }}
+          options={{
+            minimap: { enabled: false },
+            wordWrap: 'on',
+            lineNumbers: 'on',
+            scrollBeyondLastLine: false,
+            fontSize: 14,
+            lineHeight: 22,
+            fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+            padding: { top: 16, bottom: 16 },
+            renderLineHighlight: 'none',
+            smoothScrolling: true,
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+```
+
+### 3.5 `README.md` - Update to `v5.0.6`, Add Live Railway Studio URL (`https://tenuto-studio-5-production.up.railway.app/`) & Document All Latest Features
+
+Replace `README.md` with the synchronized `v5.0.6` documentation:
+
+```markdown
+<div align="center">
+  <img width="1200" height="475" alt="Tenuto Studio 5 Banner" src="[https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6](https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6)" />
+
+  <h1>𝄆 TENUTO STUDIO 5 𝄇</h1>
+  <p><b>Declarative Code-to-Music DAW, Continuous Synthesizer Suite & Real-Time Visual Player</b></p>
+
+  [![Live Web Studio](https://img.shields.io/badge/Try_Live_Web_Studio-tenuto--studio--5--production.up.railway.app-10b981?style=for-the-badge)](https://tenuto-studio-5-production.up.railway.app/)
+
+  [![Release: v5.0.6](https://img.shields.io/badge/Release-v5.0.6-2563eb.svg)](./SPEC.md)
+  [![Grammar Guide: TENUTO_GRAMMAR.md](https://img.shields.io/badge/Grammar_Guide-TENUTO__GRAMMAR.md-10b981.svg)](./TENUTO_GRAMMAR.md)
+  [![Platform: Web | macOS .pkg | Windows .exe](https://img.shields.io/badge/Platform-Web_%7C_macOS_.pkg_%7C_Windows_.exe-8b5cf6.svg)](#installation--setup)
+  [![License: MIT](https://img.shields.io/badge/License-MIT-64748b.svg)](LICENSE)
+</div>
+
+---
+
+## Try It Live in Your Browser
+
+Launch **Tenuto Studio 5** immediately in your browser with zero installation:
+
+👉 **[https://tenuto-studio-5-production.up.railway.app/](https://tenuto-studio-5-production.up.railway.app/)**
+
+---
+
+## Overview
+
+**Tenuto Studio 5 (`v5.0.6`)** is a declarative code-driven Digital Audio Workstation (DAW), continuous synthesizer suite, and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
+
+Write a score directly in the editor—or ask an AI model like Gemini, Claude, or ChatGPT to compose a multi-track piece—paste the text into Tenuto Studio 5, and press **Play** (`Space`) to hear it rendered in real time or exported to a mastered stereo `.wav` or `.mid` file.
+
+* **Live Production Web App:** [**`https://tenuto-studio-5-production.up.railway.app/`**](https://tenuto-studio-5-production.up.railway.app/)
+* **Songwriting & Prompt Reference:** [**`TENUTO_GRAMMAR.md`**](./TENUTO_GRAMMAR.md)
+* **Formal Language Specification:** [**`SPEC.md`**](./SPEC.md)
+
+---
+
+## Core Features (`v5.0.6`)
+
+### 1. Multi-View Studio Workspace & Surgical Karaoke Code Highlighting
+* **Left Pane — Syntax-Highlighted `.ten` Editor with Debounced Memory & Surgical Note Highlighting:**
+  * Built on Monaco Editor (`tenuto-dark` theme) with a **500ms debounced `localStorage` code memory** (`● Saving...` -> `✓ Saved`) that automatically preserves and restores your active code across browser refreshes.
+  * **Surgical Core-Note Karaoke Highlighting (`TDB-734`):** During playback, highlights strictly the active note/chord and duration token (`d1:1` or `[f#3 c#4 f#4 a4 c#5]:1`) without bleeding into `.modifier()` chains, rests (`r:2`), or `%%` comments.
+* **Right Pane — 4-View Studio Viewport (`Tab` Switchable):**
+  * **Scrolling Piano Roll View:** Auto-centers on the active octave span, supports macOS trackpad pinch-to-zoom (`20%–300%`) and `Fit All`, isolates any track in 1 click, and provides Ableton Live 12 **MIDI Transformations & Scale-Locked Generators**.
+  * **Tab / Voice-Leading Chord Flow View:** Dynamically detects the live chord symbol (`Dmaj7`, `Bm7`, `A♭maj7`, `E♭/G`), renders scrolling per-instrument voice-leading trajectories with glowing playhead orbs locked onto every line, and displays a real-time 6-string `GUITAR` fretboard diagram.
+  * **Session View (Clip & Scene Matrix):** 2D track-by-scene launch matrix with quantized launching and stochastic **Follow Actions**.
+  * **Arrangement View (Multi-Track Timeline):** Horizontal track lanes, collapsible **Group** folders, clickable **Locators**, **Loop Brace**, and expandable Z-axis **Bezier Automation Lanes**.
+* **Bottom Studio Dock (`Mixer` | `Devices` | `Inspector`):**
+  * **Stateless Console Mixer:** Peak/RMS dB level meters, Stereo & Split Stereo (`L/R`) Pan, Pre/Post-Fader Sends (`bus://` DAG), Group strips, and Master bus.
+  * **Device Chain & 8-Macro Rack:** Visual ADSR/DSP transfer curves, 1-click producer rig presets, and horizontal drag faders.
+  * **Context Note & Score Inspector:** Surgical bi-directional editing for pitch transpose, duration, velocity, articulation, ornaments, probability (`%`), detune (`%`), and `.lyric("...")`.
+
+### 2. True Continuous Synthesizer Workflow & 20 Producer Sound-Design Modifiers
+* **Native Producer & Ableton Flagship Synths (`style=synth`):** `supersaw` (7-voice free-running detuned stack + sub + `120 Hz` bass-mono crossover + air sheen), `reese_bass`, `flutter_pad`, `pluck_lead`, `acid_lead`, `riser`, `wavetable`, `operator` (4-Op FM), `meld`, `drift`, `analog`, `collision`, `tension`, `electric`, and `granulator` (Granulator III).
+* **Intra-Note Windowed Detune & Modulation:** Detune or modulate only a specific slice of a sustained note using sub-note windows (`.detune(85%, 0.35..0.85)`) or multi-point curves (`.detune([0, 95, 15])`) with raised-cosine edge feathering.
+* **Automatic Polyphonic Chord Glide (`.glide(180ms)`):** Writing `.glide(180ms)` directly on a chord (`[ab2 eb3 c4 g4 c5]:1.glide(180ms)`) automatically pairs and glides every voice into the next chord.
+* **20 Synth Modifiers:** `.detune()`, `.detune_cents()`, `.filter(startHz, endHz)`, `.flutter()`, `.warble()`, `.pitch_dip()`, `.stack("octaves"|"fifths")`, `.noise()`, `.sync()`, `.fm()`, `.ring()`, `.pwm()`, `.warp_wave()`, `.keytrack()`, `.comb()`, `.duck()`, `.gate()`, `.zap`/`.pluck()`, `.haas()`, `.width()`, `.analog_slop()`, `.air()`, `.pre_swell`, and `.open_voice`.
+
+### 3. Royal Concertgebouw 128-Instrument HD SoundFont & Percussion Engine
+* Streams and caches all **128 General MIDI MusyngKite HD SoundFonts** (`salamander_grand`, `violin`, `viola`, `cello`, `contrabass`, `flute`, `oboe`, `clarinet`, `french_horn`, `trumpet`, `trombone`, `tuba`, `orchestral_harp`, `choir_aahs`, `voice_oohs`, `timpani`, etc.) with 6.5-second energy-gated Hann sustain looping, deep-body legato transitions, multi-desk section unison, and a 2.4-second 6-comb + 2-allpass Concertgebouw hall diffuser.
+* **30 Ableton Audio Effects & 20-Band Talking Vocoder:** Includes `eq_eight`, `auto_filter`, `compressor`, `glue_compressor`, `multiband_dynamics` (`ott`), `drum_buss`, `roar`, `saturator`, `hybrid_reverb`, `echo`, `chorus`, `phaser_flanger`, `redux`, `erosion`, `gate`, `corpus`, `resonators`, `spectral_resonator`, `spectral_time`, `beat_repeat`, `looper`, `amp`, `pedal`, `shifter`, `auto_shift`, `vocoder` (paired with `.lyric("...")`), `utility`, and `limiter`.
+
+---
+
+## Installation & Setup
+
+### Option 1A: macOS Desktop App (`.pkg` Installer)
+
+Tenuto Studio 5 packages directly into a native macOS `.pkg` installer that installs **Tenuto Studio 5.app** into your `/Applications` directory.
+
+```bash
+# 1. Clone the repository and install dependencies
+git clone https://github.com/alec-borman/Tenuto-Studio-5.git
+cd Tenuto-Studio-5
+npm install
+
+# 2. Build the production bundle and package the macOS .pkg installer
+npm run electron:build:mac
+
+# 3. Run the macOS installer
+open release/"Tenuto Studio 5-5.0.6-arm64.pkg"
+
+```
+
+### Option 1B: Windows Desktop App (`.exe` NSIS Setup Installer)
+
+On Windows (x64), Tenuto Studio 5 packages into a standard `.exe` Setup Wizard that installs **Tenuto Studio 5** and creates Desktop and Start Menu shortcuts:
+
+```bash
+# 1. Clone the repository and install dependencies
+git clone https://github.com/alec-borman/Tenuto-Studio-5.git
+cd Tenuto-Studio-5
+npm install
+
+# 2. Build the production bundle and package the Windows .exe installer
+npm run electron:build:win
+
+# 3. Launch the generated Setup .exe inside the release/ folder
+start "" "release\Tenuto Studio 5 Setup 5.0.6.exe"
+
+```
+
+### Option 2: Local Web Development
+
+```bash
+npm install
+npm run dev
+
+```
+
+---
+
+## Composing with an AI (Gemini / Claude / ChatGPT)
+
+To have an AI write a multi-track song that you can paste directly into Tenuto Studio 5, copy the prompt below into any LLM chat:
+
+```text
+Write a multi-track musical composition in Tenuto 6.0 DSL (.ten) and return ONLY the code inside a single ```tenuto code block.
+
+Follow these strict Tenuto rules:
+1. Wrap the score in:
+   tenuto "6.0" {
+     meta @{ title: "Title", tempo: 128, time: "4/4", key: "F#", scale: "minor", sidechain: "drums" }
+     ...
+   }
+2. Define instruments using `def <id> "<Name>" style=<standard|synth|grid> patch="<supersaw|reese_bass|flutter_pad|pluck_lead|wavetable|salamander_grand|violin|cello|french_horn|choir_aahs|tenuto_808_kit>"`.
+3. Use sequential measure blocks: `measure 1 { ... }`, `measure 2 { ... }`, etc.
+4. MEASURE MATH: In 4/4 time, every track/voice line inside a single `measure N` block MUST sum to 4 quarter-note beats (one :1 whole note, two :2 half notes, four :4 quarter notes, eight :8 eighth notes, or sixteen :16 sixteenth notes).
+5. DOTTED NOTES WITH MODIFIERS: Always write two dots (`..`) before a modifier on a dotted note (e.g., `d5:4..f` or `a5:2..vib`).
+6. Expressive modifiers: .glide(180ms), .detune(85%, 0.3..0.85), .filter(400, 8500), .stack("octaves"), .air(85%), .duck(75%), .pitch_dip(-7), .legato, .vib, .stacc, .marc, .cresc, .dim.
+
+```
+
+---
+
+## License
+
+MIT License — Copyright (c) 2026 Alec Borman.
+
+```
+
+### 3.6 `tests/code_editor_matrix.test.tsx` & `tests/documentation_integrity.test.ts` - Verify Surgical Core-Note Highlighting & `README.md` Live Link / Version
+1. Update `tests/code_editor_matrix.test.tsx` with the surgical core-note highlighting tests from Section 3.5 of the previous specification (`extractCoreNoteAndDurationToken`, multi-note line advancing, rest skipping, and comment exclusion).
+2. Update `tests/documentation_integrity.test.ts` to assert that `README.md` contains `[https://tenuto-studio-5-production.up.railway.app/](https://tenuto-studio-5-production.up.railway.app/)`, `v5.0.6`, `npm run electron:build:mac`, and `npm run electron:build:win`:
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+
+describe('TDB-607, TDB-726 & TDB-734: Final Release Documentation, Live Railway Link & Installer Integrity', () => {
+  it('provides TENUTO_GRAMMAR.md with complete songwriting rules and LLM prompt template', () => {
+    const grammarPath = path.resolve(__dirname, '../TENUTO_GRAMMAR.md');
+    expect(fs.existsSync(grammarPath)).toBe(true);
+
+    const content = fs.readFileSync(grammarPath, 'utf-8');
+    expect(content).toContain('tenuto "5.0"');
+    expect(content).toContain('salamander_grand');
+    expect(content).toContain('tenuto_808_kit');
+    expect(content).toContain('Copy-Paste Prompt for Gemini');
+  });
+
+  it('provides the synchronized v5.0.6 README.md with the live Railway URL and macOS/Windows installer scripts', () => {
+    const readmePath = path.resolve(__dirname, '../README.md');
+    expect(fs.existsSync(readmePath)).toBe(true);
+
+    const content = fs.readFileSync(readmePath, 'utf-8');
+    expect(content).toContain('TENUTO STUDIO 5');
+    expect(content).toContain('https://tenuto-studio-5-production.up.railway.app/');
+    expect(content).toContain('v5.0.6');
+    expect(content).toContain('TENUTO_GRAMMAR.md');
+    expect(content).toContain('npm run electron:build:mac');
+    expect(content).toContain('npm run electron:build:win');
+    expect(content).not.toContain('Do not expect to compose music today');
+
+    const pkgJson = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8')
+    );
+    expect(pkgJson.version).toBe('5.0.6');
+    expect(pkgJson.scripts['electron:build:mac']).toContain('--mac pkg');
+    expect(pkgJson.scripts['electron:build:win']).toContain('--win nsis');
+  });
+});
+
+```
+
+---
+
+## 4. What NOT to Touch
+
+* `src/audio/`
+* `src/components/Mixer.tsx`, `src/components/Transport.tsx`, `src/components/WebGPUCanvas.tsx`, `src/components/SplitWorkspace.tsx`
+
+Explicitly:
+
+* Do NOT use `isWholeLine: true` anywhere in `CodeEditor.tsx`.
+* Do NOT use `model.getPositionAt(tok.sourceStartOffset)` in `CodeEditor.tsx` (always use 1-based `tok.line` and verified `startCol1` / `endCol1` of `tok.coreToken`).
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero TypeScript errors.
+2. `npm run build` (`vite build`) completes cleanly.
+3. `package.json`, `electron-builder.json`, and `README.md` reflect version `5.0.6`, and `README.md` includes `[https://tenuto-studio-5-production.up.railway.app/](https://tenuto-studio-5-production.up.railway.app/)`.
+4. `npx vitest run tests/code_editor_matrix.test.tsx tests/documentation_integrity.test.ts tests/code_editor_binding.test.tsx tests/surgical_ast_mutator.test.ts` passes 100%.
+
+---
+
+## 6. Constraints
+
+Must:
+
+* Batch all file reads in parallel and apply all file modifications (including the version bump to `5.0.6` and `README.md` update) in parallel in a single turn.
+
+Must not:
+
+* Edit files sequentially one by one across separate turns.
+* Highlight modifiers, comments, rests, whole lines, or subsequent notes on the same line.
+
+---
+
+## 7. Manual Steps
+
+None required.
+
+---
+
+## 8. Rollback Plan
+
+Single-commit change. Revert via `git revert HEAD`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* Modified file(s): `package.json`, `electron-builder.json`, `README.md`, `src/index.css`, `src/parser/DocumentParser.ts`, `src/components/CodeEditor.tsx`, `tests/code_editor_matrix.test.tsx`, `tests/documentation_integrity.test.ts`
+* Commit message: `fix(editor): highlight only active core note+duration token and sync README to v5.0.6 (v5.0.6)`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| **Version & `README.md**` | `v5.0.4` without live Railway link | `v5.0.6` with prominent live web link (`[https://tenuto-studio-5-production.up.railway.app/](https://tenuto-studio-5-production.up.railway.app/)`) and full feature documentation |
+| **Modifier Chains (`d1:1.mp.cresc.detune(...)`)** | Highlighted the entire token including all chained `.modifiers(...)` and the whole line | Highlights strictly **`d1:1`** (or **`[f#3 c#4 f#4 a4 c#5]:1`**), leaving `.mp.cresc.detune(...)` unhighlighted |
+| **Multi-Note Lines (`f#2:8.mp c#3:8 f#3:8 ...`)** | Highlighted the entire line at once | Highlights strictly **`f#2:8`** on the 1st eighth note, then moves to **`c#3:8`** on the 2nd eighth note, then **`f#3:8`** on the 3rd |
+| **Rests (`lead: r:2 c#5:2...`) & `%%` Comments** | Shifted offsets highlighted `%%` comments, `tpt: r:1 | `, and `c#5:2`during`r:2` |
+
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-30
+Implementer: AI Agent
+
+```
+
+http://googleusercontent.com/action_card_content/d4c0dea0-c9cd-4866-a169-0ff913cac7d4
+
+```
