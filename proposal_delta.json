@@ -1,63 +1,21 @@
 {
-  "proposal_id": "tdb-734-surgical-core-note-highlight-v5.0.6",
-  "target_intent": "TDB-734: Surgical Core-Note-Only Highlighting (d1:1), Zero Comment/Modifier Bleed & Full README.md v5.0.6 Synchronization",
-  "delta_before": 0.16,
+  "proposal_id": "tdb-734-comprehensive-readme-overhaul-v5.0.6",
+  "target_intent": "TDB-734: Comprehensive README.md Overhaul for Full Tenuto 6.0 DAW & Continuous Synth Parity (v5.0.6)",
+  "delta_before": 0.08,
   "mutations": [
     {
-      "file": "package.json",
-      "function": "version",
-      "ast_depth": 1,
-      "decay_weight": 0.95,
-      "patch": "--- a/package.json\n+++ b/package.json\n@@ -2,3 +2,3 @@\n   \"name\": \"tenuto-studio-5\",\n   \"private\": true,\n-  \"version\": \"5.0.4\",\n+  \"version\": \"5.0.6\","
-    },
-    {
-      "file": "electron-builder.json",
-      "function": "extraMetadata.version",
-      "ast_depth": 2,
-      "decay_weight": 0.9,
-      "patch": "--- a/electron-builder.json\n+++ b/electron-builder.json\n@@ -10,3 +10,3 @@\n   \"extraMetadata\": {\n     \"main\": \"electron/main.cjs\",\n-    \"version\": \"5.0.4\"\n+    \"version\": \"5.0.6\"\n   },"
-    },
-    {
-      "file": "src/index.css",
-      "function": ".tenuto-karaoke-token-active",
-      "ast_depth": 1,
-      "decay_weight": 0.95,
-      "patch": "--- a/src/index.css\n+++ b/src/index.css\n@@ -1,12 +1,11 @@\n @import \"tailwindcss\";\n+/* Surgical Core-Note Playback Highlight in Monaco Editor (TDB-734) */\n+.tenuto-karaoke-token-active {\n+  background-color: rgba(16, 185, 129, 0.38) !important;\n+  color: #ffffff !important;\n+  font-weight: 700 !important;\n+  border-bottom: 2px solid #34d399 !important;\n+  border-radius: 3px;\n+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.45);\n+}"
-    },
-    {
-      "file": "src/parser/DocumentParser.ts",
-      "function": "attachSourceLocations",
-      "ast_depth": 2,
-      "decay_weight": 0.9,
-      "patch": "--- a/src/parser/DocumentParser.ts\n+++ b/src/parser/DocumentParser.ts\n@@ -1609,4 +1609,8 @@\n   private attachSourceLocations(rawSource: string, events: AtomicEvent[]): void {\n     if (!rawSource || events.length === 0) return;\n+    const normalizedSource = rawSource.replace(/\\r\\n?/g, '\\n');\n+    const lines = normalizedSource.split('\\n');"
-    },
-    {
-      "file": "src/components/CodeEditor.tsx",
-      "function": "extractCoreNoteAndDurationToken, computeActiveKaraokeTokens, CodeEditor",
-      "ast_depth": 2,
-      "decay_weight": 0.9,
-      "patch": "--- a/src/components/CodeEditor.tsx\n+++ b/src/components/CodeEditor.tsx\n@@ -34,1 +34,6 @@\n+export function extractCoreNoteAndDurationToken(rawToken: string): string {\n+  const trimmed = (rawToken || '').trim().replace(/~/g, '');\n+  if (!trimmed) return '';"
-    },
-    {
       "file": "README.md",
-      "function": "v5.0.6 Documentation & Live Railway Studio Link",
+      "function": "Full Tenuto 6.0 DAW & Continuous Synth Parity Documentation",
       "ast_depth": 1,
       "decay_weight": 0.95,
-      "patch": "--- a/README.md\n+++ b/README.md\n@@ -7,1 +7,3 @@\n+  [![Live Web Studio](https://img.shields.io/badge/Try_Live_Web_Studio-tenuto--studio--5--production.up.railway.app-10b981?style=for-the-badge)](https://tenuto-studio-5-production.up.railway.app/)\n+  [![Release: v5.0.6](https://img.shields.io/badge/Release-v5.0.6-2563eb.svg)](./SPEC.md)"
-    },
-    {
-      "file": "tests/code_editor_matrix.test.tsx",
-      "function": "Surgical Core-Note-Only Playback Highlighting (TDB-734)",
-      "ast_depth": 2,
-      "decay_weight": 0.9,
-      "patch": "--- a/tests/code_editor_matrix.test.tsx\n+++ b/tests/code_editor_matrix.test.tsx\n@@ -48,1 +48,10 @@\n+  it('extracts strictly the core pitch/chord + duration token without modifier chains (TDB-734)', () => {"
+      "patch": "--- a/README.md\n+++ b/README.md\n@@ -1,6 +1,10 @@\n <div align=\"center\">\n   <img width=\"1200\" height=\"475\" alt=\"Tenuto Studio 5 Banner\" src=\"https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6\" />\n   <h1>𝄆 TENUTO STUDIO 5 𝄇</h1>\n-  <p><b>Declarative Code-to-Music DAW, Continuous Synthesizer Suite & Real-Time Visual Player</b></p>\n+  <p><b>Declarative Code-to-Music DAW, Continuous Synthesizer Suite & Bi-Directional Projectional Studio</b></p>"
     },
     {
       "file": "tests/documentation_integrity.test.ts",
-      "function": "TDB-607, TDB-726 & TDB-734",
+      "function": "TDB-607, TDB-726 & TDB-734: Final Release Documentation, Grammar Guide & v5.0.6 Feature Parity Integrity",
       "ast_depth": 2,
       "decay_weight": 0.9,
-      "patch": "--- a/tests/documentation_integrity.test.ts\n+++ b/tests/documentation_integrity.test.ts\n@@ -17,1 +17,5 @@\n+  it('provides the synchronized v5.0.6 README.md with the live Railway URL and macOS/Windows installer scripts', () => {"
+      "patch": "--- a/tests/documentation_integrity.test.ts\n+++ b/tests/documentation_integrity.test.ts\n@@ -17,1 +17,12 @@\n+  it('provides the comprehensive v5.0.6 README.md covering all 4 DAW views, 3 docks, Continuous Synth Engine, SoundFonts, Vocoder, and installers', () => {"
     }
   ]
 }
