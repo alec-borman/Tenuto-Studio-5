@@ -6,7 +6,7 @@
 
   [![Live Web Studio](https://img.shields.io/badge/Try_Live_Web_Studio-tenuto--studio--5--production.up.railway.app-10b981?style=for-the-badge)](https://tenuto-studio-5-production.up.railway.app/)
 
-  [![Release: v5.0.6](https://img.shields.io/badge/Release-v5.0.6-2563eb.svg)](./SPEC.md)
+  [![Release: v5.0.8](https://img.shields.io/badge/Release-v5.0.8-2563eb.svg)](./SPEC.md)
   [![Grammar Guide: TENUTO_GRAMMAR.md](https://img.shields.io/badge/Grammar_Guide-TENUTO__GRAMMAR.md-10b981.svg)](./TENUTO_GRAMMAR.md)
   [![Platform: macOS .pkg | Windows .exe | Web](https://img.shields.io/badge/Platform-macOS_.pkg_%7C_Windows_.exe_%7C_Web-8b5cf6.svg)](#installation--desktop-packaging)
   [![License: MIT](https://img.shields.io/badge/License-MIT-64748b.svg)](LICENSE)
@@ -24,7 +24,7 @@ Launch **Tenuto Studio 5** immediately in your browser with zero installation:
 
 ## Overview
 
-**Tenuto Studio 5** (`v5.0.6`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
+**Tenuto Studio 5** (`v5.0.8`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
 
 In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of Truth**:
 * **Code Projects the Entire Studio:** Writing or pasting `.ten` code (including raw Markdown blocks straight from Gemini, Claude, or ChatGPT) immediately compiles into four synchronized visual views (**Scrolling Piano Roll**, **Tab / Chord Flow**, **Session View Clip Matrix**, and **Arrangement View Timeline**), three interactive bottom studio docks (**Console Mixer**, **Device Chain & 8-Macro Rack**, and **Context Note/Score Inspector**), and a real-time WebAudio / PCM DSP engine.
@@ -54,9 +54,9 @@ In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of 
 
 ### 2. Theater-Grade Karaoke Code Editor & Debounced Code Memory
 * **Custom Tenuto 5.0 / 6.0 Monarch Tokenizer (`CodeEditor.tsx`):** Syntax highlighting for DAW blocks (`tenuto`, `meta`, `def`, `return`, `group`, `scene`, `clip`, `locator`, `groove`, `measure`, `macro`, `repeat`), track headers, scientific & microtonal pitches, rational durations, and chained DSP modifiers.
-* **Surgical Core-Note Karaoke Playback Highlighting (`TDB-734`):**
+* **Surgical Core-Note Karaoke Playback Highlighting & Always-Centered Measure Scrolling (`TDB-734` / `TDB-735`):**
   * **Core-Note-Only Token Highlight (`tenuto-karaoke-token-active`):** Highlights strictly the active note/chord and duration token (`d1:1` or `[f#3 c#4 f#4 a4 c#5]:1`) without bleeding into chained `.modifiers(...)`, rests (`r:2`), or `%%` comments.
-  * **Top Now-Playing Progress Ribbon:** Renders a top **`♫ Now Playing M<N>`** ticker ribbon with `0% -> 100%` intra-note progress fills and sung lyrics, while smoothly auto-centering the active measure (`findMeasureLineRange`) in the viewport.
+  * **Track-Line Pulse, Intra-Token Progress Sweep & Always-Centered Measure Scrolling:** Highlights active note/chord tokens (`tenuto-karaoke-token-active`), renders a top **`♫ Now Playing M<N>`** ticker ribbon with `0% -> 100%` progress fills and sung lyrics, and continuously centers the active `measure N { ... }` block (`computeActiveMeasureScrollTarget` via `revealLinesInCenter` / `revealLineInCenter`) in the vertical center of the code editor viewport.
 * **Debounced LocalStorage Code Memory (`DebouncedCodeMemory.ts`):**
   * Automatically saves `.ten` code edits to `localStorage` after `500ms` of idle time (`● Saving...` $\rightarrow$ `✓ Saved`), flushes pending edits immediately on window `beforeunload` (fast browser refresh), and provides a 1-click **Reset Memory** button.
 
@@ -149,7 +149,7 @@ npm install
 npm run electron:build:mac
 
 # 3. Run the macOS installer
-open release/"Tenuto Studio 5-5.0.6-arm64.pkg"
+open release/"Tenuto Studio 5-5.0.8-arm64.pkg"
 ```
 
 ### Option 1B: Windows Desktop App (`.exe` NSIS Setup Installer)
@@ -166,7 +166,7 @@ npm install
 npm run electron:build:win
 
 # 3. Launch the generated Setup .exe inside the release/ folder
-start "" "release\Tenuto Studio 5 Setup 5.0.6.exe"
+start "" "release\Tenuto Studio 5 Setup 5.0.8.exe"
 ```
 
 ### Option 2: Local Web Development
@@ -315,8 +315,9 @@ npm run build
 
 ---
 
-## Release Notes (`v5.0.6`)
+## Release Notes (`v5.0.8`)
 
+* **`v5.0.8`**: Always-centered active measure playback scrolling in `CodeEditor.tsx` (`computeActiveMeasureScrollTarget` + `revealLinesInCenter` / `revealLineInCenter`), keeping the currently playing `measure N { ... }` block dead-center in the Monaco viewport at all times.
 * **`v5.0.6`**: Comprehensive `README.md` overhaul documenting the complete Tenuto 6.0 DAW workspace, 4 projectional views (`Piano Roll`, `Tab / Chord Flow`, `Session`, `Arrangement`), 3 bottom studio docks (`Mixer`, `Devices`, `Inspector`), Surgical Core-Note Karaoke code spotlight, 500ms debounced `localStorage` code memory, 128-sample `k-rate` `ContinuousSynthEngine` with 20+ intra-note modifiers, Ableton Flagship Synth/Sampler/FX Suite, 20-Band Talking Vocoder, and 128-instrument MusyngKite HD SoundFont engine.
 * **`v5.0.4`**: True multi-instrument voice-leading trajectories, exact playhead orb-to-line lock (`evaluateTrackedEventMidiAtWhole`), and all-instrument selector pills in `TabChordFlowView`.
 

@@ -1,0 +1,853 @@
+
+Here is Implementation Contract TDB-735 (v5.0.6 -> v5.0.8) to upgrade the Monaco code editor's playback scroll tracking so it always keeps the active measure N { ... } block centered in the editor viewport, while updating README.md and bumping the repository version to 5.0.8.
+Paste the contract below directly into Google AI Studio:
+code
+Markdown
+# Implementation Contract: Always-Centered Active Measure Highlight Scrolling in Monaco Code Editor (TDB-735)
+
+**Project:** Tenuto Studio 5
+**Scope:** Upgrade `src/components/CodeEditor.tsx` and `tests/code_editor_matrix.test.tsx` so playback highlighting always keeps the active `measure N { ... }` block vertically centered in the Monaco editor viewport (`revealLinesInCenter` + `revealLineInCenter` on the measure's vertical midpoint), synchronize `README.md` with the centered measure scrolling documentation and `v5.0.8` release notes, and bump the repository version from `5.0.6` to `5.0.8`.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+**Version Bump:** 5.0.6 -> 5.0.8 (+0.0.2 step; rolls X.Y.8 -> X.(Y+1).0 and X.9.8 -> (X+1).0.0)
+**Documentation Sync:** Modify and append `README.md`
+**Execution Mode:** Parallel Batch Edits (Read all target files in parallel in a single turn, then apply all file edits in parallel in a single batched tool-call turn — NEVER edit files sequentially one by one).
+
+---
+
+## 1. Objective
+Currently, `src/components/CodeEditor.tsx` scrolls the code editor during playback using `editor.revealLineInCenterIfOutsideViewport?.(Math.max(1, mRange.startLine - 2), 0)`. Because `revealLineInCenterIfOutsideViewport` only scrolls when the line has completely exited the visible screen, the active measure drifts down to the bottom edge of the editor before jumping, and using `mRange.startLine - 2` targets the top of the measure rather than its vertical center. This contract introduces `computeActiveMeasureScrollTarget()` in `src/components/CodeEditor.tsx` and switches playback scrolling to `editor.revealLinesInCenter(startLine, endLine, 0)` and `editor.revealLineInCenter(centerLine, 0)` so the current `measure N { ... }` block is **always kept in the exact vertical center** of the code editor as playback progresses, while bumping the repository version from `5.0.6` to `5.0.8` and updating `README.md`.
+
+---
+
+## 2. Root Cause
+1. In `src/components/CodeEditor.tsx` (lines 369–374), `editor.revealLineInCenterIfOutsideViewport` is a no-op whenever `targetViewLine` is still visible anywhere in the viewport, allowing the active measure to drift to the bottom of the pane instead of staying centered.
+2. `centerLine` was set to `mRange.startLine` (and offset by `- 2`) instead of computing the true vertical midpoint of the active measure block (`Math.round((mRange.startLine + mRange.endLine) / 2)`).
+
+---
+
+## 3. Files To Modify
+
+> **PARALLEL EXECUTION DIRECTIVE:** You MUST read all target files in a single parallel batch call, and you MUST apply all file edits below (`package.json`, `electron-builder.json`, `README.md`, `src/components/CodeEditor.tsx`, `tests/code_editor_matrix.test.tsx`, and `tests/documentation_integrity.test.ts`) simultaneously in a single parallel tool-call turn. Do NOT apply edits sequentially one file per turn.
+
+### 3.1 `package.json` & `electron-builder.json` - Bump Repository Version `5.0.6 -> 5.0.8`
+1. In `package.json`, update `"version"` to `"5.0.8"`:
+```json
+{
+  "name": "tenuto-studio-5",
+  "private": true,
+  "version": "5.0.8",
+In electron-builder.json, update "extraMetadata.version" to "5.0.8":
+code
+JSON
+"extraMetadata": {
+    "main": "electron/main.cjs",
+    "version": "5.0.8"
+  },
+3.2 README.md - Update Theater-Grade Karaoke Section & Append v5.0.8 Release Notes
+In README.md, update the release badge and installer version references to v5.0.8, update the Theater-Grade Karaoke Playback Spotlight bullet under Section 2 to document Always-Centered Active Measure Scrolling (computeActiveMeasureScrollTarget + revealLinesInCenter / revealLineInCenter), and append the v5.0.8 release entry under ## Release Notes:
+Update the top badge in README.md:
+code
+Markdown
+[![Release: v5.0.8](https://img.shields.io/badge/Release-v5.0.8-2563eb.svg)](./SPEC.md)
+Under 2. Theater-Grade Karaoke Code Editor & Debounced Code Memory, update the Track-Line Pulse & Intra-Token Progress Sweep bullet to include Always-Centered Active Measure Scrolling:
+code
+Markdown
+* **Track-Line Pulse, Intra-Token Progress Sweep & Always-Centered Measure Scrolling:** Pulses active track lines (`tenuto-karaoke-line-active`), highlights active note/chord tokens in white-gold (`tenuto-karaoke-token-active`), renders a top **`♫ Now Playing M<N>`** ticker ribbon with `0% -> 100%` progress fills and sung lyrics, and continuously centers the active `measure N { ... }` block (`computeActiveMeasureScrollTarget` via `revealLinesInCenter` / `revealLineInCenter`) in the vertical center of the code editor viewport.
+Under ## Release Notes, update the heading to ## Release Notes (v5.0.8) and prepend the v5.0.8 entry:
+code
+Markdown
+## Release Notes (`v5.0.8`)
+
+* **`v5.0.8`:** Always-centered active measure playback scrolling in `CodeEditor.tsx` (`computeActiveMeasureScrollTarget` + `revealLinesInCenter` / `revealLineInCenter`), keeping the currently playing `measure N { ... }` block dead-center in the Monaco viewport at all times.
+* **`v5.0.6`:** Comprehensive `README.md` overhaul documenting the complete Tenuto 6.0 DAW workspace, 4 projectional views (`Piano Roll`, `Tab / Chord Flow`, `Session`, `Arrangement`), 3 bottom studio docks (`Mixer`, `Devices`, `Inspector`), Theater-Grade Karaoke code spotlight, 500ms debounced `localStorage` code memory, 128-sample `k-rate` `ContinuousSynthEngine` with 20+ intra-note modifiers, Ableton Flagship Synth/Sampler/FX Suite, 20-Band Talking Vocoder, and 128-instrument MusyngKite HD SoundFont engine.
+* **`v5.0.4`:** True multi-instrument voice-leading trajectories, exact playhead orb-to-line lock (`evaluateTrackedEventMidiAtWhole`), and all-instrument selector pills in `TabChordFlowView`.
+3.3 src/components/CodeEditor.tsx - Always-Centered Active Measure Viewport Scrolling
+Replace src/components/CodeEditor.tsx with the following implementation:
+code
+TypeScript
+import React, { useRef, useEffect, useMemo } from 'react';
+import Editor from '@monaco-editor/react';
+
+export interface ActiveKaraokeToken {
+  trackId: string;
+  rawToken: string;
+  lyric?: string;
+  measureNumber: number;
+  line: number;
+  col: number;
+  endCol: number;
+  sourceStartOffset?: number;
+  sourceEndOffset?: number;
+  progressPct: number;
+}
+
+export interface ActiveMeasureScrollTarget {
+  measureNumber: number;
+  startLine: number;
+  endLine: number;
+  centerLine: number;
+}
+
+interface CodeEditorProps {
+  code: string;
+  onChange: (newCode: string) => void;
+  events?: any[];
+  playheadBeat?: number;
+  isPlaying?: boolean;
+}
+
+export function computeActiveKaraokeTokens(
+  events: any[] = [],
+  playheadBeat: number = 0,
+  isPlaying: boolean = false
+): ActiveKaraokeToken[] {
+  if ((!isPlaying && playheadBeat <= 0) || !events || events.length === 0) {
+    return [];
+  }
+
+  const currentWholeTime = playheadBeat / 4;
+  const seenSpans = new Set<string>();
+  const active: ActiveKaraokeToken[] = [];
+
+  for (const ev of events) {
+    if (!ev || !ev.rawToken || ev.pitch?.isRest || ev.pitch?.isSpacer) continue;
+
+    const startWhole = ev.startTime
+      ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator)
+      : 0;
+    const durWhole = ev.duration
+      ? ev.duration.numerator / Math.max(1, ev.duration.denominator)
+      : 0.25;
+
+    if (currentWholeTime >= startWhole && currentWholeTime <= startWhole + durWhole) {
+      const line = ev.line ?? 1;
+      const col = ev.col ?? 1;
+      const spanKey = `${ev.trackId || 'pno'}:${line}:${col}:${ev.rawToken}`;
+      if (seenSpans.has(spanKey)) continue;
+      seenSpans.add(spanKey);
+
+      const rawProg =
+        durWhole > 1e-6 ? ((currentWholeTime - startWhole) / durWhole) * 100 : 100;
+      const progressPct = Math.max(0, Math.min(100, Math.round(rawProg)));
+
+      active.push({
+        trackId: ev.trackId || 'pno',
+        rawToken: ev.rawToken,
+        lyric: ev.physics?.lyric,
+        measureNumber: ev.measureNumber || Math.floor(startWhole) + 1,
+        line,
+        col,
+        endCol: col + ev.rawToken.length,
+        sourceStartOffset: ev.sourceStartOffset,
+        sourceEndOffset: ev.sourceEndOffset,
+        progressPct,
+      });
+    }
+  }
+
+  return active;
+}
+
+/**
+ * Scans editor code text to detect the exact 1-based [startLine, endLine] boundaries of `measure N { ... }`.
+ */
+export function findMeasureLineRange(
+  code: string,
+  measureNumber: number
+): { startLine: number; endLine: number } | null {
+  if (measureNumber <= 0) return null;
+  const lines = code.split('\n');
+  const startRegex = new RegExp(`^\\s*measure\\s+${measureNumber}\\b`, 'i');
+  const anyMeasureRegex = /^\s*measure\s+\d+/i;
+
+  let startLine = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (startRegex.test(lines[i])) {
+      startLine = i + 1;
+      break;
+    }
+  }
+
+  if (startLine === -1) return null;
+
+  let endLine = lines.length;
+  for (let j = startLine; j < lines.length; j++) {
+    const trim = lines[j].trim();
+    if (trim === '}') {
+      endLine = j + 1;
+      break;
+    }
+    if (anyMeasureRegex.test(lines[j]) || (trim.startsWith('def') && j > startLine + 1)) {
+      endLine = j;
+      break;
+    }
+  }
+
+  return { startLine, endLine };
+}
+
+/**
+ * Computes the exact vertical center line and [startLine, endLine] span of the active measure
+ * so the Monaco editor always keeps the currently playing measure centered in the viewport.
+ */
+export function computeActiveMeasureScrollTarget(
+  code: string,
+  activeTokens: ActiveKaraokeToken[]
+): ActiveMeasureScrollTarget | null {
+  if (!activeTokens || activeTokens.length === 0) return null;
+
+  const measureNumber = activeTokens[0].measureNumber;
+  const mRange = findMeasureLineRange(code, measureNumber);
+  if (mRange) {
+    const centerLine = Math.max(
+      1,
+      Math.round((mRange.startLine + mRange.endLine) / 2)
+    );
+    return {
+      measureNumber,
+      startLine: mRange.startLine,
+      endLine: mRange.endLine,
+      centerLine,
+    };
+  }
+
+  const minLine = Math.min(...activeTokens.map((t) => t.line));
+  const maxLine = Math.max(...activeTokens.map((t) => t.line));
+  const centerLine = Math.max(1, Math.round((minLine + maxLine) / 2));
+
+  return {
+    measureNumber,
+    startLine: minLine,
+    endLine: maxLine,
+    centerLine,
+  };
+}
+
+export function configureTenutoMonaco(monaco: any): void {
+  if (!monaco || !monaco.languages) return;
+
+  try {
+    const existing = monaco.languages.getLanguages?.() || [];
+    if (!existing.some((l: any) => l.id === 'tenuto')) {
+      monaco.languages.register({ id: 'tenuto' });
+    }
+
+    monaco.languages.setMonarchTokensProvider('tenuto', {
+      keywords: [
+        'tenuto',
+        'meta',
+        'def',
+        'def_return',
+        'return',
+        'group',
+        'scene',
+        'clip',
+        'locator',
+        'groove',
+        'rack',
+        'measure',
+        'macro',
+        'var',
+        'import',
+        'repeat',
+      ],
+      attributes: [
+        'style',
+        'patch',
+        'src',
+        'env',
+        'map',
+        'tempo',
+        'time',
+        'title',
+        'key',
+        'scale',
+        'tuning',
+        'quantize_launch',
+        'crossfader',
+        'sidechain',
+        'sends',
+        'crossfade',
+        'delay',
+        'groove',
+        'macros',
+        'tracks',
+        'track',
+        'scene',
+        'bars',
+        'loop',
+        'warp',
+        'transpose',
+        'gain',
+        'follow',
+        'follow_action',
+        'detune',
+        'unison',
+        'cutoff',
+        'resonance',
+        'sub',
+        'air',
+        'duck',
+        'width',
+        'slop',
+        'noise',
+      ],
+      tokenizer: {
+        root: [
+          [/%%.*$/, 'comment'],
+          [/\/\/.*$/, 'comment'],
+          [/<\[|\]>|@\{/, 'delimiter.bracket'],
+          [/"([^"\\]|\\.)*$/, 'string.invalid'],
+          [/"([^"\\]|\\.)*"/, 'string'],
+          [/[a-zA-Z_][a-zA-Z0-9_]*(?=\s*:)/, 'variable.track'],
+          [/\$[a-zA-Z_][a-zA-Z0-9_]*/, 'variable.macro'],
+          [/\.[a-zA-Z_][a-zA-Z0-9_]*/, 'support.function'],
+          [/:(?:grace|[0-9]+(?:\/[0-9]+|\.+)?(?:\*[0-9]+)?)/, 'constant.numeric'],
+          [/\b[a-gA-G][#b]*[0-9]+\b/, 'type.pitch'],
+          [/\b[a-gA-G][#b]+\b/, 'type.pitch'],
+          [/\b(?:r|s)\b/, 'keyword.operator'],
+          [/\b(?:k|bd|sd|hh|oh|cp|lt|mt|ht|cr|rd|a|b|c|d|e|f|g)\b/, 'type.pitch'],
+          [/\b[0-9]+(?:\.[0-9]+)?(?:ms|s|ticks|%)?\b/, 'number'],
+          [
+            /[a-zA-Z_][a-zA-Z0-9_]*/,
+            {
+              cases: {
+                '@keywords': 'keyword',
+                '@attributes': 'attribute.name',
+                '@default': 'identifier',
+              },
+            },
+          ],
+          [/[{}()\[\]|~*]/, 'delimiter'],
+        ],
+      },
+    });
+
+    monaco.editor.defineTheme('tenuto-dark', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [
+        { token: 'comment', foreground: '64748B', fontStyle: 'italic' },
+        { token: 'keyword', foreground: 'C084FC', fontStyle: 'bold' },
+        { token: 'attribute.name', foreground: '93C5FD' },
+        { token: 'variable.track', foreground: 'FBBF24', fontStyle: 'bold' },
+        { token: 'variable.macro', foreground: 'F59E0B', fontStyle: 'bold' },
+        { token: 'type.pitch', foreground: '38BDF8', fontStyle: 'bold' },
+        { token: 'constant.numeric', foreground: '34D399', fontStyle: 'bold' },
+        { token: 'support.function', foreground: 'F472B6' },
+        { token: 'keyword.operator', foreground: '94A3B8' },
+        { token: 'string', foreground: 'A3E635' },
+        { token: 'number', foreground: 'FB923C' },
+        { token: 'delimiter.bracket', foreground: '818CF8', fontStyle: 'bold' },
+        { token: 'delimiter', foreground: '64748B' },
+      ],
+      colors: {
+        'editor.background': '#0B0F19',
+        'editor.foreground': '#E2E8F0',
+        'editorLineNumber.foreground': '#475569',
+        'editorLineNumber.activeForeground': '#94A3B8',
+        'editor.selectionBackground': '#1E3A8A80',
+        'editor.lineHighlightBackground': '#1E293B30',
+      },
+    });
+  } catch {
+    // Graceful fallback for mocked environments
+  }
+}
+
+export default function CodeEditor({
+  code,
+  onChange,
+  events = [],
+  playheadBeat = 0,
+  isPlaying = false,
+}: CodeEditorProps) {
+  const editorRef = useRef<any>(null);
+  const monacoRef = useRef<any>(null);
+  const decorationIdsRef = useRef<string[]>([]);
+  const lastRevealedLineRef = useRef<number>(0);
+  const lastRevealedMeasureRef = useRef<number>(0);
+
+  const activeTokens = useMemo(
+    () => computeActiveKaraokeTokens(events, playheadBeat, isPlaying),
+    [events, playheadBeat, isPlaying]
+  );
+
+  // Synchronize Theater-Spotlight Delta Decorations, Measure Fades, and Always-Centered Measure Scrolling
+  useEffect(() => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    if (!editor || !monaco || !monaco.Range) return;
+
+    try {
+      if (activeTokens.length === 0) {
+        if (decorationIdsRef.current.length > 0) {
+          decorationIdsRef.current = editor.deltaDecorations(decorationIdsRef.current, []);
+        }
+        lastRevealedLineRef.current = 0;
+        lastRevealedMeasureRef.current = 0;
+        return;
+      }
+
+      const model = editor.getModel?.();
+      const numLines = model ? model.getLineCount() : code.split('\n').length;
+      const newDecorations: any[] = [];
+
+      // Determine active measure boundary and exact vertical center target
+      const measureNum = activeTokens[0].measureNumber;
+      const mRange = findMeasureLineRange(code, measureNum);
+      const scrollTarget = computeActiveMeasureScrollTarget(code, activeTokens);
+
+      if (mRange) {
+        // 1. Wrap the active measure in the high-contrast back-glow outlining box
+        newDecorations.push({
+          range: new monaco.Range(mRange.startLine, 1, mRange.endLine, 1),
+          options: {
+            isWholeLine: true,
+            className: 'tenuto-karaoke-measure-active',
+          },
+        });
+
+        // 2. Heavy 28% Opacity dim on all previous unplayed measures
+        if (mRange.startLine > 1) {
+          newDecorations.push({
+            range: new monaco.Range(1, 1, mRange.startLine - 1, 1),
+            options: {
+              isWholeLine: true,
+              className: 'tenuto-karaoke-subdued',
+            },
+          });
+        }
+
+        // 3. Heavy 28% Opacity dim on all subsequent measures
+        if (mRange.endLine < numLines) {
+          newDecorations.push({
+            range: new monaco.Range(mRange.endLine + 1, 1, numLines, 1),
+            options: {
+              isWholeLine: true,
+              className: 'tenuto-karaoke-subdued',
+            },
+          });
+        }
+      }
+
+      // 4. Spotlight the specific active track lines within that measure with pulsing green gradient
+      const activeLines = new Set<number>();
+      for (const tok of activeTokens) {
+        let ln = tok.line;
+        if (model && typeof model.getPositionAt === 'function' && typeof tok.sourceStartOffset === 'number') {
+          ln = model.getPositionAt(tok.sourceStartOffset).lineNumber;
+        }
+        activeLines.add(ln);
+      }
+
+      for (const al of activeLines) {
+        newDecorations.push({
+          range: new monaco.Range(al, 1, al, 1),
+          options: {
+            isWholeLine: true,
+            className: 'tenuto-karaoke-line-active',
+          },
+        });
+      }
+
+      // 5. Highlight sounding tokens in white-gold with smooth progress underlining
+      for (const tok of activeTokens) {
+        let startLine = tok.line;
+        let startCol = tok.col;
+        let endLine = tok.line;
+        let endCol = tok.endCol;
+
+        if (
+          model &&
+          typeof model.getPositionAt === 'function' &&
+          typeof tok.sourceStartOffset === 'number' &&
+          typeof tok.sourceEndOffset === 'number'
+        ) {
+          const pStart = model.getPositionAt(tok.sourceStartOffset);
+          const pEnd = model.getPositionAt(tok.sourceEndOffset);
+          startLine = pStart.lineNumber;
+          startCol = pStart.column;
+          endLine = pEnd.lineNumber;
+          endCol = pEnd.column;
+        }
+
+        newDecorations.push({
+          range: new monaco.Range(startLine, startCol, endLine, endCol),
+          options: {
+            inlineClassName: 'tenuto-karaoke-token-active',
+          },
+        });
+      }
+
+      decorationIdsRef.current = editor.deltaDecorations(
+        decorationIdsRef.current,
+        newDecorations
+      );
+
+      // 6. Always keep the current measure centered in the Monaco editor viewport
+      if (
+        scrollTarget &&
+        (scrollTarget.measureNumber !== lastRevealedMeasureRef.current ||
+          scrollTarget.centerLine !== lastRevealedLineRef.current)
+      ) {
+        lastRevealedMeasureRef.current = scrollTarget.measureNumber;
+        lastRevealedLineRef.current = scrollTarget.centerLine;
+
+        if (typeof editor.revealLinesInCenter === 'function') {
+          editor.revealLinesInCenter(scrollTarget.startLine, scrollTarget.endLine, 0);
+        }
+        if (typeof editor.revealLineInCenter === 'function') {
+          editor.revealLineInCenter(scrollTarget.centerLine, 0);
+        } else {
+          editor.revealLineInCenterIfOutsideViewport?.(scrollTarget.centerLine, 0);
+        }
+      }
+    } catch {
+      // Graceful fallback for mocked environments
+    }
+  }, [activeTokens, code]);
+
+  return (
+    <div className="w-full h-full flex flex-col overflow-hidden relative tenuto-editor-playback">
+      {/* Top compact Horizontal Karaoke progress ticker ribbon */}
+      {activeTokens.length > 0 && (
+        <div
+          data-testid="karaoke-code-ribbon"
+          className="bg-slate-900/95 border-b border-emerald-500/40 px-3 py-1.5 flex items-center gap-2 overflow-x-auto no-scrollbar shrink-0 z-10 select-none"
+        >
+          <span className="px-2 py-0.5 rounded bg-emerald-500/25 border border-emerald-500/50 text-emerald-300 text-[10px] font-mono font-bold uppercase tracking-wider shrink-0 shadow-[0_0_8px_rgba(16,185,129,0.25)]">
+            ♫ Now Playing M{activeTokens[0].measureNumber}
+          </span>
+
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+            {activeTokens.slice(0, 8).map((tok, idx) => (
+              <div
+                key={`${tok.trackId}-${tok.line}-${tok.col}-${idx}`}
+                data-testid={`karaoke-pill-${tok.trackId}`}
+                className="relative overflow-hidden rounded bg-slate-950 border border-emerald-500/50 px-2.5 py-0.5 text-[11px] font-mono flex items-center gap-1.5 shrink-0 shadow-[0_0_6px_rgba(16,185,129,0.15)]"
+              >
+                <div
+                  data-testid={`karaoke-fill-${tok.trackId}`}
+                  style={{ width: `${tok.progressPct}%` }}
+                  className="absolute inset-y-0 left-0 bg-emerald-500/25 pointer-events-none transition-all duration-75"
+                />
+                <span className="relative z-10 text-amber-400 font-bold">
+                  {tok.trackId}:
+                </span>
+                {tok.lyric && (
+                  <span className="relative z-10 text-emerald-300 font-bold">
+                    &ldquo;{tok.lyric}&rdquo;
+                  </span>
+                )}
+                <span className="relative z-10 text-white font-semibold">
+                  {tok.rawToken}
+                </span>
+                <span className="relative z-10 text-[9px] text-slate-400">
+                  L{tok.line}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-hidden">
+        <Editor
+          height="100%"
+          defaultLanguage="tenuto"
+          theme="tenuto-dark"
+          value={code}
+          beforeMount={configureTenutoMonaco}
+          onMount={(editor, monaco) => {
+            editorRef.current = editor;
+            monacoRef.current = monaco;
+          }}
+          onChange={(val) => {
+            if (val !== undefined) {
+              onChange(val);
+            }
+          }}
+          options={{
+            minimap: { enabled: false },
+            wordWrap: 'on',
+            lineNumbers: 'on',
+            scrollBeyondLastLine: false,
+            fontSize: 14,
+            lineHeight: 22,
+            fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+            padding: { top: 16, bottom: 16 },
+            renderLineHighlight: 'all',
+            smoothScrolling: true,
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+3.4 tests/code_editor_matrix.test.tsx - Verify Always-Centered Active Measure Scrolling Across Measure Transitions
+Replace tests/code_editor_matrix.test.tsx with the following implementation:
+code
+TypeScript
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import CodeEditor, {
+  computeActiveKaraokeTokens,
+  findMeasureLineRange,
+  computeActiveMeasureScrollTarget,
+} from '../src/components/CodeEditor';
+import { DocumentParser } from '../src/parser/DocumentParser';
+import '@testing-library/jest-dom';
+
+const mockRevealLineInCenter = vi.fn();
+const mockRevealLinesInCenter = vi.fn();
+const mockDeltaDecorations = vi.fn(() => ['dec-1']);
+
+vi.mock('@monaco-editor/react', () => ({
+  default: ({ value, onChange, defaultLanguage, onMount }: any) => {
+    React.useEffect(() => {
+      if (onMount) {
+        onMount(
+          {
+            deltaDecorations: mockDeltaDecorations,
+            revealLineInCenter: mockRevealLineInCenter,
+            revealLinesInCenter: mockRevealLinesInCenter,
+            getModel: () => null,
+          },
+          {
+            Range: class {
+              constructor(
+                public startLineNumber: number,
+                public startColumn: number,
+                public endLineNumber: number,
+                public endColumn: number
+              ) {}
+            },
+          }
+        );
+      }
+    }, [onMount]);
+
+    return (
+      <textarea
+        data-testid="monaco-mock"
+        aria-label="Tenuto Source Editor"
+        data-language={defaultLanguage}
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
+  },
+}));
+
+describe('TDB-532, TDB-729, TDB-731 & TDB-735: Theater-Grade Playback Karaoke Spotlight & Always-Centered Measure Scrolling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('MUST render the Monaco Editor component mapped to the Tenuto language', () => {
+    render(<CodeEditor code="pno: c4:4" onChange={vi.fn()} />);
+
+    const editor = screen.getByTestId('monaco-mock');
+    expect(editor).toBeInTheDocument();
+    expect(editor).toHaveAttribute('data-language', 'tenuto');
+    expect(editor).toHaveValue('pno: c4:4');
+  });
+
+  it('MUST trigger the onChange callback deterministically upon editor mutation', () => {
+    const mockOnChange = vi.fn();
+    render(<CodeEditor code="pno: c4:4" onChange={mockOnChange} />);
+
+    const editor = screen.getByTestId('monaco-mock');
+    fireEvent.change(editor, { target: { value: 'pno: c4:8' } });
+
+    expect(mockOnChange).toHaveBeenCalledTimes(1);
+    expect(mockOnChange).toHaveBeenCalledWith('pno: c4:8');
+  });
+
+  it('correctly maps the line boundaries and vertical center of any active measure and scrolls it to the center on every measure transition', () => {
+    const code = [
+      'tenuto "6.0" {',
+      '  meta @{ title: "Symphony of Horizon", tempo: 132 }',
+      '  def saws "Heaven Saws" style=synth patch="supersaw"',
+      '  def reese "Reese Bass" style=synth patch="reese_bass"',
+      '  measure 1 {',
+      '    saws: [d3 a3 d4 e4 f#4 a4 c#5]:1 |',
+      '    reese: d1:1 |',
+      '  }',
+      '  measure 2 {',
+      '    saws: [g2 d3 g3 b3 d4 f#4]:1 |',
+      '    reese: g1:1 |',
+      '  }',
+      '}',
+    ].join('\n');
+
+    const parser = new DocumentParser();
+    const score = parser.compile(code);
+
+    const range1 = findMeasureLineRange(code, 1);
+    expect(range1).toEqual({ startLine: 5, endLine: 8 });
+
+    const range2 = findMeasureLineRange(code, 2);
+    expect(range2).toEqual({ startLine: 9, endLine: 12 });
+
+    const tokensM1 = computeActiveKaraokeTokens(score.events, 1.0, true);
+    const targetM1 = computeActiveMeasureScrollTarget(code, tokensM1);
+    expect(targetM1).toEqual({
+      measureNumber: 1,
+      startLine: 5,
+      endLine: 8,
+      centerLine: 7, // Math.round((5 + 8) / 2) = 7
+    });
+
+    const { rerender } = render(
+      <CodeEditor
+        code={code}
+        events={score.events}
+        isPlaying={true}
+        onChange={vi.fn()}
+        playheadBeat={1.0}
+      />
+    );
+
+    expect(mockRevealLinesInCenter).toHaveBeenCalledWith(5, 8, 0);
+    expect(mockRevealLineInCenter).toHaveBeenCalledWith(7, 0);
+
+    // Advance playhead to Measure 2 (beat 5.0) -> immediately centers Measure 2 (lines 9..12, centerLine 11)
+    rerender(
+      <CodeEditor
+        code={code}
+        events={score.events}
+        isPlaying={true}
+        onChange={vi.fn()}
+        playheadBeat={5.0}
+      />
+    );
+
+    expect(mockRevealLinesInCenter).toHaveBeenCalledWith(9, 12, 0);
+    expect(mockRevealLineInCenter).toHaveBeenCalledWith(11, 0);
+  });
+
+  it('computes 0%..100% intra-token progress wipes and spotlight overlays for active tokens', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Visual Sweep Check", tempo: 120, time: "4/4" }
+        def lead "Lead" style=synth patch="supersaw"
+        measure 1 {
+          lead: c5:2.lyric("Sky") e5:2.lyric("High") |
+        }
+      }
+    `);
+
+    const activeAtBeat1 = computeActiveKaraokeTokens(score.events, 1.0, true);
+    expect(activeAtBeat1).toHaveLength(1);
+    expect(activeAtBeat1[0].rawToken).toBe('c5:2.lyric("Sky")');
+    expect(activeAtBeat1[0].lyric).toBe('Sky');
+    expect(activeAtBeat1[0].progressPct).toBe(50);
+
+    render(
+      <CodeEditor
+        code="lead: c5:2.lyric('Sky')"
+        events={score.events}
+        isPlaying={true}
+        onChange={vi.fn()}
+        playheadBeat={1.0}
+      />
+    );
+
+    expect(screen.getByTestId('karaoke-code-ribbon')).toBeInTheDocument();
+    expect(screen.getByTestId('karaoke-pill-lead')).toHaveTextContent('c5:2.lyric("Sky")');
+    expect(screen.getByTestId('karaoke-fill-lead')).toHaveStyle({ width: '50%' });
+  });
+});
+3.5 tests/documentation_integrity.test.ts - Update Version Assertion to 5.0.8
+In tests/documentation_integrity.test.ts, update the version assertions from '5.0.6' to '5.0.8' (and ensure 'v5.0.8' and 'computeActiveMeasureScrollTarget' are verified in README.md):
+code
+TypeScript
+import { describe, it, expect } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+
+describe('TDB-607, TDB-726, TDB-734 & TDB-735: Final Release Documentation, Grammar Guide & v5.0.8 Feature Parity Integrity', () => {
+  it('provides TENUTO_GRAMMAR.md with complete songwriting rules and LLM prompt template', () => {
+    const grammarPath = path.resolve(__dirname, '../TENUTO_GRAMMAR.md');
+    expect(fs.existsSync(grammarPath)).toBe(true);
+
+    const content = fs.readFileSync(grammarPath, 'utf-8');
+    expect(content).toContain('tenuto "5.0"');
+    expect(content).toContain('salamander_grand');
+    expect(content).toContain('tenuto_808_kit');
+    expect(content).toContain('Copy-Paste Prompt for Gemini');
+  });
+
+  it('provides the comprehensive v5.0.8 README.md covering centered measure scrolling, 4 DAW views, 3 docks, Continuous Synth Engine, and installers', () => {
+    const readmePath = path.resolve(__dirname, '../README.md');
+    expect(fs.existsSync(readmePath)).toBe(true);
+
+    const content = fs.readFileSync(readmePath, 'utf-8');
+    expect(content).toContain('TENUTO STUDIO 5');
+    expect(content).toContain('v5.0.8');
+    expect(content).toContain('TENUTO_GRAMMAR.md');
+    expect(content).toContain('computeActiveMeasureScrollTarget');
+    expect(content).toContain('npm run electron:build:mac');
+    expect(content).toContain('npm run electron:build:win');
+    expect(content).not.toContain('Do not expect to compose music today');
+    expect(content).not.toContain('~28% completion');
+
+    const pkgJson = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8')
+    );
+    expect(pkgJson.version).toBe('5.0.8');
+    expect(pkgJson.scripts['electron:build:mac']).toContain('--mac pkg');
+    expect(pkgJson.scripts['electron:build:win']).toContain('--win nsis');
+
+    const builderJson = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../electron-builder.json'), 'utf-8')
+    );
+    expect(builderJson.extraMetadata.version).toBe('5.0.8');
+    expect(builderJson.npmRebuild).toBe(false);
+    expect(builderJson.mac.target).toContain('pkg');
+    expect(builderJson.win).toBeDefined();
+    expect(builderJson.nsis.createDesktopShortcut).toBe(true);
+  });
+});
+4. What NOT to Touch
+src/parser/
+src/audio/
+src/mutator/
+src/components/SplitWorkspace.tsx, src/components/WebGPUCanvas.tsx, src/components/TabChordFlowView.tsx, src/components/Mixer.tsx, src/components/Transport.tsx
+electron/main.cjs, vite.config.ts, vitest.config.ts
+5. Acceptance Criteria
+npm run lint (tsc --noEmit) passes with zero TypeScript errors.
+npx vitest run tests/code_editor_matrix.test.tsx tests/documentation_integrity.test.ts tests/code_editor_binding.test.tsx passes 100%.
+npm run build (vite build) completes cleanly with zero errors.
+package.json and electron-builder.json both equal "version": "5.0.8".
+README.md documents the v5.0.8 release and computeActiveMeasureScrollTarget centered measure scrolling.
+During playback, CodeEditor computes the active measure's [startLine, endLine] and midpoint centerLine and invokes editor.revealLinesInCenter(startLine, endLine, 0) and editor.revealLineInCenter(centerLine, 0) on every measure transition so the active measure is always centered in the viewport.
+6. Constraints
+Apply all file reads in parallel and all file edits in parallel in a single batched turn.
+Bump repository version by +0.0.2 (5.0.6 -> 5.0.8).
+Modify and append README.md to match the new centered measure scrolling behavior.
+Do NOT install any new npm packages.
+7. Manual Steps
+None required.
+8. Rollback Plan
+Revert via git revert HEAD or restore package.json, electron-builder.json, README.md, src/components/CodeEditor.tsx, tests/code_editor_matrix.test.tsx, and tests/documentation_integrity.test.ts.
+9. Deliverable
+A single commit containing:
+Modified file(s): package.json, electron-builder.json, README.md, src/components/CodeEditor.tsx, tests/code_editor_matrix.test.tsx, tests/documentation_integrity.test.ts
+Commit message: feat(editor): keep active measure centered in Monaco code editor during playback (v5.0.8)
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+10. Observable Before/After Behavior
+Area	Previous Behavior (v5.0.6)	New Behavior (v5.0.8)
+Version (package.json & electron-builder.json)	5.0.6	5.0.8
+Code Editor Playback Scrolling (CodeEditor.tsx)	Used revealLineInCenterIfOutsideViewport(startLine - 2, 0), which allowed the active measure to drift to the bottom edge of the screen before jumping	Computes computeActiveMeasureScrollTarget (startLine, endLine, centerLine) and calls revealLinesInCenter + revealLineInCenter so the current measure stays vertically centered in the editor at all times
+README.md	Documented v5.0.6 features	Documents v5.0.8 release notes and Always-Centered Active Measure Scrolling (computeActiveMeasureScrollTarget)
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-30
+Implementer: AI Agent
+code
+Code

@@ -1,21 +1,49 @@
 {
-  "proposal_id": "tdb-734-comprehensive-readme-overhaul-v5.0.6",
-  "target_intent": "TDB-734: Comprehensive README.md Overhaul for Full Tenuto 6.0 DAW & Continuous Synth Parity (v5.0.6)",
-  "delta_before": 0.08,
+  "proposal_id": "tdb-735-always-centered-measure-scrolling-v5.0.8",
+  "target_intent": "TDB-735: Always-Centered Active Measure Highlight Scrolling in Monaco Code Editor (v5.0.8)",
+  "delta_before": 0.09,
   "mutations": [
     {
-      "file": "README.md",
-      "function": "Full Tenuto 6.0 DAW & Continuous Synth Parity Documentation",
+      "file": "package.json",
+      "function": "version",
       "ast_depth": 1,
       "decay_weight": 0.95,
-      "patch": "--- a/README.md\n+++ b/README.md\n@@ -1,6 +1,10 @@\n <div align=\"center\">\n   <img width=\"1200\" height=\"475\" alt=\"Tenuto Studio 5 Banner\" src=\"https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6\" />\n   <h1>𝄆 TENUTO STUDIO 5 𝄇</h1>\n-  <p><b>Declarative Code-to-Music DAW, Continuous Synthesizer Suite & Real-Time Visual Player</b></p>\n+  <p><b>Declarative Code-to-Music DAW, Continuous Synthesizer Suite & Bi-Directional Projectional Studio</b></p>"
+      "patch": "--- a/package.json\n+++ b/package.json\n@@ -2,3 +2,3 @@\n   \"name\": \"tenuto-studio-5\",\n   \"private\": true,\n-  \"version\": \"5.0.6\",\n+  \"version\": \"5.0.8\","
+    },
+    {
+      "file": "electron-builder.json",
+      "function": "extraMetadata.version",
+      "ast_depth": 2,
+      "decay_weight": 0.9,
+      "patch": "--- a/electron-builder.json\n+++ b/electron-builder.json\n@@ -10,3 +10,3 @@\n   \"extraMetadata\": {\n     \"main\": \"electron/main.cjs\",\n-    \"version\": \"5.0.6\"\n+    \"version\": \"5.0.8\"\n   },"
+    },
+    {
+      "file": "src/components/CodeEditor.tsx",
+      "function": "computeActiveMeasureScrollTarget, CodeEditor",
+      "ast_depth": 2,
+      "decay_weight": 0.9,
+      "patch": "--- a/src/components/CodeEditor.tsx\n+++ b/src/components/CodeEditor.tsx\n@@ -162,1 +162,25 @@\n+export function computeActiveMeasureScrollTarget(\n+  code: string,\n+  activeTokens: ActiveKaraokeToken[]\n+): ActiveMeasureScrollTarget | null {"
+    },
+    {
+      "file": "README.md",
+      "function": "v5.0.8 Release Notes & Always-Centered Measure Scrolling",
+      "ast_depth": 1,
+      "decay_weight": 0.95,
+      "patch": "--- a/README.md\n+++ b/README.md\n@@ -9,1 +9,1 @@\n-[![Release: v5.0.6](https://img.shields.io/badge/Release-v5.0.6-2563eb.svg)](./SPEC.md)\n+[![Release: v5.0.8](https://img.shields.io/badge/Release-v5.0.8-2563eb.svg)](./SPEC.md)"
+    },
+    {
+      "file": "tests/code_editor_matrix.test.tsx",
+      "function": "Always-Centered Measure Scrolling Test Suite",
+      "ast_depth": 2,
+      "decay_weight": 0.9,
+      "patch": "--- a/tests/code_editor_matrix.test.tsx\n+++ b/tests/code_editor_matrix.test.tsx\n@@ -12,2 +12,3 @@\n+const mockRevealLineInCenter = vi.fn();\n+const mockRevealLinesInCenter = vi.fn();"
     },
     {
       "file": "tests/documentation_integrity.test.ts",
-      "function": "TDB-607, TDB-726 & TDB-734: Final Release Documentation, Grammar Guide & v5.0.6 Feature Parity Integrity",
+      "function": "v5.0.8 Documentation Integrity",
       "ast_depth": 2,
       "decay_weight": 0.9,
-      "patch": "--- a/tests/documentation_integrity.test.ts\n+++ b/tests/documentation_integrity.test.ts\n@@ -17,1 +17,12 @@\n+  it('provides the comprehensive v5.0.6 README.md covering all 4 DAW views, 3 docks, Continuous Synth Engine, SoundFonts, Vocoder, and installers', () => {"
+      "patch": "--- a/tests/documentation_integrity.test.ts\n+++ b/tests/documentation_integrity.test.ts\n@@ -22,3 +22,4 @@\n+    expect(content).toContain('v5.0.8');\n+    expect(content).toContain('computeActiveMeasureScrollTarget');"
     }
   ]
 }
