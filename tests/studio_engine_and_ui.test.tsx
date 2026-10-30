@@ -544,5 +544,54 @@ describe('TDB-603 & TDB-604: Syntax-Highlighted Code Editor, Scrolling Player & 
       260
     );
   });
+
+  it('updates all music on a beat to a different pitch via Shift+Click on a pitch row or Shift+Drag on a note', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Shift Beat Repitch", tempo: 120, time: "4/4" }
+        def pno "Piano" style=standard patch="salamander_grand"
+        def bass "Bass" style=synth patch="808_sub"
+        measure 1 {
+          pno: c4:2 g4:2 |
+          bass: c2:2 g2:2 |
+        }
+      }
+    `);
+
+    const onMutation = vi.fn();
+    render(<WebGPUCanvas events={score.events} onMutation={onMutation} />);
+
+    // 1. Shift + Click on pitch row F4 (MIDI 65) at Beat 1 -> dispatches beat-wide +5st mutation (C4 -> F4)
+    const rowF4 = screen.getByTestId('piano-roll-row-65');
+    fireEvent.click(rowF4, { shiftKey: true, clientX: 60 });
+
+    expect(onMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isBeatWideMutation: true,
+        beatStartWhole: 0,
+      }),
+      0,
+      5,
+      260
+    );
+
+    // 2. Shift + Drag on note 0 vertically by -40px (+2 semitones at rowH=20) -> dispatches beat-wide +2st mutation
+    onMutation.mockClear();
+    const note0 = screen.getByTestId('piano-roll-note-0');
+    fireEvent.mouseDown(note0, { shiftKey: true, clientX: 80, clientY: 200 });
+    fireEvent.mouseMove(window, { clientX: 80, clientY: 160 });
+    fireEvent.mouseUp(window);
+
+    expect(onMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isBeatWideMutation: true,
+        beatStartWhole: 0,
+      }),
+      0,
+      2,
+      260
+    );
+  });
 });
 

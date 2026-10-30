@@ -110,4 +110,38 @@ describe('TDB-702: Surgical Bi-Directional AST Code Mutator', () => {
     });
     expect(withSend).toContain('sends=@{rev_bus: 0.65}');
   });
+
+  it('transposes all melodic and chord events on a target beat across multiple tracks while leaving other beats and drums untouched', () => {
+    const source = `tenuto "6.0" {
+  meta @{ title: "Beat Transpose Test", tempo: 120, time: "4/4" }
+  def pno "Piano" style=standard patch="salamander_grand"
+  def strings "Strings" style=standard patch="string_ensemble_1"
+  def bass "Bass" style=synth patch="808_sub"
+  def drums "Drums" style=grid patch="tenuto_808_kit"
+
+  measure 1 {
+    pno: [c4 e4 g4]:2 d4:2 |
+    strings: c5:2 g4:2 |
+    bass: c2:2 g1:2 |
+    drums: k:2 s:2 |
+  }
+}`;
+
+    const compiled = parser.compile(source);
+    // Transpose Beat 1 (startWhole = 0) up by +5 semitones (C -> F)
+    const nextSource = mutator.transposeBeatEventsInSource(
+      source,
+      compiled.events,
+      0,
+      5,
+      true
+    );
+
+    // Beat 1 (startWhole = 0) notes & chords across pno, strings, and bass all shifted +5st (C -> F):
+    expect(nextSource).toContain('pno: [f4 a4 c5]:2 d4:2 |');
+    expect(nextSource).toContain('strings: f5:2 g4:2 |');
+    expect(nextSource).toContain('bass: f2:2 g1:2 |');
+    // Drums on Beat 1 (k:2) and Beat 3 notes (d4:2, g4:2, g1:2) remain completely untouched:
+    expect(nextSource).toContain('drums: k:2 s:2 |');
+  });
 });

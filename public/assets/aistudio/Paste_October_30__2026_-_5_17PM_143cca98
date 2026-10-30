@@ -1,0 +1,659 @@
+
+Here is Implementation Contract TDB-740 (v5.1.6 -> v5.1.8) to add Shift-Click & Shift-Drag Beat-Wide Pitch Transposition on the Piano Roll so holding Shift and clicking any target pitch row/key (or Shift-dragging any note on a beat) transposes all music on that beat across all tracks to the new pitch in .ten source code.
+Paste the contract below directly into Google AI Studio:
+code
+Markdown
+# Implementation Contract: Shift-Click & Shift-Drag Beat-Wide Pitch Transposition on the Piano Roll (TDB-740)
+
+**Project:** Tenuto Studio 5
+**Scope:** Upgrade `src/mutator/TopologicalMutator.ts`, `src/components/WebGPUCanvas.tsx`, and `src/components/SplitWorkspace.tsx` so holding `Shift` and clicking any pitch row or piano key (or `Shift`-dragging any note on a beat) transposes all melodic and chord notes occurring on that beat across the score to the target pitch in `.ten` source code; add unit and UI integration tests in `tests/surgical_ast_mutator.test.ts`, `tests/studio_engine_and_ui.test.tsx`, and `tests/documentation_integrity.test.ts`; update `README.md`; and bump the repository version from `5.1.6` to `5.1.8`.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+**Version Bump:** 5.1.6 -> 5.1.8 (+0.0.2 step; rolls X.Y.8 -> X.(Y+1).0 and X.9.8 -> (X+1).0.0)
+**Documentation Sync:** Modify and append `README.md`
+**Execution Mode:** Parallel Batch Edits (Read all target files in parallel in a single turn, then apply all file edits in parallel in a single batched tool-call turn — NEVER edit files sequentially one by one).
+
+---
+
+## 1. Objective
+In `TDB-738`, Tenuto added single-note click-and-drag pitch transposition on the Piano Roll. However, when working with multi-track arrangements or layered chords, users need to repitch **all music on a given beat** simultaneously by holding **`Shift`**.
+
+This contract implements **Beat-Wide Pitch Transposition (`Shift + Click` & `Shift + Drag`)**:
+1. **Shift + Click Any Pitch Row or Piano Key (`piano-roll-row-<midi>` / `piano-key-<midi>`):** Holding `Shift` and clicking any pitch row on the Piano Roll grid (at a beat column) or clicking a target row after Shift-selecting a beat computes the semitone delta from that beat's anchor note to the clicked pitch row and transposes **every note and chord on that beat** across the score in a single atomic `.ten` source mutation.
+2. **Shift + Click & Drag Any Note on a Beat:** Holding `Shift` while dragging any note vertically locks all notes on that beat together—moving every note and chord on that beat in unison in the live optimistic preview and updating all of their tokens in `.ten` code on mouse release.
+3. **Reverse-Offset Multi-Span AST Patcher (`transposeBeatEventsInSource`):** Deduplicates chord spans, skips unpitched drum grid hits (`style=grid`), and patches `.ten` source spans from back to front (`sourceStartOffset` descending) so multi-track beat mutations never shift character offsets.
+
+---
+
+## 2. Root Cause
+1. `src/mutator/TopologicalMutator.ts` only mutates one event span at a time (`replaceEventInSource`) and lacks a reverse-sorted multi-span beat mutator (`transposeBeatEventsInSource`) to transpose all tracks/voices on a beat simultaneously without offset drift.
+2. `src/components/WebGPUCanvas.tsx` does not check `e.shiftKey` on note mouse-down or pitch-row clicks to group all events sharing `startWhole`.
+3. `src/components/SplitWorkspace.tsx` (`handleCanvasMutation`) only processes a single `eventData` token rather than routing beat-wide mutations (`eventData.isBeatWideMutation`) through `transposeBeatEventsInSource`.
+
+---
+
+## 3. Files To Modify
+
+> **PARALLEL EXECUTION DIRECTIVE:** You MUST read all target files in a single parallel batch call, and you MUST apply all file edits below (`package.json`, `electron-builder.json`, `README.md`, `src/mutator/TopologicalMutator.ts`, `src/components/WebGPUCanvas.tsx`, `src/components/SplitWorkspace.tsx`, `tests/surgical_ast_mutator.test.ts`, `tests/studio_engine_and_ui.test.tsx`, and `tests/documentation_integrity.test.ts`) simultaneously in a single parallel tool-call turn. Do NOT apply edits sequentially one file per turn.
+
+### 3.1 `package.json` & `electron-builder.json` - Bump Repository Version `5.1.6 -> 5.1.8`
+1. In `package.json`, update `"version"` from `"5.1.6"` to `"5.1.8"`:
+```json
+{
+  "name": "tenuto-studio-5",
+  "private": true,
+  "version": "5.1.8",
+In electron-builder.json, update "extraMetadata.version" from "5.1.6" to "5.1.8":
+code
+JSON
+"extraMetadata": {
+    "main": "electron/main.cjs",
+    "version": "5.1.8"
+  },
+3.2 README.md - Document Shift-Click & Shift-Drag Beat-Wide Pitch Transposition (v5.1.8)
+In README.md:
+Update the top release badge to v5.1.8:
+code
+Markdown
+[![Release: v5.1.8](https://img.shields.io/badge/Release-v5.1.8-2563eb.svg)](./SPEC.md)
+Under Section 3.A (Scrolling Piano Roll View (WebGPUCanvas.tsx)), update the first bullet to include Shift-Click & Shift-Drag Beat-Wide Pitch Transposition:
+code
+Markdown
+* **Bi-Directional Note Dragging & `Shift + Click` Beat-Wide Pitch Transposition:** Drag any note block vertically to transpose its pitch or drag its right edge to resize its rational `:duration`. Hold **`Shift` + Click** on any pitch row/key (or **`Shift` + Drag** any note) to repitch **all music on that beat across all tracks** simultaneously (`transposeBeatEventsInSource`) with a live ensemble preview and single-step `Cmd/Ctrl + Z` Undo/Redo.
+In the Keyboard Shortcuts table in README.md, add a row for Shift + Click / Drag (Piano Roll):
+code
+Markdown
+| `Shift + Click / Drag` (Piano Roll) | Repitch all notes and chords on that beat across all tracks to the target pitch |
+Under ## Release Notes, update the heading to ## Release Notes (v5.1.8) and prepend the v5.1.8 entry:
+code
+Markdown
+## Release Notes (`v5.1.8`)
+
+* **`v5.1.8`:** Added `Shift + Click` and `Shift + Drag` beat-wide pitch transposition on the Piano Roll (`transposeBeatEventsInSource` in `TopologicalMutator.ts`, `WebGPUCanvas.tsx`, and `SplitWorkspace.tsx`), allowing users to repitch all notes and chords on a beat across all melodic tracks in one click or drag.
+3.3 src/mutator/TopologicalMutator.ts - Add transposeBeatEventsInSource Reverse-Offset Multi-Span Mutator
+In src/mutator/TopologicalMutator.ts, add transposeBeatEventsInSource right below replaceEventInSource:
+code
+TypeScript
+/**
+   * Transposes all melodic and chord events occurring on `targetStartWhole` across the score
+   * (excluding rests, spacers, and `style=grid` drum tokens) by `semitoneDelta` semitones.
+   * Deduplicates shared chord spans and applies replacements in reverse character-offset order
+   * so earlier replacements never shift the offsets of later tokens in the document.
+   */
+  public transposeBeatEventsInSource(
+    sourceCode: string,
+    allEvents: Array<{
+      rawToken?: string;
+      startTime?: { numerator: number; denominator: number };
+      pitch?: { midi: number; isRest?: boolean; isSpacer?: boolean; gridKey?: string };
+      style?: string;
+      sourceStartOffset?: number;
+      sourceEndOffset?: number;
+      line?: number;
+      col?: number;
+    }>,
+    targetStartWhole: number,
+    semitoneDelta: number,
+    preferFlats?: boolean
+  ): string {
+    if (!sourceCode.trim() || semitoneDelta === 0 || !allEvents || allEvents.length === 0) {
+      return sourceCode;
+    }
+
+    const matchingEvents = allEvents.filter((ev) => {
+      if (!ev || !ev.rawToken || !ev.pitch) return false;
+      if (ev.pitch.isRest || ev.pitch.isSpacer || ev.pitch.gridKey || ev.style === 'grid') {
+        return false;
+      }
+      if (ev.pitch.midi <= 0) return false;
+      const stWhole = ev.startTime
+        ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator)
+        : 0;
+      return Math.abs(stWhole - targetStartWhole) < 1e-4;
+    });
+
+    if (matchingEvents.length === 0) return sourceCode;
+
+    // Group events by their exact source span so multi-note chords `[c4 e4 g4]:4` are transposed
+    // once as a complete chord rather than 3 separate times.
+    const spanGroups = new Map<
+      string,
+      {
+        event: (typeof matchingEvents)[0];
+        count: number;
+      }
+    >();
+
+    for (const ev of matchingEvents) {
+      const key =
+        typeof ev.sourceStartOffset === 'number'
+          ? `offset:${ev.sourceStartOffset}`
+          : `loc:${ev.line ?? 0}:${ev.col ?? 0}:${ev.rawToken}`;
+      const existing = spanGroups.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        spanGroups.set(key, { event: ev, count: 1 });
+      }
+    }
+
+    const sortedGroups = Array.from(spanGroups.values()).sort((a, b) => {
+      const offA = a.event.sourceStartOffset ?? -1;
+      const offB = b.event.sourceStartOffset ?? -1;
+      if (offA !== -1 && offB !== -1 && offA !== offB) {
+        return offB - offA; // Reverse order (end of file -> start of file)
+      }
+      const lineDiff = (b.event.line ?? 0) - (a.event.line ?? 0);
+      if (lineDiff !== 0) return lineDiff;
+      return (b.event.col ?? 0) - (a.event.col ?? 0);
+    });
+
+    let nextCode = sourceCode;
+    for (const group of sortedGroups) {
+      const ev = group.event;
+      const rawToken = ev.rawToken!;
+      const isBracketChord = rawToken.trim().startsWith('[');
+      // Transpose the entire chord when a beat-wide mutation is active, or use originalMidi for single notes
+      const originalMidi = isBracketChord ? undefined : ev.pitch?.midi;
+      const mutatedToken = this.transposePitch(
+        rawToken,
+        semitoneDelta,
+        preferFlats,
+        originalMidi
+      );
+      if (mutatedToken !== rawToken) {
+        nextCode = this.replaceEventInSource(nextCode, ev, mutatedToken);
+      }
+    }
+
+    return nextCode;
+  }
+3.4 src/components/WebGPUCanvas.tsx - Add Shift + Click Pitch-Row/Key Beat Repitching & Shift + Drag Ensemble Note Dragging
+In src/components/WebGPUCanvas.tsx:
+Add state to track selectedBeatWhole and selectedBeatAnchorMidi (right below dragState):
+code
+TypeScript
+const [selectedBeatWhole, setSelectedBeatWhole] = useState<number | null>(null);
+  const [selectedBeatAnchorMidi, setSelectedBeatAnchorMidi] = useState<number | null>(null);
+And extend dragState's type to include isBeatWide?: boolean; beatStartWhole?: number;:
+code
+TypeScript
+const [dragState, setDragState] = useState<{
+    eventIndex: number;
+    event: any;
+    mode: 'move' | 'resize';
+    isBeatWide?: boolean;
+    beatStartWhole?: number;
+    startClientX: number;
+    startClientY: number;
+    semitoneDelta: number;
+    deltaWidthPx: number;
+  } | null>(null);
+Update the handleMouseUp callback inside the dragState useEffect in src/components/WebGPUCanvas.tsx so that if dragState.isBeatWide is true, it passes isBeatWideMutation: true and beatStartWhole on the mutated event payload:
+code
+TypeScript
+const handleMouseUp = () => {
+      if (dragState.semitoneDelta !== 0 || dragState.deltaWidthPx !== 0) {
+        const payload = dragState.isBeatWide
+          ? {
+              ...dragState.event,
+              isBeatWideMutation: true,
+              beatStartWhole: dragState.beatStartWhole ?? 0,
+            }
+          : dragState.event;
+        onMutationRef.current?.(
+          payload,
+          dragState.deltaWidthPx,
+          dragState.semitoneDelta,
+          wholeNoteScale
+        );
+      }
+      setDragState(null);
+    };
+Add a helper handleShiftRepitchBeatToMidi inside WebGPUCanvas.tsx (right after the dragState useEffect) that repitches all notes on the target beat to targetMidi:
+code
+TypeScript
+const handleShiftRepitchBeatToMidi = useCallback(
+    (targetMidi: number, clientX?: number, svgElement?: SVGSVGElement | null) => {
+      const melodicEvents = visibleEvents.filter(
+        (ev) =>
+          ev?.pitch &&
+          !ev.pitch.isRest &&
+          !ev.pitch.isSpacer &&
+          !ev.pitch.gridKey &&
+          ev.style !== 'grid' &&
+          ev.pitch.midi > 0
+      );
+      if (melodicEvents.length === 0) return;
+
+      let beatWhole = selectedBeatWhole;
+      let anchorMidi = selectedBeatAnchorMidi;
+
+      // If a click X coordinate on the grid is provided, resolve the beat column under the cursor
+      if (clientX !== undefined && clientX > 0) {
+        const rect = svgElement?.getBoundingClientRect?.();
+        const scrollLeft = scrollViewportRef.current?.scrollLeft || 0;
+        const relX =
+          rect && rect.width > 0 ? clientX - rect.left + scrollLeft : clientX;
+        if (relX > keyWidth) {
+          const clickedWhole = Math.max(0, (relX - keyWidth) / wholeNoteScale);
+          // Find note covering clickedWhole, or nearest note onset
+          let bestEv = melodicEvents[0];
+          let minDist = Infinity;
+          for (const ev of melodicEvents) {
+            const st = ev.startTime
+              ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator)
+              : 0;
+            const dur = ev.duration
+              ? ev.duration.numerator / Math.max(1, ev.duration.denominator)
+              : 0.25;
+            if (clickedWhole >= st - 1e-3 && clickedWhole <= st + dur + 1e-3) {
+              bestEv = ev;
+              minDist = 0;
+              break;
+            }
+            const dist = Math.abs(clickedWhole - st);
+            if (dist < minDist) {
+              minDist = dist;
+              bestEv = ev;
+            }
+          }
+          beatWhole = bestEv.startTime
+            ? bestEv.startTime.numerator / Math.max(1, bestEv.startTime.denominator)
+            : 0;
+          const beatNotes = melodicEvents.filter((ev) => {
+            const st = ev.startTime
+              ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator)
+              : 0;
+            return Math.abs(st - beatWhole!) < 1e-4;
+          });
+          // Use the selected anchor note if on the same beat, otherwise use the first/root note on that beat
+          if (
+            selectedBeatWhole === null ||
+            Math.abs(selectedBeatWhole - beatWhole) > 1e-4 ||
+            anchorMidi === null
+          ) {
+            anchorMidi = beatNotes[0]?.pitch?.midi ?? bestEv.pitch.midi;
+          }
+        }
+      }
+
+      if (beatWhole === null) {
+        const firstEv = melodicEvents[0];
+        beatWhole = firstEv.startTime
+          ? firstEv.startTime.numerator / Math.max(1, firstEv.startTime.denominator)
+          : 0;
+        anchorMidi = firstEv.pitch.midi;
+      }
+
+      const beatNotes = melodicEvents.filter((ev) => {
+        const st = ev.startTime
+          ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator)
+          : 0;
+        return Math.abs(st - beatWhole!) < 1e-4;
+      });
+      if (beatNotes.length === 0) return;
+
+      const refMidi = anchorMidi ?? beatNotes[0].pitch.midi;
+      const semitoneDelta = Math.round(targetMidi - refMidi);
+      if (semitoneDelta === 0) return;
+
+      setSelectedBeatWhole(beatWhole);
+      setSelectedBeatAnchorMidi(targetMidi);
+
+      onMutationRef.current?.(
+        {
+          ...beatNotes[0],
+          isBeatWideMutation: true,
+          beatStartWhole: beatWhole,
+        },
+        0,
+        semitoneDelta,
+        wholeNoteScale
+      );
+    },
+    [visibleEvents, selectedBeatWhole, selectedBeatAnchorMidi, wholeNoteScale]
+  );
+Inside staticPianoRollContent in src/components/WebGPUCanvas.tsx:
+On each horizontal pitch row <rect> and piano key <rect>, add data-testid={piano-roll-row-
+{midi}}, and wire onClick so Shift + Click on any pitch row or piano key (or clicking a piano key when a beat is Shift-locked) calls handleShiftRepitchBeatToMidi:
+code
+TypeScript
+return (
+            <g key={midi}>
+              <rect
+                data-testid={`piano-roll-row-${midi}`}
+                x={keyWidth}
+                y={y}
+                width={totalWidthPx - keyWidth}
+                height={rowH}
+                fill={rowFill}
+                stroke={isC ? '#334155' : '#1E293B'}
+                strokeWidth={isC ? 1 : 0.5}
+                className="cursor-pointer"
+                onClick={(e) => {
+                  if (e.shiftKey || selectedBeatWhole !== null) {
+                    handleShiftRepitchBeatToMidi(
+                      midi,
+                      e.clientX,
+                      e.currentTarget.ownerSVGElement
+                    );
+                  }
+                }}
+              />
+              <rect
+                data-testid={`piano-key-${midi}`}
+                x={0}
+                y={y}
+                width={keyWidth}
+                height={rowH}
+                fill={isBlackKey ? '#0F172A' : '#1E293B'}
+                stroke="#334155"
+                strokeWidth={0.5}
+                className="cursor-pointer"
+                onClick={(e) => {
+                  if (e.shiftKey || selectedBeatWhole !== null) {
+                    handleShiftRepitchBeatToMidi(midi);
+                  }
+                }}
+              />
+Inside visibleEvents.map((ev, idx) => ...):
+Compute const startWhole = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;.
+Check if this note is part of an active Shift-dragged beat or Shift-locked beat:
+code
+TypeScript
+const startWhole = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+          const durWhole = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
+          const isSameBeatAsDrag =
+            Boolean(dragState?.isBeatWide) &&
+            dragState?.beatStartWhole !== undefined &&
+            Math.abs(startWhole - dragState.beatStartWhole) < 1e-4 &&
+            ev.style !== 'grid' &&
+            !ev.pitch?.gridKey;
+          const isBeingDragged = dragState?.eventIndex === idx || isSameBeatAsDrag;
+          const isBeatLocked =
+            selectedBeatWhole !== null &&
+            Math.abs(startWhole - selectedBeatWhole) < 1e-4 &&
+            ev.style !== 'grid' &&
+            !ev.pitch?.gridKey;
+code
+Code
+* In the note `<g>` `onMouseDown` handler, when `e.shiftKey` is true, arm `selectedBeatWhole` and set `isBeatWide: true` on `dragState` so dragging moves all notes on that beat together:
+code
+TypeScript
+onMouseDown={(e) => {
+                e.stopPropagation();
+                onSelectRef.current?.(selectPayload);
+                if (e.shiftKey) {
+                  setSelectedBeatWhole(startWhole);
+                  setSelectedBeatAnchorMidi(baseMidi);
+                } else {
+                  setSelectedBeatWhole(null);
+                  setSelectedBeatAnchorMidi(null);
+                }
+                setDragState({
+                  eventIndex: idx,
+                  event: ev,
+                  mode: 'move',
+                  isBeatWide: Boolean(e.shiftKey),
+                  beatStartWhole: startWhole,
+                  startClientX: e.clientX,
+                  startClientY: e.clientY,
+                  semitoneDelta: 0,
+                  deltaWidthPx: 0,
+                });
+              }}
+code
+Code
+* Highlight `isBeatLocked` notes with a gold/amber stroke (`stroke={isBeingDragged ? '#FFFFFF' : isBeatLocked ? '#FBBF24' : '#F8FAFC'}` and `strokeWidth={isBeingDragged || isBeatLocked ? 1.8 : 0.8}`).
+ * Add `selectedBeatWhole, handleShiftRepitchBeatToMidi` to the `useMemo` dependency array of `staticPianoRollContent`.
+3.5 src/components/SplitWorkspace.tsx - Route Beat-Wide Mutations to transposeBeatEventsInSource
+In src/components/SplitWorkspace.tsx, update handleCanvasMutation so that when eventData.isBeatWideMutation is true and semitoneDelta !== 0, it calls topologicalMutator.transposeBeatEventsInSource across compiledEvents:
+code
+TypeScript
+const handleCanvasMutation = (
+    eventData: any,
+    deltaX: number,
+    semitoneDelta: number = 0,
+    zScale: number = 100
+  ) => {
+    if (!eventData || !eventData.rawToken) return;
+    try {
+      const preferFlats = ['F', 'Bb', 'Eb', 'Ab', 'Db', 'Gb'].includes(
+        scoreMeta.key || ''
+      );
+
+      if (eventData.isBeatWideMutation && semitoneDelta !== 0) {
+        const beatWhole =
+          typeof eventData.beatStartWhole === 'number'
+            ? eventData.beatStartWhole
+            : eventData.startTime
+              ? eventData.startTime.numerator /
+                Math.max(1, eventData.startTime.denominator)
+              : 0;
+        const nextCode = topologicalMutator.transposeBeatEventsInSource(
+          sourceCode,
+          compiledEvents,
+          beatWhole,
+          semitoneDelta,
+          preferFlats
+        );
+        if (nextCode === sourceCode) return;
+        const prevCode = sourceCode;
+        const cmd = new ASTCommand(nextCode);
+        cmd.execute = () => setSourceCode(nextCode);
+        cmd.undo = () => setSourceCode(prevCode);
+        commandManager.executeCommand(cmd);
+        return;
+      }
+
+      let mutatedToken = eventData.rawToken;
+      if (deltaX !== 0) {
+        mutatedToken = topologicalMutator.resizeDuration(
+          mutatedToken,
+          deltaX,
+          zScale,
+          eventData.duration
+        );
+      }
+      if (semitoneDelta !== 0) {
+        mutatedToken = topologicalMutator.transposePitch(
+          mutatedToken,
+          semitoneDelta,
+          preferFlats,
+          eventData.pitch?.midi
+        );
+      }
+      if (mutatedToken === eventData.rawToken) return;
+
+      const nextCode = topologicalMutator.replaceEventInSource(
+        sourceCode,
+        eventData,
+        mutatedToken
+      );
+      const prevCode = sourceCode;
+      const cmd = new ASTCommand(nextCode);
+      cmd.execute = () => setSourceCode(nextCode);
+      cmd.undo = () => setSourceCode(prevCode);
+      commandManager.executeCommand(cmd);
+    } catch {
+      // Ignore invalid resize or transpose bounds
+    }
+  };
+3.6 tests/surgical_ast_mutator.test.ts & tests/studio_engine_and_ui.test.tsx - Verify Shift-Click & Shift-Drag Beat-Wide Pitch Updates
+In tests/surgical_ast_mutator.test.ts, append a test verifying transposeBeatEventsInSource:
+code
+TypeScript
+it('transposes all melodic and chord events on a target beat across multiple tracks while leaving other beats and drums untouched', () => {
+    const source = `tenuto "6.0" {
+  meta @{ title: "Beat Transpose Test", tempo: 120, time: "4/4" }
+  def pno "Piano" style=standard patch="salamander_grand"
+  def strings "Strings" style=standard patch="string_ensemble_1"
+  def bass "Bass" style=synth patch="808_sub"
+  def drums "Drums" style=grid patch="tenuto_808_kit"
+
+  measure 1 {
+    pno: [c4 e4 g4]:2 d4:2 |
+    strings: c5:2 g4:2 |
+    bass: c2:2 g1:2 |
+    drums: k:2 s:2 |
+  }
+}`;
+
+    const compiled = parser.compile(source);
+    // Transpose Beat 1 (startWhole = 0) up by +5 semitones (C -> F)
+    const nextSource = mutator.transposeBeatEventsInSource(
+      source,
+      compiled.events,
+      0,
+      5,
+      true
+    );
+
+    // Beat 1 (startWhole = 0) notes & chords across pno, strings, and bass all shifted +5st (C -> F):
+    expect(nextSource).toContain('pno: [f4 a4 c5]:2 d4:2 |');
+    expect(nextSource).toContain('strings: f5:2 g4:2 |');
+    expect(nextSource).toContain('bass: f2:2 g1:2 |');
+    // Drums on Beat 1 (k:2) and Beat 3 notes (d4:2, g4:2, g1:2) remain completely untouched:
+    expect(nextSource).toContain('drums: k:2 s:2 |');
+  });
+In tests/studio_engine_and_ui.test.tsx, append a test verifying Shift + Click on a Piano Roll pitch row and Shift + Drag on a note block:
+code
+TypeScript
+it('updates all music on a beat to a different pitch via Shift+Click on a pitch row or Shift+Drag on a note', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Shift Beat Repitch", tempo: 120, time: "4/4" }
+        def pno "Piano" style=standard patch="salamander_grand"
+        def bass "Bass" style=synth patch="808_sub"
+        measure 1 {
+          pno: c4:2 g4:2 |
+          bass: c2:2 g2:2 |
+        }
+      }
+    `);
+
+    const onMutation = vi.fn();
+    render(<WebGPUCanvas events={score.events} onMutation={onMutation} />);
+
+    // 1. Shift + Click on pitch row F4 (MIDI 65) at Beat 1 -> dispatches beat-wide +5st mutation (C4 -> F4)
+    const rowF4 = screen.getByTestId('piano-roll-row-65');
+    fireEvent.click(rowF4, { shiftKey: true, clientX: 60 });
+
+    expect(onMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isBeatWideMutation: true,
+        beatStartWhole: 0,
+      }),
+      0,
+      5,
+      260
+    );
+
+    // 2. Shift + Drag on note 0 vertically by -40px (+2 semitones at rowH=20) -> dispatches beat-wide +2st mutation
+    onMutation.mockClear();
+    const note0 = screen.getByTestId('piano-roll-note-0');
+    fireEvent.mouseDown(note0, { shiftKey: true, clientX: 80, clientY: 200 });
+    fireEvent.mouseMove(window, { clientX: 80, clientY: 160 });
+    fireEvent.mouseUp(window);
+
+    expect(onMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isBeatWideMutation: true,
+        beatStartWhole: 0,
+      }),
+      0,
+      2,
+      260
+    );
+  });
+3.7 tests/documentation_integrity.test.ts - Update Version Assertions to 5.1.8
+In tests/documentation_integrity.test.ts, update the version assertions from '5.1.6' to '5.1.8' and verify 'transposeBeatEventsInSource' is documented in README.md:
+code
+TypeScript
+import { describe, it, expect } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+
+describe('TDB-607, TDB-726, TDB-734 through TDB-740: Final Release Documentation & v5.1.8 Integrity', () => {
+  it('provides TENUTO_GRAMMAR.md with complete songwriting rules and LLM prompt template', () => {
+    const grammarPath = path.resolve(__dirname, '../TENUTO_GRAMMAR.md');
+    expect(fs.existsSync(grammarPath)).toBe(true);
+
+    const content = fs.readFileSync(grammarPath, 'utf-8');
+    expect(content).toContain('tenuto "5.0"');
+    expect(content).toContain('salamander_grand');
+    expect(content).toContain('tenuto_808_kit');
+    expect(content).toContain('Copy-Paste Prompt for Gemini');
+  });
+
+  it('provides the comprehensive v5.1.8 README.md covering Shift+Click beat-wide pitch transposition and installers', () => {
+    const readmePath = path.resolve(__dirname, '../README.md');
+    expect(fs.existsSync(readmePath)).toBe(true);
+
+    const content = fs.readFileSync(readmePath, 'utf-8');
+    expect(content).toContain('TENUTO STUDIO 5');
+    expect(content).toContain('v5.1.8');
+    expect(content).toContain('TENUTO_GRAMMAR.md');
+    expect(content).toContain('transposeBeatEventsInSource');
+    expect(content).toContain('npm run electron:build:mac');
+    expect(content).toContain('npm run electron:build:win');
+    expect(content).not.toContain('Do not expect to compose music today');
+    expect(content).not.toContain('~28% completion');
+
+    const pkgJson = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8')
+    );
+    expect(pkgJson.version).toBe('5.1.8');
+    expect(pkgJson.scripts['electron:build:mac']).toContain('--mac pkg');
+    expect(pkgJson.scripts['electron:build:win']).toContain('--win nsis');
+
+    const builderJson = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../electron-builder.json'), 'utf-8')
+    );
+    expect(builderJson.extraMetadata.version).toBe('5.1.8');
+    expect(builderJson.npmRebuild).toBe(false);
+    expect(builderJson.mac.target).toContain('pkg');
+    expect(builderJson.win).toBeDefined();
+    expect(builderJson.nsis.createDesktopShortcut).toBe(true);
+  });
+});
+4. What NOT to Touch
+src/parser/
+src/audio/
+src/components/TabChordFlowView.tsx, src/components/SessionView.tsx, src/components/ArrangementView.tsx, src/components/Mixer.tsx, src/components/Transport.tsx
+tests/topological_workspace_binding.test.tsx, tests/topological_mutator.test.ts
+electron/main.cjs, vite.config.ts, vitest.config.ts
+5. Acceptance Criteria
+npm run lint (tsc --noEmit) passes with zero TypeScript errors.
+npx vitest run tests/surgical_ast_mutator.test.ts tests/studio_engine_and_ui.test.tsx tests/documentation_integrity.test.ts tests/topological_workspace_binding.test.tsx passes 100%.
+npm run build (vite build) completes cleanly with zero errors.
+package.json and electron-builder.json both equal "version": "5.1.8".
+README.md documents v5.1.8 and Shift + Click / Shift + Drag beat-wide pitch transposition (transposeBeatEventsInSource).
+Holding Shift and clicking a pitch row or dragging a note on the Piano Roll transposes all melodic/harmonic notes and chords on that beat across all tracks in .ten source code while leaving other beats and drum tracks untouched.
+6. Constraints
+Apply all file reads in parallel and all file edits in parallel in a single batched turn.
+Bump repository version by +0.0.2 (5.1.6 -> 5.1.8).
+Modify and append README.md to document Shift-Click beat-wide pitch transposition.
+Do NOT install any new npm packages.
+7. Manual Steps
+None required.
+8. Rollback Plan
+Revert via git revert HEAD or restore package.json, electron-builder.json, README.md, src/mutator/TopologicalMutator.ts, src/components/WebGPUCanvas.tsx, src/components/SplitWorkspace.tsx, tests/surgical_ast_mutator.test.ts, tests/studio_engine_and_ui.test.tsx, and tests/documentation_integrity.test.ts.
+9. Deliverable
+A single commit containing:
+Modified file(s): package.json, electron-builder.json, README.md, src/mutator/TopologicalMutator.ts, src/components/WebGPUCanvas.tsx, src/components/SplitWorkspace.tsx, tests/surgical_ast_mutator.test.ts, tests/studio_engine_and_ui.test.tsx, tests/documentation_integrity.test.ts
+Commit message: feat(piano-roll): add Shift-click and Shift-drag beat-wide pitch transposition across tracks (v5.1.8)
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+10. Observable Before/After Behavior
+Area	Previous Behavior (v5.1.6)	New Behavior (v5.1.8)
+Version (package.json & electron-builder.json)	5.1.6	5.1.8
+Shift + Click on a Pitch Row / Key (WebGPUCanvas.tsx)	Did nothing	Transposes all notes and chords on that beat across all melodic tracks so the beat's music moves to the clicked pitch in .ten code
+Shift + Drag on a Note (WebGPUCanvas.tsx)	Only dragged that single note	Locks all notes on that beat together in the live optimistic preview and rewrites every note/chord on that beat in .ten code on mouse release
+README.md	Documented v5.1.6 features	Documents v5.1.8 Shift + Click / Drag beat-wide pitch transposition (transposeBeatEventsInSource)
+Contract signed off by: Alec Borman (Oracle)
+Date: 2026-10-30
+Implementer: AI Agent
+code
+Code

@@ -1,35 +1,42 @@
 {
-  "proposal_id": "tdb-739-tab-view-subbass-fretboards-pitch-lines-v5.1.6",
-  "target_intent": "TDB-739 Fix Sub-Bass/Viola Fretboards, Pitch-Accurate Tab Trajectory Lines & Orb Text De-Collision in Tab View",
-  "delta_before": 0.1950,
+  "proposal_id": "tdb-740-shift-beat-wide-pitch-transposition-v5.1.8",
+  "target_intent": "TDB-740 Shift-Click & Shift-Drag Beat-Wide Pitch Transposition on the Piano Roll",
+  "delta_before": 0.1800,
   "mutations": [
     {
       "file": "package.json",
       "function": "version",
       "ast_depth": 1,
       "decay_weight": 0.95,
-      "patch": "@@ -4 +4 @@\n-  \"version\": \"5.1.4\",\n+  \"version\": \"5.1.6\","
+      "patch": "@@ -4 +4 @@\n-  \"version\": \"5.1.6\",\n+  \"version\": \"5.1.8\","
     },
     {
       "file": "electron-builder.json",
       "function": "extraMetadata.version",
       "ast_depth": 2,
       "decay_weight": 0.90,
-      "patch": "@@ -11 +11 @@\n-    \"version\": \"5.1.4\"\n+    \"version\": \"5.1.6\""
+      "patch": "@@ -11 +11 @@\n-    \"version\": \"5.1.6\"\n+    \"version\": \"5.1.8\""
     },
     {
-      "file": "src/components/TabChordFlowView.tsx",
-      "function": "foldMidiIntoGuitarRange, computeGuitarVoicing, TabChordFlowView",
+      "file": "src/mutator/TopologicalMutator.ts",
+      "function": "transposeBeatEventsInSource",
       "ast_depth": 2,
       "decay_weight": 0.90,
-      "patch": "@@ -138,15 +138,25 @@\n+export function foldMidiIntoGuitarRange(midi: number): number\n+computeGuitarVoicing octave folding + trackMidiToY(evaluateTrackedEventMidiAtWhole(...)) + sortedOrbs vertical de-collision + isPlayheadOverStartPill suppression + opaque sticky left header"
+      "patch": "@@ -486,3 +486,91 @@\n+  public transposeBeatEventsInSource(sourceCode: string, allEvents: Array<...>, targetStartWhole: number, semitoneDelta: number, preferFlats?: boolean): string"
     },
     {
-      "file": "tests/tab_chord_flow_view.test.tsx",
-      "function": "TDB-739 test suite",
+      "file": "src/components/WebGPUCanvas.tsx",
+      "function": "handleShiftRepitchBeatToMidi & staticPianoRollContent",
+      "ast_depth": 3,
+      "decay_weight": 0.85,
+      "patch": "@@ -480,20 +480,120 @@\n+  const handleShiftRepitchBeatToMidi = useCallback(...);\n+  piano-roll-row-${midi} & piano-key-${midi} Shift+Click + Shift+Drag isBeatWide ensemble preview"
+    },
+    {
+      "file": "src/components/SplitWorkspace.tsx",
+      "function": "handleCanvasMutation",
       "ast_depth": 2,
       "decay_weight": 0.90,
-      "patch": "@@ -28,12 +28,26 @@\n+  it('folds low sub-bass (Bb0 = MIDI 22) and viola/cello (Bb1 = MIDI 34) notes onto playable fretboards so they never render empty', ...)"
+      "patch": "@@ -543,15 +543,40 @@\n+  if (eventData.isBeatWideMutation && semitoneDelta !== 0) { ... topologicalMutator.transposeBeatEventsInSource(...) }"
     }
   ]
 }

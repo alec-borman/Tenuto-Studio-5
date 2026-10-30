@@ -129,11 +129,15 @@ export default function WebGPUCanvas({
     eventIndex: number;
     event: any;
     mode: 'move' | 'resize';
+    isBeatWide?: boolean;
+    beatStartWhole?: number;
     startClientX: number;
     startClientY: number;
     semitoneDelta: number;
     deltaWidthPx: number;
   } | null>(null);
+  const [selectedBeatWhole, setSelectedBeatWhole] = useState<number | null>(null);
+  const [selectedBeatAnchorMidi, setSelectedBeatAnchorMidi] = useState<number | null>(null);
 
   useEffect(() => {
     onMutationRef.current = onMutation;
@@ -463,8 +467,15 @@ export default function WebGPUCanvas({
 
     const handleMouseUp = () => {
       if (dragState.semitoneDelta !== 0 || dragState.deltaWidthPx !== 0) {
+        const payload = dragState.isBeatWide
+          ? {
+              ...dragState.event,
+              isBeatWideMutation: true,
+              beatStartWhole: dragState.beatStartWhole ?? 0,
+            }
+          : dragState.event;
         onMutationRef.current?.(
-          dragState.event,
+          payload,
           dragState.deltaWidthPx,
           dragState.semitoneDelta,
           wholeNoteScale
@@ -480,6 +491,108 @@ export default function WebGPUCanvas({
       window.removeEventListener('mouseup', handleMouseUp);
     };
   }, [dragState, rowH, wholeNoteScale]);
+
+  const handleShiftRepitchBeatToMidi = useCallback(
+    (targetMidi: number, clientX?: number, svgElement?: SVGSVGElement | null) => {
+      const melodicEvents = visibleEvents.filter(
+        (ev) =>
+          ev?.pitch &&
+          !ev.pitch.isRest &&
+          !ev.pitch.isSpacer &&
+          !ev.pitch.gridKey &&
+          ev.style !== 'grid' &&
+          ev.pitch.midi > 0
+      );
+      if (melodicEvents.length === 0) return;
+
+      let beatWhole = selectedBeatWhole;
+      let anchorMidi = selectedBeatAnchorMidi;
+
+      // If a click X coordinate on the grid is provided, resolve the beat column under the cursor
+      if (clientX !== undefined && clientX > 0) {
+        const rect = svgElement?.getBoundingClientRect?.();
+        const scrollLeft = scrollViewportRef.current?.scrollLeft || 0;
+        const relX =
+          rect && rect.width > 0 ? clientX - rect.left + scrollLeft : clientX;
+        if (relX > keyWidth) {
+          const clickedWhole = Math.max(0, (relX - keyWidth) / wholeNoteScale);
+          // Find note covering clickedWhole, or nearest note onset
+          let bestEv = melodicEvents[0];
+          let minDist = Infinity;
+          for (const ev of melodicEvents) {
+            const st = ev.startTime
+              ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator)
+              : 0;
+            const dur = ev.duration
+              ? ev.duration.numerator / Math.max(1, ev.duration.denominator)
+              : 0.25;
+            if (clickedWhole >= st - 1e-3 && clickedWhole <= st + dur + 1e-3) {
+              bestEv = ev;
+              minDist = 0;
+              break;
+            }
+            const dist = Math.abs(clickedWhole - st);
+            if (dist < minDist) {
+              minDist = dist;
+              bestEv = ev;
+            }
+          }
+          beatWhole = bestEv.startTime
+            ? bestEv.startTime.numerator / Math.max(1, bestEv.startTime.denominator)
+            : 0;
+          const beatNotes = melodicEvents.filter((ev) => {
+            const st = ev.startTime
+              ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator)
+              : 0;
+            return Math.abs(st - beatWhole!) < 1e-4;
+          });
+          // Use the selected anchor note if on the same beat, otherwise use the first/root note on that beat
+          if (
+            selectedBeatWhole === null ||
+            Math.abs(selectedBeatWhole - beatWhole) > 1e-4 ||
+            anchorMidi === null
+          ) {
+            anchorMidi = beatNotes[0]?.pitch?.midi ?? bestEv.pitch.midi;
+          }
+        }
+      }
+
+      if (beatWhole === null) {
+        const firstEv = melodicEvents[0];
+        beatWhole = firstEv.startTime
+          ? firstEv.startTime.numerator / Math.max(1, firstEv.startTime.denominator)
+          : 0;
+        anchorMidi = firstEv.pitch.midi;
+      }
+
+      const beatNotes = melodicEvents.filter((ev) => {
+        const st = ev.startTime
+          ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator)
+          : 0;
+        return Math.abs(st - beatWhole!) < 1e-4;
+      });
+      if (beatNotes.length === 0) return;
+
+      const refMidi = anchorMidi ?? beatNotes[0].pitch.midi;
+      const semitoneDelta = Math.round(targetMidi - refMidi);
+      if (semitoneDelta === 0) return;
+
+      setSelectedBeatWhole(beatWhole);
+      setSelectedBeatAnchorMidi(targetMidi);
+
+      onMutationRef.current?.(
+        {
+          ...beatNotes[0],
+          isBeatWideMutation: true,
+          beatStartWhole: beatWhole,
+        },
+        0,
+        semitoneDelta,
+        wholeNoteScale
+      );
+    },
+    [visibleEvents, selectedBeatWhole, selectedBeatAnchorMidi, wholeNoteScale]
+  );
 
   // Smoothly auto-scroll container horizontally to follow playhead during playback
   useEffect(() => {
@@ -530,6 +643,7 @@ export default function WebGPUCanvas({
           return (
             <g key={midi}>
               <rect
+                data-testid={`piano-roll-row-${midi}`}
                 x={keyWidth}
                 y={y}
                 width={totalWidthPx - keyWidth}
@@ -537,8 +651,19 @@ export default function WebGPUCanvas({
                 fill={rowFill}
                 stroke={isC ? '#334155' : '#1E293B'}
                 strokeWidth={isC ? 1 : 0.5}
+                className="cursor-pointer"
+                onClick={(e) => {
+                  if (e.shiftKey || selectedBeatWhole !== null) {
+                    handleShiftRepitchBeatToMidi(
+                      midi,
+                      e.clientX,
+                      e.currentTarget.ownerSVGElement
+                    );
+                  }
+                }}
               />
               <rect
+                data-testid={`piano-key-${midi}`}
                 x={0}
                 y={y}
                 width={keyWidth}
@@ -546,6 +671,12 @@ export default function WebGPUCanvas({
                 fill={isBlackKey ? '#0F172A' : '#1E293B'}
                 stroke="#334155"
                 strokeWidth={0.5}
+                className="cursor-pointer"
+                onClick={(e) => {
+                  if (e.shiftKey || selectedBeatWhole !== null) {
+                    handleShiftRepitchBeatToMidi(midi);
+                  }
+                }}
               />
               {(isC || (rowH >= 14 && (noteMod === 5 || noteMod === 9))) && (
                 <text
@@ -589,20 +720,31 @@ export default function WebGPUCanvas({
         {visibleEvents.map((ev, idx) => {
           const baseMidi = ev.pitch?.midi ?? 60;
           if (baseMidi <= 0) return null;
-          const isBeingDragged = dragState?.eventIndex === idx;
-          const effectiveMidi = Math.max(
-            12,
-            Math.min(108, baseMidi + (isBeingDragged ? dragState.semitoneDelta : 0))
-          );
 
           const startWhole = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
           const durWhole = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
+          const isSameBeatAsDrag =
+            Boolean(dragState?.isBeatWide) &&
+            dragState?.beatStartWhole !== undefined &&
+            Math.abs(startWhole - dragState.beatStartWhole) < 1e-4 &&
+            ev.style !== 'grid' &&
+            !ev.pitch?.gridKey;
+          const isBeingDragged = dragState?.eventIndex === idx || isSameBeatAsDrag;
+          const isBeatLocked =
+            selectedBeatWhole !== null &&
+            Math.abs(startWhole - selectedBeatWhole) < 1e-4 &&
+            ev.style !== 'grid' &&
+            !ev.pitch?.gridKey;
+          const effectiveMidi = Math.max(
+            12,
+            Math.min(108, baseMidi + (isBeingDragged && dragState ? dragState.semitoneDelta : 0))
+          );
 
           const x = keyWidth + startWhole * wholeNoteScale;
           const baseW = Math.max(4, durWhole * wholeNoteScale - 1.5);
           const w = Math.max(
             6,
-            baseW + (isBeingDragged ? dragState.deltaWidthPx : 0)
+            baseW + (dragState?.eventIndex === idx ? dragState.deltaWidthPx : 0)
           );
           const clampedMidi = Math.max(minMidi, Math.min(maxMidi, effectiveMidi));
           const y = (maxMidi - clampedMidi) * rowH + 1.5;
@@ -657,10 +799,19 @@ export default function WebGPUCanvas({
               onMouseDown={(e) => {
                 e.stopPropagation();
                 onSelectRef.current?.(selectPayload);
+                if (e.shiftKey) {
+                  setSelectedBeatWhole(startWhole);
+                  setSelectedBeatAnchorMidi(baseMidi);
+                } else {
+                  setSelectedBeatWhole(null);
+                  setSelectedBeatAnchorMidi(null);
+                }
                 setDragState({
                   eventIndex: idx,
                   event: ev,
                   mode: 'move',
+                  isBeatWide: Boolean(e.shiftKey),
+                  beatStartWhole: startWhole,
                   startClientX: e.clientX,
                   startClientY: e.clientY,
                   semitoneDelta: 0,
@@ -676,9 +827,9 @@ export default function WebGPUCanvas({
                 rx={Math.min(4, Math.max(2, rowH / 4))}
                 fill={isBeingDragged ? '#38BDF8' : baseColor}
                 fillOpacity={isBeingDragged ? 0.92 : swell ? 0.65 : 1}
-                stroke={isBeingDragged ? '#FFFFFF' : '#F8FAFC'}
-                strokeOpacity={isBeingDragged ? 1 : 0.35}
-                strokeWidth={isBeingDragged ? 1.8 : 0.8}
+                stroke={isBeingDragged ? '#FFFFFF' : isBeatLocked ? '#FBBF24' : '#F8FAFC'}
+                strokeOpacity={isBeingDragged || isBeatLocked ? 1 : 0.35}
+                strokeWidth={isBeingDragged || isBeatLocked ? 1.8 : 0.8}
               />
               {swell === 'crescendo' && w > 12 && (
                 <polygon
@@ -756,6 +907,8 @@ export default function WebGPUCanvas({
     rootKey,
     scaleName,
     dragState,
+    selectedBeatWhole,
+    handleShiftRepitchBeatToMidi,
   ]);
 
   const currentWholeTime = playheadBeat / 4;

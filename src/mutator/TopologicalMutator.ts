@@ -486,6 +486,101 @@ export class TopologicalMutator {
   }
 
   /**
+   * Transposes all melodic and chord events occurring on `targetStartWhole` across the score
+   * (excluding rests, spacers, and `style=grid` drum tokens) by `semitoneDelta` semitones.
+   * Deduplicates shared chord spans and applies replacements in reverse character-offset order
+   * so earlier replacements never shift the offsets of later tokens in the document.
+   */
+  public transposeBeatEventsInSource(
+    sourceCode: string,
+    allEvents: Array<{
+      rawToken?: string;
+      startTime?: { numerator: number; denominator: number };
+      pitch?: { midi: number; isRest?: boolean; isSpacer?: boolean; gridKey?: string };
+      style?: string;
+      sourceStartOffset?: number;
+      sourceEndOffset?: number;
+      line?: number;
+      col?: number;
+    }>,
+    targetStartWhole: number,
+    semitoneDelta: number,
+    preferFlats?: boolean
+  ): string {
+    if (!sourceCode.trim() || semitoneDelta === 0 || !allEvents || allEvents.length === 0) {
+      return sourceCode;
+    }
+
+    const matchingEvents = allEvents.filter((ev) => {
+      if (!ev || !ev.rawToken || !ev.pitch) return false;
+      if (ev.pitch.isRest || ev.pitch.isSpacer || ev.pitch.gridKey || ev.style === 'grid') {
+        return false;
+      }
+      if (ev.pitch.midi <= 0) return false;
+      const stWhole = ev.startTime
+        ? ev.startTime.numerator / Math.max(1, ev.startTime.denominator)
+        : 0;
+      return Math.abs(stWhole - targetStartWhole) < 1e-4;
+    });
+
+    if (matchingEvents.length === 0) return sourceCode;
+
+    // Group events by their exact source span so multi-note chords `[c4 e4 g4]:4` are transposed
+    // once as a complete chord rather than 3 separate times.
+    const spanGroups = new Map<
+      string,
+      {
+        event: (typeof matchingEvents)[0];
+        count: number;
+      }
+    >();
+
+    for (const ev of matchingEvents) {
+      const key =
+        typeof ev.sourceStartOffset === 'number'
+          ? `offset:${ev.sourceStartOffset}`
+          : `loc:${ev.line ?? 0}:${ev.col ?? 0}:${ev.rawToken}`;
+      const existing = spanGroups.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        spanGroups.set(key, { event: ev, count: 1 });
+      }
+    }
+
+    const sortedGroups = Array.from(spanGroups.values()).sort((a, b) => {
+      const offA = a.event.sourceStartOffset ?? -1;
+      const offB = b.event.sourceStartOffset ?? -1;
+      if (offA !== -1 && offB !== -1 && offA !== offB) {
+        return offB - offA; // Reverse order (end of file -> start of file)
+      }
+      const lineDiff = (b.event.line ?? 0) - (a.event.line ?? 0);
+      if (lineDiff !== 0) return lineDiff;
+      return (b.event.col ?? 0) - (a.event.col ?? 0);
+    });
+
+    let nextCode = sourceCode;
+    for (const group of sortedGroups) {
+      const ev = group.event;
+      const rawToken = ev.rawToken!;
+      const isBracketChord = rawToken.trim().startsWith('[');
+      // Transpose the entire chord when a beat-wide mutation is active, or use originalMidi for single notes
+      const originalMidi = isBracketChord ? undefined : ev.pitch?.midi;
+      const mutatedToken = this.transposePitch(
+        rawToken,
+        semitoneDelta,
+        preferFlats,
+        originalMidi
+      );
+      if (mutatedToken !== rawToken) {
+        nextCode = this.replaceEventInSource(nextCode, ev, mutatedToken);
+      }
+    }
+
+    return nextCode;
+  }
+
+  /**
    * Surgically mutates `meta`, `var <track>_vol`, or `def <track>` lines in `sourceCode`
    * when the Mixer, Device Rack, or Transport dispatches an AST update, preserving all
    * user comments (`%%`) and document formatting.

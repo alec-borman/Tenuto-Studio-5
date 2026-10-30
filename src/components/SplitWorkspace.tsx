@@ -548,6 +548,34 @@ export default function SplitWorkspace() {
   ) => {
     if (!eventData || !eventData.rawToken) return;
     try {
+      const preferFlats = ['F', 'Bb', 'Eb', 'Ab', 'Db', 'Gb'].includes(
+        scoreMeta.key || ''
+      );
+
+      if (eventData.isBeatWideMutation && semitoneDelta !== 0) {
+        const beatWhole =
+          typeof eventData.beatStartWhole === 'number'
+            ? eventData.beatStartWhole
+            : eventData.startTime
+              ? eventData.startTime.numerator /
+                Math.max(1, eventData.startTime.denominator)
+              : 0;
+        const nextCode = topologicalMutator.transposeBeatEventsInSource(
+          sourceCode,
+          compiledEvents,
+          beatWhole,
+          semitoneDelta,
+          preferFlats
+        );
+        if (nextCode === sourceCode) return;
+        const prevCode = sourceCode;
+        const cmd = new ASTCommand(nextCode);
+        cmd.execute = () => setSourceCode(nextCode);
+        cmd.undo = () => setSourceCode(prevCode);
+        commandManager.executeCommand(cmd);
+        return;
+      }
+
       let mutatedToken = eventData.rawToken;
       if (deltaX !== 0) {
         mutatedToken = topologicalMutator.resizeDuration(
@@ -558,9 +586,6 @@ export default function SplitWorkspace() {
         );
       }
       if (semitoneDelta !== 0) {
-        const preferFlats = ['F', 'Bb', 'Eb', 'Ab', 'Db', 'Gb'].includes(
-          scoreMeta.key || ''
-        );
         mutatedToken = topologicalMutator.transposePitch(
           mutatedToken,
           semitoneDelta,
