@@ -1,35 +1,28 @@
 {
-  "proposal_id": "tdb-730-dynamic-code-driven-tab-chord-flow-view",
-  "target_intent": "TDB-730: Dynamic Code-Driven Tab & Voice-Leading Chord Flow View (Tab / Chord Flow)",
-  "delta_before": 0.24,
+  "proposal_id": "tdb-731-theater-grade-karaoke-overhaul",
+  "target_intent": "TDB-731: Cinematic Theater-Grade Karaoke Playback & Highlighting Overhaul",
+  "delta_before": 0.18,
   "mutations": [
     {
-      "file": "src/components/TabChordFlowView.tsx",
-      "function": "TabChordFlowView",
+      "file": "src/index.css",
+      "function": "Theater-Grade Karaoke CSS",
       "ast_depth": 1,
       "decay_weight": 0.95,
-      "patch": "@@ -0,0 +1,520 @@\n+export function detectChordSymbol(...) { ... }\n+export function computeGuitarVoicing(...) { ... }\n+export function extractCodeChordSlices(...) { ... }\n+export default function TabChordFlowView(...) { ... }"
+      "patch": "@@ -1,24 +1,66 @@\n+.tenuto-karaoke-subdued { opacity: 0.28 !important; ... }\n+.tenuto-karaoke-measure-active { ... }\n+.tenuto-karaoke-line-active { ... }\n+.tenuto-karaoke-token-active { ... }"
     },
     {
-      "file": "src/components/Transport.tsx",
-      "function": "Transport",
+      "file": "src/components/CodeEditor.tsx",
+      "function": "findMeasureLineRange & CodeEditor",
       "ast_depth": 2,
       "decay_weight": 0.9,
-      "patch": "@@ -4,1 +4,1 @@\n-export type MainStudioView = 'piano_roll' | 'session' | 'arrangement';\n+export type MainStudioView = 'piano_roll' | 'tab_flow' | 'session' | 'arrangement';\n@@ -326,3 +326,4 @@\n                     { id: 'piano_roll', label: 'Piano Roll' },\n+                    { id: 'tab_flow', label: 'Tab / Chord Flow' },\n                     { id: 'session', label: 'Session' },"
+      "patch": "@@ -80,0 +80,35 @@\n+export function findMeasureLineRange(code: string, measureNumber: number) { ... }\n@@ -245,40 +280,85 @@\n+const mRange = findMeasureLineRange(code, measureNum);\n+// Apply tenuto-karaoke-measure-active, tenuto-karaoke-subdued, tenuto-karaoke-line-active, tenuto-karaoke-token-active"
     },
     {
-      "file": "src/components/SplitWorkspace.tsx",
-      "function": "SplitWorkspace",
-      "ast_depth": 2,
-      "decay_weight": 0.9,
-      "patch": "@@ -9,1 +9,2 @@\n import DeviceChainDock from './DeviceChainDock';\n+import TabChordFlowView from './TabChordFlowView';\n@@ -770,0 +771,9 @@\n+            {activeMainView === 'tab_flow' && (\n+              <TabChordFlowView score={compiledScoreState} events={compiledEvents} playheadBeat={playheadBeat} isPlaying={isPlaying} rootKey={scoreMeta.key} />\n+            )}"
-    },
-    {
-      "file": "tests/tab_chord_flow_view.test.tsx",
-      "function": "TDB-730 Suite",
+      "file": "tests/code_editor_matrix.test.tsx",
+      "function": "TDB-731 Suite",
       "ast_depth": 1,
       "decay_weight": 0.95,
-      "patch": "@@ -0,0 +1,105 @@\n+describe('TDB-730: Dynamic Code-Driven Tab & Voice-Leading Chord Flow View', () => { ... });"
+      "patch": "@@ -48,45 +48,60 @@\n+it('correctly maps the line boundaries of any active measure with findMeasureLineRange', ...)"
     }
   ]
 }

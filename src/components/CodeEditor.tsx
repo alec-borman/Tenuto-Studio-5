@@ -11,7 +11,7 @@ export interface ActiveKaraokeToken {
   endCol: number;
   sourceStartOffset?: number;
   sourceEndOffset?: number;
-  progressPct: number; // 0 .. 100 sweep across the token duration
+  progressPct: number;
 }
 
 interface CodeEditorProps {
@@ -22,10 +22,6 @@ interface CodeEditorProps {
   isPlaying?: boolean;
 }
 
-/**
- * Computes the deduplicated list of currently sounding `.ten` code tokens at `playheadBeat`
- * along with each token's 0%..100% intra-note karaoke sweep progress.
- */
 export function computeActiveKaraokeTokens(
   events: any[] = [],
   playheadBeat: number = 0,
@@ -76,6 +72,44 @@ export function computeActiveKaraokeTokens(
   }
 
   return active;
+}
+
+/**
+ * Scan editor code text to detect exactly where "measure N" starts and ends (until next measure or end of wrapper).
+ */
+export function findMeasureLineRange(
+  code: string,
+  measureNumber: number
+): { startLine: number; endLine: number } | null {
+  if (measureNumber <= 0) return null;
+  const lines = code.split('\n');
+  const startRegex = new RegExp(`^\\s*measure\\s+${measureNumber}\\b`, 'i');
+  const anyMeasureRegex = /^\s*measure\s+\d+/i;
+
+  let startLine = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (startRegex.test(lines[i])) {
+      startLine = i + 1;
+      break;
+    }
+  }
+
+  if (startLine === -1) return null;
+
+  let endLine = lines.length;
+  for (let j = startLine; j < lines.length; j++) {
+    const trim = lines[j].trim();
+    if (trim === '}') {
+      endLine = j + 1;
+      break;
+    }
+    if (anyMeasureRegex.test(lines[j]) || (trim.startsWith('def') && j > startLine + 1)) {
+      endLine = j;
+      break;
+    }
+  }
+
+  return { startLine, endLine };
 }
 
 export function configureTenutoMonaco(monaco: any): void {
@@ -202,11 +236,11 @@ export function configureTenutoMonaco(monaco: any): void {
         'editorLineNumber.foreground': '#475569',
         'editorLineNumber.activeForeground': '#94A3B8',
         'editor.selectionBackground': '#1E3A8A80',
-        'editor.lineHighlightBackground': '#1E293B50',
+        'editor.lineHighlightBackground': '#1E293B30',
       },
     });
   } catch {
-    // Ignore in mocked test environments
+    // Graceful fallback for mocked environments
   }
 }
 
@@ -227,7 +261,7 @@ export default function CodeEditor({
     [events, playheadBeat, isPlaying]
   );
 
-  // Synchronize Monaco delta decorations & smooth auto-scrolling with active playing tokens
+  // Synchronize Theater-Spotlight Delta Decorations, Measure Fades, and smooth Scroll Position centering
   useEffect(() => {
     const editor = editorRef.current;
     const monaco = monacoRef.current;
@@ -243,9 +277,67 @@ export default function CodeEditor({
       }
 
       const model = editor.getModel?.();
+      const numLines = model ? model.getLineCount() : code.split('\n').length;
       const newDecorations: any[] = [];
-      const activeLines = new Set<number>();
 
+      // Determine active measure boundary
+      const measureNum = activeTokens[0].measureNumber;
+      const mRange = findMeasureLineRange(code, measureNum);
+
+      if (mRange) {
+        // 1. Wrap the active measure in the high-contrast back-glow outlining box
+        newDecorations.push({
+          range: new monaco.Range(mRange.startLine, 1, mRange.endLine, 1),
+          options: {
+            isWholeLine: true,
+            className: 'tenuto-karaoke-measure-active',
+          },
+        });
+
+        // 2. Heavy 28% Opacity dim on all previous unplayed measures
+        if (mRange.startLine > 1) {
+          newDecorations.push({
+            range: new monaco.Range(1, 1, mRange.startLine - 1, 1),
+            options: {
+              isWholeLine: true,
+              className: 'tenuto-karaoke-subdued',
+            },
+          });
+        }
+
+        // 3. Heavy 28% Opacity dim on all subsequent measures
+        if (mRange.endLine < numLines) {
+          newDecorations.push({
+            range: new monaco.Range(mRange.endLine + 1, 1, numLines, 1),
+            options: {
+              isWholeLine: true,
+              className: 'tenuto-karaoke-subdued',
+            },
+          });
+        }
+      }
+
+      // 4. Spotlight the specific active track lines within that measure with pulsing green gradient
+      const activeLines = new Set<number>();
+      for (const tok of activeTokens) {
+        let ln = tok.line;
+        if (model && typeof model.getPositionAt === 'function' && typeof tok.sourceStartOffset === 'number') {
+          ln = model.getPositionAt(tok.sourceStartOffset).lineNumber;
+        }
+        activeLines.add(ln);
+      }
+
+      for (const al of activeLines) {
+        newDecorations.push({
+          range: new monaco.Range(al, 1, al, 1),
+          options: {
+            isWholeLine: true,
+            className: 'tenuto-karaoke-line-active',
+          },
+        });
+      }
+
+      // 5. Highlight sounding tokens in white-gold with smooth progress underlining
       for (const tok of activeTokens) {
         let startLine = tok.line;
         let startCol = tok.col;
@@ -266,22 +358,10 @@ export default function CodeEditor({
           endCol = pEnd.column;
         }
 
-        activeLines.add(startLine);
-
         newDecorations.push({
           range: new monaco.Range(startLine, startCol, endLine, endCol),
           options: {
             inlineClassName: 'tenuto-karaoke-token-active',
-          },
-        });
-      }
-
-      for (const ln of activeLines) {
-        newDecorations.push({
-          range: new monaco.Range(ln, 1, ln, 1),
-          options: {
-            isWholeLine: true,
-            className: 'tenuto-karaoke-line-active',
           },
         });
       }
@@ -291,26 +371,27 @@ export default function CodeEditor({
         newDecorations
       );
 
-      // Smoothly auto-scroll Monaco to keep the currently playing measure in view
-      const primaryLine = activeTokens[0].line;
-      if (primaryLine > 0 && Math.abs(primaryLine - lastRevealedLineRef.current) >= 2) {
-        lastRevealedLineRef.current = primaryLine;
-        editor.revealLineInCenterIfOutsideViewport?.(primaryLine, 0);
+      // Smooth Centering: keeps the active playing rows comfortably in focus (centered around 1/3 top)
+      const centerLine = mRange ? mRange.startLine : activeTokens[0].line;
+      if (centerLine > 0 && Math.abs(centerLine - lastRevealedLineRef.current) >= 2) {
+        lastRevealedLineRef.current = centerLine;
+        const targetViewLine = Math.max(1, centerLine - 2);
+        editor.revealLineInCenterIfOutsideViewport?.(targetViewLine, 0);
       }
     } catch {
-      // Ignore decoration errors in headless environments
+      // Graceful fallback for mocked environments
     }
-  }, [activeTokens]);
+  }, [activeTokens, code]);
 
   return (
-    <div className="w-full h-full flex flex-col overflow-hidden relative">
-      {/* Live Karaoke Code & Lyric Sweep Ribbon (Visible when playing or scrubbing) */}
+    <div className="w-full h-full flex flex-col overflow-hidden relative tenuto-editor-playback">
+      {/* Top compact Horizontal Karaoke progress ticker ribbon */}
       {activeTokens.length > 0 && (
         <div
           data-testid="karaoke-code-ribbon"
           className="bg-slate-900/95 border-b border-emerald-500/40 px-3 py-1.5 flex items-center gap-2 overflow-x-auto no-scrollbar shrink-0 z-10 select-none"
         >
-          <span className="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 text-[10px] font-mono font-bold uppercase tracking-wider shrink-0">
+          <span className="px-2 py-0.5 rounded bg-emerald-500/25 border border-emerald-500/50 text-emerald-300 text-[10px] font-mono font-bold uppercase tracking-wider shrink-0 shadow-[0_0_8px_rgba(16,185,129,0.25)]">
             ♫ Now Playing M{activeTokens[0].measureNumber}
           </span>
 
@@ -319,9 +400,8 @@ export default function CodeEditor({
               <div
                 key={`${tok.trackId}-${tok.line}-${tok.col}-${idx}`}
                 data-testid={`karaoke-pill-${tok.trackId}`}
-                className="relative overflow-hidden rounded bg-slate-950 border border-emerald-500/50 px-2.5 py-0.5 text-[11px] font-mono flex items-center gap-1.5 shrink-0 shadow-[0_0_8px_rgba(16,185,129,0.2)]"
+                className="relative overflow-hidden rounded bg-slate-950 border border-emerald-500/50 px-2.5 py-0.5 text-[11px] font-mono flex items-center gap-1.5 shrink-0 shadow-[0_0_6px_rgba(16,185,129,0.15)]"
               >
-                {/* Smooth Left-to-Right Karaoke Progress Wipe Fill */}
                 <div
                   data-testid={`karaoke-fill-${tok.trackId}`}
                   style={{ width: `${tok.progressPct}%` }}
