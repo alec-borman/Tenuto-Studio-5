@@ -1,7 +1,7 @@
 {
   "name": "tenuto-studio-5",
   "private": true,
-  "version": "5.0.8",
+  "version": "5.1.0",
   "description": "Tenuto Studio 5 - Declarative Code-to-Music Studio and Scrolling Piano Roll Player",
   "author": "Alec Borman",
   "main": "electron/main.cjs",

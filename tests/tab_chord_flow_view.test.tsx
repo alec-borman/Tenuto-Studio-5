@@ -3,9 +3,9 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import TabChordFlowView, {
   detectChordSymbol,
-  extractCodeChordSlices,
   buildTrueVoiceTrajectories,
   evaluateTrackedEventMidiAtWhole,
+  allocateNotesToTabStrings,
 } from '../src/components/TabChordFlowView';
 import { DocumentParser } from '../src/parser/DocumentParser';
 import SplitWorkspace from '../src/components/SplitWorkspace';
@@ -25,12 +25,12 @@ vi.mock('@monaco-editor/react', () => ({
 
 HTMLCanvasElement.prototype.getContext = vi.fn();
 
-describe('TDB-733: True Multi-Instrument Voice-Leading Trajectories & Orb-to-Line Lock', () => {
-  it('includes all instruments (including drums) and locks every playhead orb directly onto its trajectory line', () => {
+describe('TDB-733 & TDB-736: Multi-Instrument Tab Staff Lanes, Per-Track Fretboards & Pinch-Zoom / Fit-All', () => {
+  it('renders a dedicated horizontal 6-string Tab Staff lane for each instrument and supports Pinch-to-Zoom and Fit All', () => {
     const parser = new DocumentParser();
     const score = parser.compile(`
       tenuto "6.0" {
-        meta @{ title: "Multi-Track Lock Test", tempo: 128, time: "4/4", key: "D" }
+        meta @{ title: "Multi-Track Tab Staff Test", tempo: 128, time: "4/4", key: "D" }
         def saws  "Supersaw" style=synth patch="supersaw"
         def reese "Reese"    style=synth patch="reese_bass"
         def lead  "Lead"     style=synth patch="pluck_lead"
@@ -54,9 +54,12 @@ describe('TDB-733: True Multi-Instrument Voice-Leading Trajectories & Orb-to-Lin
     const trajectories = buildTrueVoiceTrajectories(score.events);
     expect(trajectories.length).toBeGreaterThan(10);
 
-    // At beat 1.0 (wholeTime = 0.25), evaluateTrackedEventMidiAtWhole returns exact MIDI pitches
     const leadFirst = trajectories.find((t) => t.trackId === 'lead' && t.startWhole === 0)!;
     expect(evaluateTrackedEventMidiAtWhole(leadFirst, 0.25)).toBe(78); // F#5 = 78
+
+    // Verify 6-string tab allocation assigns distinct strings to chord notes
+    const allocated = allocateNotesToTabStrings([50, 57, 62, 66, 69, 73]);
+    expect(allocated.size).toBe(6);
 
     render(
       <TabChordFlowView
@@ -68,13 +71,30 @@ describe('TDB-733: True Multi-Instrument Voice-Leading Trajectories & Orb-to-Lin
       />
     );
 
-    // All 4 tracks (including drums!) are listed in the selector and pills
+    // Every instrument gets its own dedicated Tab Staff row when All (4) is selected
     expect(screen.getByText(/All \(4\)/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Filter chord flow by drums/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Filter chord flow by saws/i })).toBeInTheDocument();
+    expect(screen.getByTestId('instrument-tab-staff-saws')).toBeInTheDocument();
+    expect(screen.getByTestId('instrument-tab-staff-reese')).toBeInTheDocument();
+    expect(screen.getByTestId('instrument-tab-staff-lead')).toBeInTheDocument();
+    expect(screen.getByTestId('instrument-tab-staff-drums')).toBeInTheDocument();
 
-    // Clicking 'lead' pill isolates only the lead track's notes (F#5 at beat 1.0)
+    // Test trackpad pinch-to-zoom and Fit All controls
+    const viewport = screen.getByTestId('tab-flow-scroll-viewport');
+    expect(screen.getByRole('button', { name: /Tab Reset Zoom/i })).toHaveTextContent('100%');
+
+    fireEvent.wheel(viewport, { deltaY: -100, ctrlKey: true });
+    expect(screen.getByRole('button', { name: /Tab Reset Zoom/i })).not.toHaveTextContent('100%');
+
+    fireEvent.click(screen.getByRole('button', { name: /Tab Reset Zoom/i }));
+    expect(screen.getByRole('button', { name: /Tab Reset Zoom/i })).toHaveTextContent('100%');
+
+    fireEvent.click(screen.getByRole('button', { name: /Fit All Tab View/i }));
+    expect(screen.getByRole('button', { name: /Tab Reset Zoom/i })).not.toHaveTextContent('100%');
+
+    // Clicking 'lead' pill isolates only the lead track's Tab Staff and orb (F#5 at beat 1.0)
     fireEvent.click(screen.getByRole('button', { name: /Filter chord flow by lead/i }));
+    expect(screen.getByTestId('instrument-tab-staff-lead')).toBeInTheDocument();
+    expect(screen.queryByTestId('instrument-tab-staff-saws')).not.toBeInTheDocument();
     expect(screen.getByTestId('voice-orb-0')).toHaveTextContent('F♯5');
   });
 
