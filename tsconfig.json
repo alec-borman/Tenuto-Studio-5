@@ -18,6 +18,9 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "@lancedb/lancedb": [
+        "./src/ai/lancedb-stub.ts"
       ]
     },
     "allowImportingTsExtensions": true,
