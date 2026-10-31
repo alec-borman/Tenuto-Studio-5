@@ -24,6 +24,7 @@ import {
   MidiGeneratorType,
 } from '../mutator/MidiTransformAndGeneratorEngine';
 import { DebouncedCodeMemory } from '../utils/DebouncedCodeMemory';
+import { usePlaybackAutoHideTopBar } from '../utils/usePlaybackAutoHideTopBar';
 
 export const IPHONE_15_PRO_STORAGE_KEY = 'tenuto_viewport_iphone15pro_v1';
 
@@ -75,6 +76,7 @@ export default function SplitWorkspace() {
     }
   });
   const isAudioInitialized = useRef<boolean>(false);
+  const { isTopBarHidden, revealTopBar } = usePlaybackAutoHideTopBar(isPlaying);
 
   const isImmersiveStage = isIphonePortrait || isAppFullscreen || isFullscreen;
 
@@ -950,6 +952,15 @@ export default function SplitWorkspace() {
             : 'h-full w-full flex flex-col overflow-hidden'
         }
       >
+        <div
+          data-testid="app-top-bar-hover-zone"
+          onMouseEnter={revealTopBar}
+          onMouseMove={revealTopBar}
+          className={`absolute top-0 left-0 right-0 h-8 z-[90] ${
+            isTopBarHidden ? 'pointer-events-auto' : 'pointer-events-none'
+          }`}
+        />
+
         {isIphonePortrait && (
           <div
             data-testid="iphone15pro-dynamic-island-bar"
@@ -960,14 +971,21 @@ export default function SplitWorkspace() {
         {isImmersiveStage && (
           <div
             data-testid="floating-stage-controls"
-            className="absolute top-2.5 right-2.5 z-[100] flex items-center gap-1.5 bg-black/80 hover:bg-black/95 backdrop-blur-md border border-white/25 rounded-full px-2.5 py-1 shadow-2xl"
+            data-topbar-hidden={isTopBarHidden ? 'true' : 'false'}
+            onMouseEnter={revealTopBar}
+            onMouseMove={revealTopBar}
+            className={`${
+              isTopBarHidden
+                ? 'max-h-0 opacity-0 -translate-y-4 pointer-events-none border-0 py-0'
+                : 'h-10 min-h-[40px] max-h-[40px] opacity-100 translate-y-0 pointer-events-auto border-b border-white/15'
+            } w-full z-[100] flex items-center justify-between gap-1.5 bg-zinc-950/95 px-2.5 shrink-0 select-none overflow-hidden transition-all duration-200`}
           >
             <button
               type="button"
               data-testid="stage-transport-toggle-btn"
               aria-label={isPlaying ? 'Stop Audio' : 'Start Audio'}
               onClick={handleTogglePlay}
-              className={`px-2 py-0.5 rounded-full text-[11px] font-bold cursor-pointer transition-colors ${
+              className={`px-2.5 py-1 rounded-full text-[11px] font-bold cursor-pointer transition-colors shrink-0 whitespace-nowrap ${
                 isPlaying
                   ? 'bg-red-500 text-white'
                   : 'bg-emerald-500 text-black hover:bg-emerald-400'
@@ -983,7 +1001,7 @@ export default function SplitWorkspace() {
               onClick={() =>
                 setActiveMainView((prev) => (prev === 'tab_flow' ? 'piano_roll' : 'tab_flow'))
               }
-              className="px-2 py-0.5 rounded-full text-[11px] font-mono bg-zinc-800 hover:bg-zinc-700 text-amber-200 border border-amber-400/30 cursor-pointer"
+              className="px-2.5 py-1 rounded-full text-[11px] font-mono bg-zinc-800 hover:bg-zinc-700 text-amber-200 border border-amber-400/30 cursor-pointer shrink-0 whitespace-nowrap"
             >
               {activeMainView === 'tab_flow' ? 'View: Guitar Tab' : 'View: Scroll Roll'}
             </button>
@@ -994,7 +1012,7 @@ export default function SplitWorkspace() {
                 data-testid="undo-rotation-btn"
                 aria-label="Undo iPhone Rotation"
                 onClick={handleUndoRotation}
-                className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-cyan-500 text-black hover:bg-cyan-400 cursor-pointer shadow-xs"
+                className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-cyan-400 text-black hover:bg-cyan-300 cursor-pointer shadow-xs shrink-0 whitespace-nowrap"
                 title="Undo vertical iPhone rotation and return to desktop view (Esc)"
               >
                 ↺ Undo Rotation
@@ -1006,7 +1024,7 @@ export default function SplitWorkspace() {
               data-testid="exit-fullscreen-btn"
               aria-label="Exit Fullscreen and Portrait Mode"
               onClick={handleExitAllImmersive}
-              className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-rose-600 text-white hover:bg-rose-500 cursor-pointer shadow-xs"
+              className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-rose-600 text-white hover:bg-rose-500 cursor-pointer shadow-xs shrink-0 whitespace-nowrap"
               title="Exit Fullscreen / Portrait Mode (Press Esc)"
             >
               ✕ Exit (Esc)
@@ -1021,8 +1039,20 @@ export default function SplitWorkspace() {
             isFullscreen ? 'tenuto-fullscreen-active' : ''
           } flex-1 w-full max-w-[100vw] bg-slate-950 text-slate-100 overflow-hidden flex flex-col min-h-0`}
         >
-          {/* Top Bar: Transport Controls & Demo Selector (Collapsed in Immersive Portrait/Fullscreen Mode) */}
-          <div className={isImmersiveStage ? 'sr-only' : 'shrink-0'}>
+          {/* Top Bar: Transport Controls & Demo Selector (Collapsed in Immersive Mode or Auto-Hidden During Playback) */}
+          <div
+            data-testid="app-top-header"
+            data-topbar-hidden={isTopBarHidden ? 'true' : 'false'}
+            onMouseEnter={revealTopBar}
+            onMouseMove={revealTopBar}
+            className={
+              isImmersiveStage
+                ? 'sr-only'
+                : isTopBarHidden
+                  ? 'max-h-0 opacity-0 overflow-hidden py-0 border-0 pointer-events-none transition-all duration-200'
+                  : 'shrink-0 transition-all duration-200'
+            }
+          >
             <Transport
               isPlaying={isPlaying}
               onTogglePlay={handleTogglePlay}

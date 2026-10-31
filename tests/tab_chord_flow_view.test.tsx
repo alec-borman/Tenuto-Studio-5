@@ -245,4 +245,106 @@ describe('TDB-733, TDB-736, TDB-739 & TDB-741: Detune-Only Tab Sliding, Sub-Bass
 
     window.localStorage.removeItem('tenuto_viewport_iphone15pro_v1');
   });
+
+  it('locks vertical pixel heights and single-line truncation on the hero stage and track headers to prevent vertical playback bounce', () => {
+    window.localStorage.setItem('tenuto_viewport_iphone15pro_v1', 'true');
+    const parser = new DocumentParser();
+    const score = parser.compile('pno: [c3 e3 g3 b3 d4 f#4]:2 c4:2');
+
+    const { rerender } = render(
+      <TabChordFlowView
+        events={score.events}
+        isPlaying={true}
+        playheadBeat={0.25}
+        rootKey="C"
+        score={score}
+      />
+    );
+
+    const rootView = screen.getByTestId('tab-chord-flow-view');
+    expect(rootView).toHaveAttribute('data-vertical-lock', 'true');
+
+    const heroStage = screen.getByTestId('tab-hero-chord-stage');
+    expect(heroStage.className).toContain('h-[92px]');
+    expect(heroStage.className).toContain('max-h-[92px]');
+    expect(heroStage.className).toContain('overflow-hidden');
+
+    const trackHeader = screen.getByTestId('portrait-track-header-pno');
+    expect(trackHeader.className).toContain('h-8');
+    expect(trackHeader.className).toContain('max-h-[32px]');
+    expect(trackHeader.className).toContain('whitespace-nowrap');
+
+    // Rerender at beat 2.5 (single note instead of 6-note chord) and confirm classes/structure remain identical
+    rerender(
+      <TabChordFlowView
+        events={score.events}
+        isPlaying={true}
+        playheadBeat={2.5}
+        rootKey="C"
+        score={score}
+      />
+    );
+    expect(screen.getByTestId('tab-hero-chord-stage').className).toContain('h-[92px]');
+    expect(screen.getByTestId('portrait-track-header-pno').className).toContain('max-h-[32px]');
+
+    window.localStorage.removeItem('tenuto_viewport_iphone15pro_v1');
+  });
+
+  it('hides the top bar automatically when playback starts and only reveals it on top mouse hover or touchpad wheel scroll', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile('pno: [c4 e4 g4]:1');
+
+    const { rerender } = render(
+      <TabChordFlowView
+        events={score.events}
+        isPlaying={false}
+        playheadBeat={0}
+        rootKey="C"
+        score={score}
+      />
+    );
+
+    const rootView = screen.getByTestId('tab-chord-flow-view');
+    expect(rootView).toHaveAttribute('data-topbar-hidden', 'false');
+
+    // Start playback -> top bar hides immediately
+    rerender(
+      <TabChordFlowView
+        events={score.events}
+        isPlaying={true}
+        playheadBeat={0.25}
+        rootKey="C"
+        score={score}
+      />
+    );
+    expect(rootView).toHaveAttribute('data-topbar-hidden', 'true');
+
+    // Move mouse over the top hover zone -> top bar reappears
+    fireEvent.mouseMove(screen.getByTestId('top-bar-hover-zone'));
+    expect(rootView).toHaveAttribute('data-topbar-hidden', 'false');
+
+    // Restart playback -> hidden again, then scroll touchpad (wheel) -> top bar reappears
+    rerender(
+      <TabChordFlowView
+        events={score.events}
+        isPlaying={false}
+        playheadBeat={0.5}
+        rootKey="C"
+        score={score}
+      />
+    );
+    rerender(
+      <TabChordFlowView
+        events={score.events}
+        isPlaying={true}
+        playheadBeat={0.75}
+        rootKey="C"
+        score={score}
+      />
+    );
+    expect(rootView).toHaveAttribute('data-topbar-hidden', 'true');
+
+    fireEvent.wheel(window, { deltaY: 40 });
+    expect(rootView).toHaveAttribute('data-topbar-hidden', 'false');
+  });
 });

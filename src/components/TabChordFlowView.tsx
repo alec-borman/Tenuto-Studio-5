@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { CompiledScore } from '../parser/DocumentParser';
 import { WindowedModulationSpec } from '../parser/ASTSerializer';
+import { usePlaybackAutoHideTopBar } from '../utils/usePlaybackAutoHideTopBar';
 
 export interface ChordSymbolInfo {
   rootLetter: string;
@@ -911,6 +912,7 @@ export default function TabChordFlowView({
   const trackPillsRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [isTiktokCleanHud, setIsTiktokCleanHud] = useState<boolean>(false);
+  const { isTopBarHidden, revealTopBar } = usePlaybackAutoHideTopBar(Boolean(isPlaying));
   const [isIphonePortrait, setIsIphonePortrait] = useState<boolean>(() => {
     try {
       return window.localStorage?.getItem('tenuto_viewport_iphone15pro_v1') === 'true';
@@ -1282,10 +1284,14 @@ export default function TabChordFlowView({
       data-viewport-mode={isIphonePortrait ? 'iphone-15-pro-portrait' : 'desktop-landscape'}
       data-native-resolution={isIphonePortrait ? '1179x2556' : 'desktop'}
       data-tiktok-clean-hud={isTiktokCleanHud ? 'true' : 'false'}
+      data-topbar-hidden={isTopBarHidden ? 'true' : 'false'}
+      data-vertical-lock="true"
       data-scroll-theme={activePalette.id}
+      onWheel={revealTopBar}
       style={{
         background: activePalette.backgroundGradient,
         willChange: 'transform, contents',
+        overflowAnchor: 'none',
         ...(isIphonePortrait && isFullscreen
           ? { width: '393px', height: '852px', maxWidth: '393px', maxHeight: '852px' }
           : {}),
@@ -1298,8 +1304,21 @@ export default function TabChordFlowView({
           : 'w-full h-full'
       }`}
     >
+      <div
+        data-testid="top-bar-hover-zone"
+        onMouseEnter={revealTopBar}
+        onMouseMove={revealTopBar}
+        className={`sticky top-0 left-0 right-0 h-5 -mb-5 z-[70] ${
+          isTopBarHidden ? 'pointer-events-auto' : 'pointer-events-none'
+        }`}
+      />
+
       {(isFullscreen || isIphonePortrait) && (
-        <div className="sticky top-2 left-2 z-50 flex items-center gap-1.5 px-2 py-1 w-fit rounded-full bg-black/75 backdrop-blur-md border border-white/20">
+        <div
+          className={`sr-only ${
+            isTopBarHidden ? 'opacity-0 -translate-y-4 pointer-events-none' : 'opacity-100 translate-y-0'
+          }`}
+        >
           {isIphonePortrait && (
             <button
               type="button"
@@ -1325,12 +1344,18 @@ export default function TabChordFlowView({
         </div>
       )}
 
-      {/* Top Control Bar (Collapsed via sr-only in Portrait/Fullscreen so 100% of stage is Guitar Tab) */}
+      {/* Top Control Bar (Auto-Hides on Playback Start; Reveals on Top Mouse Hover or Touchpad Scroll) */}
       <div
+        data-testid="tab-top-control-bar"
+        data-topbar-hidden={isTopBarHidden ? 'true' : 'false'}
+        onMouseEnter={revealTopBar}
+        onMouseMove={revealTopBar}
         className={
           isIphonePortrait || isFullscreen
             ? 'sr-only'
-            : 'bg-black/40 border-b border-amber-300/20 px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-1.5 shrink-0 z-20'
+            : isTopBarHidden
+              ? 'max-h-0 opacity-0 overflow-hidden py-0 border-0 pointer-events-none transition-all duration-200'
+              : 'bg-black/40 border-b border-amber-300/20 px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-1.5 shrink-0 z-20 transition-all duration-200'
         }
       >
         {!isTiktokCleanHud && (
@@ -1557,14 +1582,18 @@ export default function TabChordFlowView({
         </div>
       </div>
 
-      {/* Compact Harmonic Summary Banner */}
-      <div className="px-4 py-2 bg-black/20 border-b border-amber-200/15 flex items-center justify-between gap-4 shrink-0 z-10">
-        <div className="flex items-center gap-3 min-w-0">
+      {/* Locked-Height Top Hero Chord & Fretboard Stage Banner (Zero Vertical Bounce) */}
+      <div
+        data-testid="tab-hero-chord-stage"
+        style={{ contain: 'layout paint' }}
+        className="h-[92px] min-h-[92px] max-h-[92px] px-3 flex items-center justify-between gap-2.5 border-b border-white/15 bg-black/25 shrink-0 overflow-hidden z-10"
+      >
+        <div className="flex items-center gap-2.5 min-w-0 flex-1 overflow-hidden">
           <div
             data-testid="active-chord-symbol"
-            className="flex items-baseline tracking-tight drop-shadow-[0_2px_12px_rgba(255,255,255,0.3)] shrink-0"
+            className="w-14 shrink-0 flex items-baseline justify-center tracking-tight drop-shadow-[0_2px_12px_rgba(255,255,255,0.3)] truncate whitespace-nowrap overflow-hidden"
           >
-            <span className="text-2xl sm:text-3xl font-bold text-white font-sans">
+            <span className="text-2xl sm:text-3xl font-black text-white font-sans truncate">
               {liveSymbol ? liveSymbol.rootLetter : '—'}
             </span>
             {liveSymbol?.rootAccidental && (
@@ -1572,18 +1601,18 @@ export default function TabChordFlowView({
                 {liveSymbol.rootAccidental}
               </span>
             )}
-            <span className="text-xl sm:text-2xl font-medium text-amber-100/95">
+            <span className="text-lg sm:text-xl font-medium text-amber-100/95 truncate">
               {liveSymbol ? liveSymbol.quality : ''}
             </span>
           </div>
 
-          <div className="flex flex-col min-w-0">
-            <span className="text-[10px] font-mono text-amber-200 uppercase tracking-wider">
+          <div className="flex flex-col min-w-0 flex-1 overflow-hidden">
+            <span className="text-[11px] font-mono uppercase tracking-wider text-amber-200/90 truncate whitespace-nowrap">
               {selectedTrackId
-                ? `Isolated Instrument: ${selectedTrackId.toUpperCase()}`
-                : `Multi-Instrument Tab Staves (${visibleTracks.length} Tracks)`}
+                ? `Isolated: ${selectedTrackId.toUpperCase()}`
+                : `Tab Staves (${visibleTracks.length} Tracks)`}
             </span>
-            <span className="text-[11px] font-mono text-amber-100/85 truncate">
+            <span className="text-[11px] font-mono text-amber-100/80 truncate whitespace-nowrap">
               {livePlayheadMidis.length > 0
                 ? `M${Math.floor(currentWhole) + 1} • Notes: ${livePlayheadMidis
                     .map((m) => formatMidiPitchDisplay(m, preferFlats))
@@ -1596,7 +1625,7 @@ export default function TabChordFlowView({
         {/* Reference 6-String Guitar Fretboard Diagram */}
         <div
           data-testid="guitar-fretboard-diagram"
-          className="flex items-center gap-2 bg-black/30 border border-amber-300/25 rounded px-2.5 py-1 shrink-0"
+          className="w-[178px] h-[74px] min-h-[74px] max-h-[74px] shrink-0 overflow-hidden flex items-center justify-between px-2.5 rounded-lg border border-amber-200/25 bg-black/30"
         >
           <div className="flex flex-col items-end">
             <span className="text-[9px] font-sans font-bold tracking-[0.2em] text-amber-200 uppercase">
@@ -1706,7 +1735,7 @@ export default function TabChordFlowView({
           {/* Sticky Top Measure & Chord Ruler */}
           <div
             style={{ backgroundColor: activePalette.headerBg }}
-            className="flex sticky top-0 z-30 bg-[#3B1503] border-b border-amber-200/25 h-7 items-center"
+            className="flex sticky top-0 z-30 bg-[#3B1503] border-b border-amber-200/25 h-7 min-h-[28px] max-h-[28px] shrink-0 overflow-hidden whitespace-nowrap items-center"
           >
             {!isIphonePortrait && (
               <div
@@ -1827,33 +1856,38 @@ export default function TabChordFlowView({
               <div
                 key={track.id}
                 data-testid={`instrument-tab-staff-${track.id}`}
-                style={{ height: isIphonePortrait ? `${staffHeightPx + 34}px` : `${staffHeightPx}px` }}
+                style={{
+                  height: isIphonePortrait ? `${staffHeightPx + 32}px` : `${staffHeightPx}px`,
+                  minHeight: isIphonePortrait ? `${staffHeightPx + 32}px` : `${staffHeightPx}px`,
+                  maxHeight: isIphonePortrait ? `${staffHeightPx + 32}px` : `${staffHeightPx}px`,
+                }}
                 className={`${
                   isIphonePortrait ? 'flex flex-col w-full' : 'flex flex-row'
-                } border-b border-amber-100/20 relative bg-black/10 hover:bg-black/20 transition-colors`}
+                } border-b border-amber-100/20 relative bg-black/10 hover:bg-black/20 transition-colors overflow-hidden`}
               >
                 {isIphonePortrait ? (
-                  /* Full-Width Compact Top Track Ribbon in Vertical iPhone 15 Pro Mode (0px Left Obstruction!) */
+                  /* Full-Width Compact Top Track Ribbon in Vertical iPhone 15 Pro Mode (Locked 32px Single-Line Height!) */
                   <div
                     data-testid={`portrait-track-header-${track.id}`}
                     style={{
                       borderLeft: `4px solid ${track.color}`,
                       backgroundColor: activePalette.headerBg,
+                      contain: 'layout paint',
                     }}
-                    className="sticky left-0 z-20 w-full h-[34px] px-3 border-b border-amber-200/20 flex items-center justify-between gap-2 shrink-0"
+                    className="sticky left-0 z-20 h-8 min-h-[32px] max-h-[32px] w-full px-3 bg-black/45 border-b border-white/10 flex items-center justify-between gap-2 shrink-0 overflow-hidden whitespace-nowrap"
                   >
-                    <div className="flex items-center gap-2 min-w-0">
+                    <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
                       <span
                         className="w-2.5 h-2.5 rounded-full shrink-0"
                         style={{ backgroundColor: track.color }}
                       />
-                      <span className="font-mono font-bold text-xs text-white truncate">
+                      <span className="text-xs font-bold text-white truncate shrink-0 max-w-[185px]">
                         {track.name}
                       </span>
-                      <span className="text-xs font-sans font-bold text-amber-200 shrink-0">
-                        · {trackChordSymbol ? trackChordSymbol.fullText : '—'}
+                      <span className="text-xs font-mono font-bold text-amber-300 shrink-0 whitespace-nowrap">
+                        · {trackChordSymbol ? trackChordSymbol.fullText : '-'}
                       </span>
-                      <span className="text-[10px] font-mono text-amber-100/80 truncate">
+                      <span className="text-[10px] font-mono text-amber-100/75 truncate min-w-0 flex-1 whitespace-nowrap">
                         {trackActiveMidis.length > 0
                           ? trackActiveMidis
                               .slice(0, 3)

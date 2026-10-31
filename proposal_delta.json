@@ -1,42 +1,35 @@
 {
-  "proposal_id": "tdb-745-v5.2.8-dedicated-stage-undo-rotation-escape-exit",
-  "target_intent": "TDB-745",
-  "delta_before": 0.0110,
+  "proposal_id": "tdb-746-v5.3.0-auto-hide-topbar-on-playback",
+  "target_intent": "TDB-746",
+  "delta_before": 0.0050,
   "mutations": [
     {
-      "file": "package.json",
-      "function": "version",
+      "file": "src/utils/usePlaybackAutoHideTopBar.ts",
+      "function": "usePlaybackAutoHideTopBar",
       "ast_depth": 1,
       "decay_weight": 0.95,
-      "patch": "@@ -4 +4 @@\n-  \"version\": \"5.2.6\",\n+  \"version\": \"5.2.8\","
-    },
-    {
-      "file": "electron-builder.json",
-      "function": "extraMetadata.version",
-      "ast_depth": 2,
-      "decay_weight": 0.9,
-      "patch": "@@ -11 +11 @@\n-    \"version\": \"5.2.6\"\n+    \"version\": \"5.2.8\""
+      "patch": "@@ -0,0 +1,86 @@\n+export function usePlaybackAutoHideTopBar(isPlaying: boolean, idleHideDelayMs: number = TOP_BAR_IDLE_HIDE_DELAY_MS): PlaybackAutoHideTopBarState { ... }"
     },
     {
       "file": "src/components/SplitWorkspace.tsx",
       "function": "SplitWorkspace",
       "ast_depth": 2,
       "decay_weight": 0.9,
-      "patch": "@@ -79,0 +80,15 @@\n+  const isImmersiveStage = isIphonePortrait || isAppFullscreen || isFullscreen;\n+  const handleUndoRotation = () => { ... };\n+  const handleExitAllImmersive = () => { ... };"
+      "patch": "@@ -76,0 +77 @@\n+  const { isTopBarHidden, revealTopBar } = usePlaybackAutoHideTopBar(isPlaying);"
     },
     {
       "file": "src/components/TabChordFlowView.tsx",
       "function": "TabChordFlowView",
       "ast_depth": 3,
       "decay_weight": 0.85,
-      "patch": "@@ -980,0 +981,25 @@\n+  useEffect(() => { window.addEventListener('keydown', onKeyDown); ... }, []);"
+      "patch": "@@ -914,0 +915 @@\n+  const { isTopBarHidden, revealTopBar } = usePlaybackAutoHideTopBar(Boolean(isPlaying));"
     },
     {
       "file": "src/components/WebGPUCanvas.tsx",
       "function": "WebGPUCanvas",
       "ast_depth": 3,
       "decay_weight": 0.85,
-      "patch": "@@ -142,0 +143,24 @@\n+  const [isImmersive, setIsImmersive] = useState<boolean>(...);"
+      "patch": "@@ -141,0 +142 @@\n+  const { isTopBarHidden, revealTopBar } = usePlaybackAutoHideTopBar(Boolean(isPlaying));"
     }
   ]
 }

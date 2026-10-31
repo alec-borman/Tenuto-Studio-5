@@ -4,6 +4,7 @@ import { isMidiInScale, parseKeyRootSemitone } from '../parser/PitchEngine';
 import AutomationLaneEditor from './AutomationLaneEditor';
 import { AutomationLane, AutomationCurveType } from '../audio/AutomationEngine';
 import { MidiTransformType, MidiGeneratorType } from '../mutator/MidiTransformAndGeneratorEngine';
+import { usePlaybackAutoHideTopBar } from '../utils/usePlaybackAutoHideTopBar';
 
 export function calculateProjectionCoordinates(
   event: any,
@@ -139,6 +140,7 @@ export default function WebGPUCanvas({
   } | null>(null);
   const [selectedBeatWhole, setSelectedBeatWhole] = useState<number | null>(null);
   const [selectedBeatAnchorMidi, setSelectedBeatAnchorMidi] = useState<number | null>(null);
+  const { isTopBarHidden, revealTopBar } = usePlaybackAutoHideTopBar(Boolean(isPlaying));
   const [isImmersive, setIsImmersive] = useState<boolean>(() => {
     try {
       return window.localStorage?.getItem('tenuto_viewport_iphone15pro_v1') === 'true';
@@ -1073,15 +1075,21 @@ export default function WebGPUCanvas({
   return (
     <div
       ref={containerRef}
+      data-topbar-hidden={isTopBarHidden ? 'true' : 'false'}
+      onWheel={revealTopBar}
       className="w-full h-full bg-slate-950 flex flex-col overflow-hidden relative select-none"
       data-testid="webgpu-canvas-container"
     >
-      {/* Top Instrument Filter & Zoom Control Bar (Collapsed in Portrait/Fullscreen Mode) */}
+      {/* Top Instrument Filter & Zoom Control Bar (Collapsed in Portrait/Fullscreen or Auto-Hidden During Playback) */}
       <div
+        onMouseEnter={revealTopBar}
+        onMouseMove={revealTopBar}
         className={
           isImmersive
             ? 'sr-only'
-            : 'bg-slate-900/95 border-b border-slate-800 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 z-10'
+            : isTopBarHidden
+              ? 'max-h-0 opacity-0 overflow-hidden py-0 border-0 pointer-events-none transition-all duration-200'
+              : 'bg-slate-900/95 border-b border-slate-800 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 z-10 transition-all duration-200'
         }
       >
         {/* Instrument Track Navigator: Quick Dropdown + Scrollable Track Pills */}
