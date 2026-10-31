@@ -208,6 +208,13 @@ describe('TDB-733, TDB-736, TDB-739 & TDB-741: Detune-Only Tab Sliding, Sub-Bass
     expect(rootView).toHaveAttribute('data-native-resolution', '1179x2556');
     expect(rootView).toHaveAttribute('data-fullscreen', 'true');
     expect(rootView).toHaveStyle({ width: '393px', height: '852px' });
+    expect(screen.getByTestId('tab-undo-rotation-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-exit-fullscreen-overlay-btn')).toBeInTheDocument();
+
+    // Pressing Escape immediately exits both Fullscreen and Portrait rotation
+    fireEvent.keyDown(window, { key: 'Escape', code: 'Escape' });
+    expect(rootView).toHaveAttribute('data-fullscreen', 'false');
+    expect(rootView).toHaveAttribute('data-viewport-mode', 'desktop-landscape');
     window.localStorage.removeItem('tenuto_viewport_iphone15pro_v1');
   });
 

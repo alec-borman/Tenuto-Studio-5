@@ -134,8 +134,21 @@ describe('TDB-706: Multi-View Studio Shell & Tab View Switcher', () => {
     expect(screen.getByTestId('iphone15pro-dynamic-island-bar')).toBeInTheDocument();
     expect(window.localStorage.getItem('tenuto_viewport_iphone15pro_v1')).toBe('true');
 
-    // Clicking again restores desktop landscape mode
+    // Visible floating Undo Rotation & Exit Fullscreen buttons are rendered
+    const undoBtn = screen.getByTestId('undo-rotation-btn');
+    const exitBtn = screen.getByTestId('exit-fullscreen-btn');
+    expect(undoBtn).toBeInTheDocument();
+    expect(exitBtn).toBeInTheDocument();
+
+    // Clicking Undo Rotation restores desktop landscape mode
+    fireEvent.click(undoBtn);
+    expect(viewportShell).toHaveAttribute('data-viewport-mode', 'desktop-landscape');
+    expect(window.localStorage.getItem('tenuto_viewport_iphone15pro_v1')).toBe('false');
+
+    // Re-enter portrait mode and verify pressing Escape key immediately exits to desktop mode
     fireEvent.click(rotateBtn);
+    expect(viewportShell).toHaveAttribute('data-viewport-mode', 'iphone-15-pro-portrait');
+    fireEvent.keyDown(window, { key: 'Escape', code: 'Escape' });
     expect(viewportShell).toHaveAttribute('data-viewport-mode', 'desktop-landscape');
     expect(window.localStorage.getItem('tenuto_viewport_iphone15pro_v1')).toBe('false');
   });

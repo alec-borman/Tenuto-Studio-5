@@ -979,6 +979,38 @@ export default function TabChordFlowView({
     });
   }, []);
 
+  useEffect(() => {
+    const onExitFullscreenEvent = () => {
+      setIsFullscreen(false);
+      setIsIphonePortrait(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsFullscreen(false);
+        setIsIphonePortrait(false);
+        try {
+          window.localStorage?.setItem('tenuto_viewport_iphone15pro_v1', 'false');
+          window.dispatchEvent(
+            new CustomEvent('tenuto:iphone-viewport-change', {
+              detail: { isIphonePortrait: false },
+            })
+          );
+          if (document.fullscreenElement && typeof document.exitFullscreen === 'function') {
+            document.exitFullscreen().catch(() => {});
+          }
+        } catch {
+          // Ignore errors
+        }
+      }
+    };
+    window.addEventListener('tenuto:exit-fullscreen', onExitFullscreenEvent);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('tenuto:exit-fullscreen', onExitFullscreenEvent);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, []);
+
   const preferFlats = useMemo(() => {
     const k = (rootKey || score?.meta?.key || '').trim();
     if (['F', 'Bb', 'Eb', 'Ab', 'Db', 'Gb', 'Dm', 'Gm', 'Cm', 'Fm', 'Bbm'].includes(k)) {
@@ -1258,7 +1290,7 @@ export default function TabChordFlowView({
           ? { width: '393px', height: '852px', maxWidth: '393px', maxHeight: '852px' }
           : {}),
       }}
-      className={`flex flex-col justify-between text-amber-50 overflow-hidden relative select-none ${
+      className={`flex flex-col justify-between text-amber-50 overflow-hidden relative select-none no-scrollbar [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] ${
         isFullscreen
           ? isIphonePortrait
             ? 'fixed inset-0 z-50 w-full h-full mx-auto shadow-2xl'
@@ -1266,8 +1298,41 @@ export default function TabChordFlowView({
           : 'w-full h-full'
       }`}
     >
-      {/* Top Zero-Overlap Wrapped Control Bar */}
-      <div className="bg-black/40 border-b border-amber-300/20 px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-1.5 shrink-0 z-20">
+      {(isFullscreen || isIphonePortrait) && (
+        <div className="sticky top-2 left-2 z-50 flex items-center gap-1.5 px-2 py-1 w-fit rounded-full bg-black/75 backdrop-blur-md border border-white/20">
+          {isIphonePortrait && (
+            <button
+              type="button"
+              data-testid="tab-undo-rotation-btn"
+              aria-label="Undo Rotation from Tab View"
+              onClick={handleToggleIphonePortraitInTab}
+              className="px-2 py-0.5 text-[11px] font-mono font-bold rounded-full bg-cyan-400 text-black hover:bg-cyan-300 cursor-pointer"
+            >
+              ↺ Undo Rotation
+            </button>
+          )}
+          {isFullscreen && (
+            <button
+              type="button"
+              data-testid="tab-exit-fullscreen-overlay-btn"
+              aria-label="Exit Fullscreen Tab View"
+              onClick={toggleFullscreen}
+              className="px-2 py-0.5 text-[11px] font-mono font-bold rounded-full bg-rose-600 text-white hover:bg-rose-500 cursor-pointer"
+            >
+              ✕ Exit Fullscreen (Esc)
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Top Control Bar (Collapsed via sr-only in Portrait/Fullscreen so 100% of stage is Guitar Tab) */}
+      <div
+        className={
+          isIphonePortrait || isFullscreen
+            ? 'sr-only'
+            : 'bg-black/40 border-b border-amber-300/20 px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-1.5 shrink-0 z-20'
+        }
+      >
         {!isTiktokCleanHud && (
           <div className="flex flex-wrap items-center gap-1.5 min-w-0">
             <button
@@ -1632,7 +1697,7 @@ export default function TabChordFlowView({
       <div
         ref={scrollViewportRef}
         data-testid="tab-flow-scroll-viewport"
-        className="flex-1 w-full overflow-auto relative"
+        className="flex-1 w-full overflow-auto relative no-scrollbar [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]"
       >
         <div
           className="relative min-w-full"

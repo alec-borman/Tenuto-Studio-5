@@ -1,35 +1,42 @@
 {
-  "proposal_id": "tdb-744-tiktok-full-bleed-iphone-15-pro-v5.2.6",
-  "target_intent": "TDB-744: Reimagined TikTok Vertical iPhone 15 Pro Full-Bleed Guitar Tab & Chord Showcase UI & v5.2.6 Release",
-  "delta_before": 0.24,
+  "proposal_id": "tdb-745-v5.2.8-dedicated-stage-undo-rotation-escape-exit",
+  "target_intent": "TDB-745",
+  "delta_before": 0.0110,
   "mutations": [
     {
       "file": "package.json",
       "function": "version",
       "ast_depth": 1,
       "decay_weight": 0.95,
-      "patch": "@@ -4,1 +4,1 @@\n-  \"version\": \"5.2.4\",\n+  \"version\": \"5.2.6\","
+      "patch": "@@ -4 +4 @@\n-  \"version\": \"5.2.6\",\n+  \"version\": \"5.2.8\","
     },
     {
       "file": "electron-builder.json",
       "function": "extraMetadata.version",
       "ast_depth": 2,
       "decay_weight": 0.9,
-      "patch": "@@ -11,1 +11,1 @@\n-    \"version\": \"5.2.4\"\n+    \"version\": \"5.2.6\""
+      "patch": "@@ -11 +11 @@\n-    \"version\": \"5.2.6\"\n+    \"version\": \"5.2.8\""
     },
     {
-      "file": "src/components/Transport.tsx",
-      "function": "Transport",
+      "file": "src/components/SplitWorkspace.tsx",
+      "function": "SplitWorkspace",
       "ast_depth": 2,
       "decay_weight": 0.9,
-      "patch": "@@ -80,10 +80,15 @@\n+      <div className={isIphonePortrait ? 'min-h-10 py-1.5 px-2 flex flex-wrap items-center justify-between gap-1.5' : ...}>"
+      "patch": "@@ -79,0 +80,15 @@\n+  const isImmersiveStage = isIphonePortrait || isAppFullscreen || isFullscreen;\n+  const handleUndoRotation = () => { ... };\n+  const handleExitAllImmersive = () => { ... };"
     },
     {
       "file": "src/components/TabChordFlowView.tsx",
       "function": "TabChordFlowView",
-      "ast_depth": 2,
-      "decay_weight": 0.9,
-      "patch": "@@ -1150,10 +1150,25 @@\n+  const headerWidthPx = isIphonePortrait ? 0 : 228;\n+  const effectiveHitZoneX = isIphonePortrait ? 56 : 0;\n+  data-tiktok-clean-hud={isTiktokCleanHud ? 'true' : 'false'}\n+  data-testid=\"tab-tiktok-hud-btn\"\n+  data-testid={`portrait-track-header-${track.id}`}"
+      "ast_depth": 3,
+      "decay_weight": 0.85,
+      "patch": "@@ -980,0 +981,25 @@\n+  useEffect(() => { window.addEventListener('keydown', onKeyDown); ... }, []);"
+    },
+    {
+      "file": "src/components/WebGPUCanvas.tsx",
+      "function": "WebGPUCanvas",
+      "ast_depth": 3,
+      "decay_weight": 0.85,
+      "patch": "@@ -142,0 +143,24 @@\n+  const [isImmersive, setIsImmersive] = useState<boolean>(...);"
     }
   ]
 }

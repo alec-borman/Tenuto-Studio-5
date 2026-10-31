@@ -139,6 +139,40 @@ export default function WebGPUCanvas({
   } | null>(null);
   const [selectedBeatWhole, setSelectedBeatWhole] = useState<number | null>(null);
   const [selectedBeatAnchorMidi, setSelectedBeatAnchorMidi] = useState<number | null>(null);
+  const [isImmersive, setIsImmersive] = useState<boolean>(() => {
+    try {
+      return window.localStorage?.getItem('tenuto_viewport_iphone15pro_v1') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    const syncImmersive = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      if (detail && typeof detail.isIphonePortrait === 'boolean') {
+        setIsImmersive(detail.isIphonePortrait);
+      } else {
+        try {
+          setIsImmersive(
+            window.localStorage?.getItem('tenuto_viewport_iphone15pro_v1') === 'true' ||
+              Boolean(document.fullscreenElement)
+          );
+        } catch {
+          // Ignore errors
+        }
+      }
+    };
+    const onExitFs = () => setIsImmersive(false);
+    window.addEventListener('tenuto:iphone-viewport-change', syncImmersive);
+    window.addEventListener('tenuto:exit-fullscreen', onExitFs);
+    document.addEventListener('fullscreenchange', syncImmersive);
+    return () => {
+      window.removeEventListener('tenuto:iphone-viewport-change', syncImmersive);
+      window.removeEventListener('tenuto:exit-fullscreen', onExitFs);
+      document.removeEventListener('fullscreenchange', syncImmersive);
+    };
+  }, []);
 
   useEffect(() => {
     onMutationRef.current = onMutation;
@@ -1042,8 +1076,14 @@ export default function WebGPUCanvas({
       className="w-full h-full bg-slate-950 flex flex-col overflow-hidden relative select-none"
       data-testid="webgpu-canvas-container"
     >
-      {/* Top Instrument Filter & Zoom Control Bar */}
-      <div className="bg-slate-900/95 border-b border-slate-800 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 z-10">
+      {/* Top Instrument Filter & Zoom Control Bar (Collapsed in Portrait/Fullscreen Mode) */}
+      <div
+        className={
+          isImmersive
+            ? 'sr-only'
+            : 'bg-slate-900/95 border-b border-slate-800 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 z-10'
+        }
+      >
         {/* Instrument Track Navigator: Quick Dropdown + Scrollable Track Pills */}
         <div className="flex items-center gap-1.5 min-w-0 flex-1">
           <button
@@ -1278,7 +1318,7 @@ export default function WebGPUCanvas({
       <div
         ref={scrollViewportRef}
         data-testid="piano-roll-scroll-viewport"
-        className="flex-1 w-full overflow-auto relative touch-pan-x touch-pan-y"
+        className="flex-1 w-full overflow-auto relative touch-pan-x touch-pan-y no-scrollbar [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]"
         onTouchStart={(e) => {
           if (e.touches && e.touches.length === 2) {
             const dx = e.touches[1].clientX - e.touches[0].clientX;

@@ -76,6 +76,8 @@ export default function SplitWorkspace() {
   });
   const isAudioInitialized = useRef<boolean>(false);
 
+  const isImmersiveStage = isIphonePortrait || isAppFullscreen || isFullscreen;
+
   const handleSetIphonePortrait = (next: boolean) => {
     setIsIphonePortrait(next);
     try {
@@ -89,7 +91,41 @@ export default function SplitWorkspace() {
   };
 
   const handleToggleIphonePortrait = () => {
-    handleSetIphonePortrait(!isIphonePortrait);
+    const next = !isIphonePortrait;
+    handleSetIphonePortrait(next);
+    if (next && activeMainView !== 'tab_flow' && activeMainView !== 'piano_roll') {
+      setActiveMainView('tab_flow');
+    }
+  };
+
+  const handleUndoRotation = () => {
+    setIsIphonePortrait(false);
+    try {
+      window.localStorage?.setItem(IPHONE_15_PRO_STORAGE_KEY, 'false');
+      window.dispatchEvent(
+        new CustomEvent('tenuto:iphone-viewport-change', { detail: { isIphonePortrait: false } })
+      );
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
+  const handleExitAllImmersive = () => {
+    setIsIphonePortrait(false);
+    setIsAppFullscreen(false);
+    setIsFullscreen(false);
+    try {
+      window.localStorage?.setItem(IPHONE_15_PRO_STORAGE_KEY, 'false');
+      window.dispatchEvent(
+        new CustomEvent('tenuto:iphone-viewport-change', { detail: { isIphonePortrait: false } })
+      );
+      window.dispatchEvent(new CustomEvent('tenuto:exit-fullscreen'));
+      if (document.fullscreenElement && typeof document.exitFullscreen === 'function') {
+        document.exitFullscreen().catch(() => {});
+      }
+    } catch {
+      // Ignore fullscreen/storage errors
+    }
   };
 
   useEffect(() => {
@@ -100,12 +136,31 @@ export default function SplitWorkspace() {
       }
     };
     const onFullscreenChange = () => {
-      setIsAppFullscreen(Boolean(document.fullscreenElement));
+      const activeFs = Boolean(
+        document.fullscreenElement || (document as any).webkitFullscreenElement
+      );
+      setIsAppFullscreen(activeFs);
+      if (!activeFs) {
+        setIsFullscreen(false);
+      }
+    };
+    const onExitFullscreenCustom = () => {
+      setIsAppFullscreen(false);
+      setIsFullscreen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        handleExitAllImmersive();
+      }
     };
     window.addEventListener('tenuto:iphone-viewport-change', onCustomViewportChange);
+    window.addEventListener('tenuto:exit-fullscreen', onExitFullscreenCustom);
+    window.addEventListener('keydown', onKeyDown);
     document.addEventListener('fullscreenchange', onFullscreenChange);
     return () => {
       window.removeEventListener('tenuto:iphone-viewport-change', onCustomViewportChange);
+      window.removeEventListener('tenuto:exit-fullscreen', onExitFullscreenCustom);
+      window.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('fullscreenchange', onFullscreenChange);
     };
   }, []);
@@ -898,13 +953,67 @@ export default function SplitWorkspace() {
         {isIphonePortrait && (
           <div
             data-testid="iphone15pro-dynamic-island-bar"
-            className="h-7 bg-slate-950 flex items-center justify-between px-5 shrink-0 border-b border-slate-900/80 select-none z-[60]"
+            className="sr-only"
+          />
+        )}
+
+        {isImmersiveStage && (
+          <div
+            data-testid="floating-stage-controls"
+            className="absolute top-2.5 right-2.5 z-[100] flex items-center gap-1.5 bg-black/80 hover:bg-black/95 backdrop-blur-md border border-white/25 rounded-full px-2.5 py-1 shadow-2xl"
           >
-            <span className="text-[10px] font-mono text-slate-400">9:41</span>
-            <div className="w-24 h-4 bg-black rounded-full border border-slate-800/90" />
-            <span className="text-[9px] font-mono text-cyan-400">393×852 · 1179×2556</span>
+            <button
+              type="button"
+              data-testid="stage-transport-toggle-btn"
+              aria-label={isPlaying ? 'Stop Audio' : 'Start Audio'}
+              onClick={handleTogglePlay}
+              className={`px-2 py-0.5 rounded-full text-[11px] font-bold cursor-pointer transition-colors ${
+                isPlaying
+                  ? 'bg-red-500 text-white'
+                  : 'bg-emerald-500 text-black hover:bg-emerald-400'
+              }`}
+            >
+              {isPlaying ? '■ Stop' : '▶ Start'}
+            </button>
+
+            <button
+              type="button"
+              data-testid="stage-view-switch-btn"
+              aria-label="Switch Between Guitar Tab and Piano Roll"
+              onClick={() =>
+                setActiveMainView((prev) => (prev === 'tab_flow' ? 'piano_roll' : 'tab_flow'))
+              }
+              className="px-2 py-0.5 rounded-full text-[11px] font-mono bg-zinc-800 hover:bg-zinc-700 text-amber-200 border border-amber-400/30 cursor-pointer"
+            >
+              {activeMainView === 'tab_flow' ? 'View: Guitar Tab' : 'View: Scroll Roll'}
+            </button>
+
+            {isIphonePortrait && (
+              <button
+                type="button"
+                data-testid="undo-rotation-btn"
+                aria-label="Undo iPhone Rotation"
+                onClick={handleUndoRotation}
+                className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-cyan-500 text-black hover:bg-cyan-400 cursor-pointer shadow-xs"
+                title="Undo vertical iPhone rotation and return to desktop view (Esc)"
+              >
+                ↺ Undo Rotation
+              </button>
+            )}
+
+            <button
+              type="button"
+              data-testid="exit-fullscreen-btn"
+              aria-label="Exit Fullscreen and Portrait Mode"
+              onClick={handleExitAllImmersive}
+              className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-rose-600 text-white hover:bg-rose-500 cursor-pointer shadow-xs"
+              title="Exit Fullscreen / Portrait Mode (Press Esc)"
+            >
+              ✕ Exit (Esc)
+            </button>
           </div>
         )}
+
         <div
           ref={workspaceRootRef}
           data-testid="studio-workspace-root"
@@ -912,58 +1021,60 @@ export default function SplitWorkspace() {
             isFullscreen ? 'tenuto-fullscreen-active' : ''
           } flex-1 w-full max-w-[100vw] bg-slate-950 text-slate-100 overflow-hidden flex flex-col min-h-0`}
         >
-          {/* Top Bar: Transport Controls & Demo Selector */}
-          <Transport
-            isPlaying={isPlaying}
-            onTogglePlay={handleTogglePlay}
-            onStop={handleStop}
-            isLooping={isLooping}
-            onToggleLoop={handleToggleLoop}
-            tempo={scoreMeta.tempo}
-            timeSignature={scoreMeta.time}
-            title={scoreMeta.title}
-            currentBeat={playheadBeat}
-            rootKey={scoreMeta.key}
-            scaleName={scoreMeta.scale}
-            onKeyScaleChange={handleKeyScaleChange}
-            onSelectPreset={(presetCode) => handleCodeEdit(presetCode)}
-            onExportWav={handleExportWav}
-            masterVolume={masterVolume}
-            onMasterVolumeChange={handleMasterVolumeChange}
-            activeMainView={activeMainView}
-            onMainViewChange={(view) => {
-              setActiveMainView(view);
-              setMobileFocusPane('visual');
-            }}
-            activeBottomDock={activeBottomDock}
-            onToggleBottomDock={handleToggleBottomDock}
-            isCodeVisible={isCodeVisible}
-            onToggleCodeVisible={() => {
-              setIsCodeVisible((prev) => {
-                const next = !prev;
-                if (next && mobileFocusPane === 'visual') {
-                  setMobileFocusPane('code');
-                }
-                return next;
-              });
-            }}
-            isMetronomeEnabled={isMetronomeEnabled}
-            onToggleMetronome={handleToggleMetronome}
-            countInBars={countInBars}
-            onCountInBarsChange={handleCountInBarsChange}
-            onTapTempo={handleTapTempo}
-            onCaptureMidi={handleCaptureMidi}
-            isFullscreen={isFullscreen}
-            onToggleFullscreen={handleToggleFullscreen}
-            isIphonePortrait={isIphonePortrait}
-            onToggleIphonePortrait={handleToggleIphonePortrait}
-          />
+          {/* Top Bar: Transport Controls & Demo Selector (Collapsed in Immersive Portrait/Fullscreen Mode) */}
+          <div className={isImmersiveStage ? 'sr-only' : 'shrink-0'}>
+            <Transport
+              isPlaying={isPlaying}
+              onTogglePlay={handleTogglePlay}
+              onStop={handleStop}
+              isLooping={isLooping}
+              onToggleLoop={handleToggleLoop}
+              tempo={scoreMeta.tempo}
+              timeSignature={scoreMeta.time}
+              title={scoreMeta.title}
+              currentBeat={playheadBeat}
+              rootKey={scoreMeta.key}
+              scaleName={scoreMeta.scale}
+              onKeyScaleChange={handleKeyScaleChange}
+              onSelectPreset={(presetCode) => handleCodeEdit(presetCode)}
+              onExportWav={handleExportWav}
+              masterVolume={masterVolume}
+              onMasterVolumeChange={handleMasterVolumeChange}
+              activeMainView={activeMainView}
+              onMainViewChange={(view) => {
+                setActiveMainView(view);
+                setMobileFocusPane('visual');
+              }}
+              activeBottomDock={activeBottomDock}
+              onToggleBottomDock={handleToggleBottomDock}
+              isCodeVisible={isCodeVisible}
+              onToggleCodeVisible={() => {
+                setIsCodeVisible((prev) => {
+                  const next = !prev;
+                  if (next && mobileFocusPane === 'visual') {
+                    setMobileFocusPane('code');
+                  }
+                  return next;
+                });
+              }}
+              isMetronomeEnabled={isMetronomeEnabled}
+              onToggleMetronome={handleToggleMetronome}
+              countInBars={countInBars}
+              onCountInBarsChange={handleCountInBarsChange}
+              onTapTempo={handleTapTempo}
+              onCaptureMidi={handleCaptureMidi}
+              isFullscreen={isFullscreen}
+              onToggleFullscreen={handleToggleFullscreen}
+              isIphonePortrait={isIphonePortrait}
+              onToggleIphonePortrait={handleToggleIphonePortrait}
+            />
+          </div>
 
-          {/* Main Split Workspace (Vertical Stack in iPhone 15 Pro Portrait Mode, Responsive Grid in Desktop Mode) */}
+          {/* Main Split Workspace (100% Dedicated Stage in Portrait/Fullscreen Mode, Responsive Grid in Desktop Mode) */}
           <main
             data-testid="tenuto-main-workspace"
             className={`flex-1 ${
-              isIphonePortrait
+              isImmersiveStage
                 ? 'flex flex-col'
                 : `grid ${isCodeVisible ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'}`
             } min-h-0 overflow-hidden`}
@@ -972,14 +1083,10 @@ export default function SplitWorkspace() {
             <section
               data-testid="code-editor-pane"
               className={`${
-                isCodeVisible ? 'flex' : 'hidden'
+                isImmersiveStage ? 'sr-only' : isCodeVisible ? 'flex' : 'hidden'
               } ${
-                !isIphonePortrait && mobileFocusPane === 'visual' ? 'max-md:hidden' : ''
-              } ${
-                isIphonePortrait && isCodeVisible
-                  ? 'w-full h-1/2 border-b border-slate-800'
-                  : 'h-full w-full border-r border-slate-800'
-              } bg-[#0B0F19] flex-col min-h-0 overflow-hidden`}
+                !isImmersiveStage && mobileFocusPane === 'visual' ? 'max-md:hidden' : ''
+              } h-full w-full border-r border-slate-800 bg-[#0B0F19] flex-col min-h-0 overflow-hidden`}
             >
           <div className="h-8 bg-slate-900 border-b border-slate-800 px-4 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2.5">
@@ -1025,18 +1132,22 @@ export default function SplitWorkspace() {
           </div>
         </section>
 
-        {/* Right Side: Multi-View DAW Viewport (Piano Roll | Tab / Chord Flow | Session | Arrangement) */}
+        {/* Right Side: Multi-View DAW Viewport (100% Dedicated Stage in Portrait/Fullscreen Mode) */}
         <section
           data-testid="visual-studio-pane"
           className={`${
-            !isIphonePortrait && isCodeVisible && mobileFocusPane === 'code'
+            !isImmersiveStage && isCodeVisible && mobileFocusPane === 'code'
               ? 'max-md:hidden'
               : 'flex'
-          } ${
-            isIphonePortrait && isCodeVisible ? 'w-full h-1/2' : 'h-full w-full'
-          } bg-slate-950 flex-col min-h-0 overflow-hidden`}
+          } flex-1 h-full w-full bg-slate-950 flex-col min-h-0 overflow-hidden`}
         >
-          <div className="h-8 bg-slate-900 border-b border-slate-800 px-4 flex items-center justify-between shrink-0">
+          <div
+            className={
+              isImmersiveStage
+                ? 'sr-only'
+                : 'h-8 bg-slate-900 border-b border-slate-800 px-4 flex items-center justify-between shrink-0'
+            }
+          >
             <span className="text-[11px] uppercase font-semibold tracking-wider text-slate-400">
               {activeMainView === 'session'
                 ? 'Session View (Clip & Scene Matrix)'
@@ -1123,15 +1234,15 @@ export default function SplitWorkspace() {
         </section>
       </main>
 
-      {/* Bottom Studio Dock (sr-only when closed so all existing unit tests pass; visible panel when opened) */}
+      {/* Bottom Studio Dock (sr-only when closed or in Immersive Portrait/Fullscreen Mode) */}
       <div
         data-testid="bottom-studio-dock"
         className={
-          activeBottomDock
+          activeBottomDock && !isImmersiveStage
             ? 'h-64 md:h-80 w-full bg-slate-900 border-t border-slate-800 flex flex-row overflow-x-auto shrink-0 z-20'
             : 'sr-only'
         }
-        aria-hidden={!activeBottomDock}
+        aria-hidden={!activeBottomDock || isImmersiveStage}
       >
         <div className="sr-only" data-testid="command-history-panel">
           Command Manager / History
@@ -1191,11 +1302,15 @@ export default function SplitWorkspace() {
         </div>
       </div>
 
-      {/* Responsive Mobile Bottom Navigation Bar (Visible on Mobile / Small Screens) */}
+      {/* Responsive Mobile Bottom Navigation Bar (Collapsed in Immersive Portrait/Fullscreen Mode) */}
       <nav
         data-testid="mobile-bottom-nav"
         aria-label="Mobile Studio Navigation"
-        className="md:hidden h-11 w-full bg-slate-950 border-t border-slate-800 px-2 flex items-center justify-between gap-1 overflow-x-auto no-scrollbar shrink-0 z-30 select-none"
+        className={
+          isImmersiveStage
+            ? 'sr-only'
+            : 'md:hidden h-11 w-full bg-slate-950 border-t border-slate-800 px-2 flex items-center justify-between gap-1 overflow-x-auto no-scrollbar shrink-0 z-30 select-none'
+        }
       >
         <button
           type="button"
