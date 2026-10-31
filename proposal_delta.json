@@ -1,28 +1,35 @@
 {
-  "proposal_id": "tdb-743-iphone-15-pro-fullscreen-v5.2.4",
-  "target_intent": "TDB-743: Vertical iPhone 15 Pro Portrait Viewport Rotate Mode with Fullscreen Support (393x852 logical / 1179x2556 physical 3x resolution) & v5.2.4 Release",
-  "delta_before": 0.14,
+  "proposal_id": "tdb-744-tiktok-full-bleed-iphone-15-pro-v5.2.6",
+  "target_intent": "TDB-744: Reimagined TikTok Vertical iPhone 15 Pro Full-Bleed Guitar Tab & Chord Showcase UI & v5.2.6 Release",
+  "delta_before": 0.24,
   "mutations": [
     {
-      "file": "src/components/SplitWorkspace.tsx",
-      "function": "SplitWorkspace",
+      "file": "package.json",
+      "function": "version",
+      "ast_depth": 1,
+      "decay_weight": 0.95,
+      "patch": "@@ -4,1 +4,1 @@\n-  \"version\": \"5.2.4\",\n+  \"version\": \"5.2.6\","
+    },
+    {
+      "file": "electron-builder.json",
+      "function": "extraMetadata.version",
       "ast_depth": 2,
       "decay_weight": 0.9,
-      "patch": "@@ -818,1 +818,15 @@\n+      ref={viewportShellRef}\n+      data-fullscreen-active={isAppFullscreen || isFullscreen ? 'true' : 'false'}\n+      aspectRatio: '393 / 852', transform: 'translateZ(0)'"
+      "patch": "@@ -11,1 +11,1 @@\n-    \"version\": \"5.2.4\"\n+    \"version\": \"5.2.6\""
+    },
+    {
+      "file": "src/components/Transport.tsx",
+      "function": "Transport",
+      "ast_depth": 2,
+      "decay_weight": 0.9,
+      "patch": "@@ -80,10 +80,15 @@\n+      <div className={isIphonePortrait ? 'min-h-10 py-1.5 px-2 flex flex-wrap items-center justify-between gap-1.5' : ...}>"
     },
     {
       "file": "src/components/TabChordFlowView.tsx",
       "function": "TabChordFlowView",
       "ast_depth": 2,
       "decay_weight": 0.9,
-      "patch": "@@ -909,0 +909,50 @@\n+  const containerRef = useRef<HTMLDivElement>(null);\n+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);\n+  const [isIphonePortrait, setIsIphonePortrait] = useState<boolean>(...);\n+  data-testid=\"tab-rotate-iphone15pro-btn\"\n+  data-testid=\"tab-fullscreen-btn\""
-    },
-    {
-      "file": "tests/tab_chord_flow_view.test.tsx",
-      "function": "maintains vertical iPhone 15 Pro resolution (393x852 / 1179x2556) while in Fullscreen mode",
-      "ast_depth": 2,
-      "decay_weight": 0.9,
-      "patch": "@@ -185,0 +185,26 @@\n+  it('maintains vertical iPhone 15 Pro resolution (393x852 / 1179x2556) while in Fullscreen mode', () => { ... });"
+      "patch": "@@ -1150,10 +1150,25 @@\n+  const headerWidthPx = isIphonePortrait ? 0 : 228;\n+  const effectiveHitZoneX = isIphonePortrait ? 56 : 0;\n+  data-tiktok-clean-hud={isTiktokCleanHud ? 'true' : 'false'}\n+  data-testid=\"tab-tiktok-hud-btn\"\n+  data-testid={`portrait-track-header-${track.id}`}"
     }
   ]
 }

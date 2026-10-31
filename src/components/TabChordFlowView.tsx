@@ -910,6 +910,7 @@ export default function TabChordFlowView({
   const scrollViewportRef = useRef<HTMLDivElement>(null);
   const trackPillsRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [isTiktokCleanHud, setIsTiktokCleanHud] = useState<boolean>(false);
   const [isIphonePortrait, setIsIphonePortrait] = useState<boolean>(() => {
     try {
       return window.localStorage?.getItem('tenuto_viewport_iphone15pro_v1') === 'true';
@@ -1148,19 +1149,30 @@ export default function TabChordFlowView({
 
   const activeSlice = chordSlices[activeSliceIndex];
 
-  const headerWidthPx = 228;
+  // In vertical iPhone 15 Pro portrait mode, collapse the 228px left blocker card to 0px
+  // (replaced by a sleek full-width top ribbon above each track's 6-string tab highway)
+  const headerWidthPx = isIphonePortrait ? 0 : 228;
+  const effectiveHitZoneX = isIphonePortrait ? 56 : 0;
   // Minimum 96px per whole note (24px per quarter beat) so measures and beats never crush into unreadable stacks
   const wholeNoteScale = Math.max(96, Math.round(240 * zoomLevel));
   const isSingleTrackFocus = visibleTracks.length === 1;
-  const staffHeightPx = isSingleTrackFocus
-    ? Math.max(180, Math.round(230 * zoomLevel))
-    : Math.max(92, Math.round(128 * zoomLevel));
-  const timelineWidthPx = Math.max(720, Math.ceil(maxEndWhole * wholeNoteScale) + 160);
-  const playheadX = (playheadBeat / 4) * wholeNoteScale;
+  const isSingleOrPairTrack = visibleTracks.length <= 2;
+  const staffHeightPx = isIphonePortrait
+    ? isSingleOrPairTrack
+      ? Math.max(228, Math.round(240 * zoomLevel))
+      : Math.max(176, Math.round(188 * zoomLevel))
+    : isSingleTrackFocus
+      ? Math.max(180, Math.round(230 * zoomLevel))
+      : Math.max(92, Math.round(128 * zoomLevel));
+  const timelineWidthPx = Math.max(
+    isIphonePortrait ? 393 : 720,
+    Math.ceil(maxEndWhole * wholeNoteScale) + effectiveHitZoneX + 160
+  );
+  const playheadX = effectiveHitZoneX + (playheadBeat / 4) * wholeNoteScale;
 
   const handleFitAll = useCallback(() => {
     const viewport = scrollViewportRef.current;
-    const availW = (viewport?.clientWidth || 760) - headerWidthPx - 36;
+    const availW = (viewport?.clientWidth || (isIphonePortrait ? 393 : 760)) - headerWidthPx - 36;
     const availH = (viewport?.clientHeight || 460) - 48;
 
     const idealHoriz = availW / Math.max(1, maxEndWhole * 240);
@@ -1171,7 +1183,7 @@ export default function TabChordFlowView({
       viewport.scrollLeft = 0;
       viewport.scrollTop = 0;
     }
-  }, [maxEndWhole, visibleTracks.length]);
+  }, [maxEndWhole, visibleTracks.length, isIphonePortrait, headerWidthPx]);
 
   useEffect(() => {
     const el = scrollViewportRef.current;
@@ -1181,11 +1193,14 @@ export default function TabChordFlowView({
       return;
     }
     if (isPlaying) {
-      const viewportW = (el.clientWidth || 720) - headerWidthPx;
-      const targetScroll = Math.max(0, playheadX - viewportW * 0.35);
+      const viewportW = (el.clientWidth || (isIphonePortrait ? 393 : 720)) - headerWidthPx;
+      const targetScroll = Math.max(
+        0,
+        playheadX - viewportW * (isIphonePortrait ? 0.22 : 0.35)
+      );
       el.scrollLeft = targetScroll;
     }
-  }, [playheadX, isPlaying, playheadBeat]);
+  }, [playheadX, isPlaying, playheadBeat, isIphonePortrait, headerWidthPx]);
 
   const activeGlobalItems = useMemo(() => {
     const active = allTrajectories.filter(
@@ -1234,6 +1249,7 @@ export default function TabChordFlowView({
       data-fullscreen={isFullscreen ? 'true' : 'false'}
       data-viewport-mode={isIphonePortrait ? 'iphone-15-pro-portrait' : 'desktop-landscape'}
       data-native-resolution={isIphonePortrait ? '1179x2556' : 'desktop'}
+      data-tiktok-clean-hud={isTiktokCleanHud ? 'true' : 'false'}
       data-scroll-theme={activePalette.id}
       style={{
         background: activePalette.backgroundGradient,
@@ -1250,165 +1266,197 @@ export default function TabChordFlowView({
           : 'w-full h-full'
       }`}
     >
-      {/* Top Piano-Roll-Parity Control Bar */}
-      <div className="bg-black/35 border-b border-amber-300/20 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 z-20">
-        <div className="flex items-center gap-1.5 min-w-0 flex-1">
-          <button
-            type="button"
-            onClick={() => setSelectedTrackId(null)}
-            className={`px-2.5 py-1 rounded text-[11px] font-mono font-semibold shrink-0 cursor-pointer border transition-colors ${
-              selectedTrackId === null
-                ? 'bg-white text-amber-950 border-white shadow-xs'
-                : 'bg-black/40 text-amber-100/85 border-amber-300/25 hover:bg-black/60'
-            }`}
-          >
-            All ({availableTracks.length})
-          </button>
-
-          <select
-            aria-label="Chord Flow Track Filter"
-            value={selectedTrackId || ''}
-            onChange={(e) => {
-              const val = e.target.value || null;
-              setSelectedTrackId(val);
-            }}
-            className="bg-black/45 border border-amber-300/35 text-amber-100 text-[11px] font-mono rounded px-2 py-1 outline-none cursor-pointer shrink-0"
-          >
-            <option value="">All Instruments ({availableTracks.length})</option>
-            {availableTracks.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name} ({t.id} • {t.count}n)
-              </option>
-            ))}
-          </select>
-
-          {availableTracks.length > 3 && (
+      {/* Top Zero-Overlap Wrapped Control Bar */}
+      <div className="bg-black/40 border-b border-amber-300/20 px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-1.5 shrink-0 z-20">
+        {!isTiktokCleanHud && (
+          <div className="flex flex-wrap items-center gap-1.5 min-w-0">
             <button
               type="button"
-              aria-label="Scroll Tab Tracks Left"
-              onClick={() =>
-                trackPillsRef.current?.scrollBy({ left: -180, behavior: 'smooth' })
-              }
-              className="px-1.5 py-1 rounded bg-black/40 border border-amber-300/25 text-amber-100 hover:bg-black/60 text-[10px] font-mono cursor-pointer shrink-0"
-              title="Scroll instrument list left"
+              onClick={() => setSelectedTrackId(null)}
+              className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold shrink-0 cursor-pointer border transition-colors ${
+                selectedTrackId === null
+                  ? 'bg-white text-amber-950 border-white shadow-xs'
+                  : 'bg-black/40 text-amber-100/85 border-amber-300/25 hover:bg-black/60'
+              }`}
             >
-              ◀
+              All ({availableTracks.length})
             </button>
-          )}
 
-          <div
-            ref={trackPillsRef}
-            className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 min-w-0"
-          >
-            {availableTracks.map((trk) => {
-              const isSel = selectedTrackId === trk.id;
-              return (
-                <button
-                  key={trk.id}
-                  type="button"
-                  aria-label={`Filter chord flow by ${trk.id}`}
-                  onClick={() => setSelectedTrackId(isSel ? null : trk.id)}
-                  className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono shrink-0 cursor-pointer border transition-colors ${
-                    isSel
-                      ? 'bg-amber-100 text-amber-950 border-white font-bold shadow-xs'
-                      : 'bg-black/35 text-amber-100/85 border-amber-300/20 hover:bg-black/55'
-                  }`}
-                >
-                  <span
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ backgroundColor: trk.color }}
-                  />
-                  <span>{trk.id}</span>
-                  <span className="opacity-65">({trk.count})</span>
-                </button>
-              );
-            })}
-          </div>
-
-          {availableTracks.length > 3 && (
-            <button
-              type="button"
-              aria-label="Scroll Tab Tracks Right"
-              onClick={() =>
-                trackPillsRef.current?.scrollBy({ left: 180, behavior: 'smooth' })
-              }
-              className="px-1.5 py-1 rounded bg-black/40 border border-amber-300/25 text-amber-100 hover:bg-black/60 text-[10px] font-mono cursor-pointer shrink-0"
-              title="Scroll instrument list right"
-            >
-              ▶
-            </button>
-          )}
-        </div>
-
-        <div className="flex items-center gap-1.5 shrink-0">
-          {/* Guitar Scroll Color Theme Selector + Custom Hex Color Picker */}
-          <div className="flex items-center gap-1 bg-black/45 border border-amber-300/30 rounded px-2 py-0.5 font-mono">
-            <span className="text-[10px] text-amber-200/90 hidden sm:inline">Scroll Color:</span>
             <select
-              aria-label="Guitar Scroll Color Theme"
-              value={scrollThemeId}
-              onChange={(e) =>
-                handleSelectScrollTheme(e.target.value as GuitarScrollThemeId)
-              }
-              className="bg-black/50 border border-amber-300/30 text-amber-100 text-[11px] rounded px-1.5 py-0.5 outline-none cursor-pointer"
-              title="Change Guitar Scroll Background & Staff Color Theme"
+              aria-label="Chord Flow Track Filter"
+              value={selectedTrackId || ''}
+              onChange={(e) => {
+                const val = e.target.value || null;
+                setSelectedTrackId(val);
+              }}
+              className={`bg-black/45 border border-amber-300/35 text-amber-100 text-[11px] font-mono rounded px-1.5 py-0.5 outline-none cursor-pointer shrink-0 ${
+                isIphonePortrait ? 'max-w-[135px] truncate' : ''
+              }`}
             >
-              {Object.values(GUITAR_SCROLL_THEMES).map((thm) => (
-                <option key={thm.id} value={thm.id}>
-                  {thm.label}
+              <option value="">All Instruments ({availableTracks.length})</option>
+              {availableTracks.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name} ({t.id} • {t.count}n)
                 </option>
               ))}
-              <option value="custom">Custom Color ({customScrollHex})</option>
             </select>
-            <input
-              type="color"
-              aria-label="Custom Guitar Scroll Color"
-              value={activePalette.primaryHex}
-              onChange={(e) => handleCustomHexChange(e.target.value)}
-              className="w-5 h-5 rounded border border-amber-200/40 bg-transparent cursor-pointer p-0"
-              title="Pick Custom Guitar Scroll Color"
-            />
-          </div>
 
-          <div className="flex items-center gap-1 shrink-0 bg-black/45 border border-amber-300/30 rounded px-1.5 py-0.5 font-mono">
-            <button
-              type="button"
-              aria-label="Tab Zoom Out"
-              onClick={() => setZoomLevel((z) => Math.max(0.2, Number((z - 0.15).toFixed(2))))}
-              className="text-amber-200 hover:text-white px-1.5 py-0.5 text-xs font-bold cursor-pointer"
-              title="Zoom Out (or Pinch In on Trackpad)"
+            {availableTracks.length > 3 && !isIphonePortrait && (
+              <button
+                type="button"
+                aria-label="Scroll Tab Tracks Left"
+                onClick={() =>
+                  trackPillsRef.current?.scrollBy({ left: -180, behavior: 'smooth' })
+                }
+                className="px-1.5 py-0.5 rounded bg-black/40 border border-amber-300/25 text-amber-100 hover:bg-black/60 text-[10px] font-mono cursor-pointer shrink-0"
+                title="Scroll instrument list left"
+              >
+                ◀
+              </button>
+            )}
+
+            <div
+              ref={trackPillsRef}
+              className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 min-w-0 max-w-full"
             >
-              -
-            </button>
-            <button
-              type="button"
-              aria-label="Tab Reset Zoom"
-              onClick={() => setZoomLevel(1.0)}
-              className="text-amber-100 hover:text-white px-1.5 py-0.5 text-[11px] cursor-pointer min-w-[44px] text-center"
-              title="Reset Zoom to 100%"
-            >
-              {Math.round(zoomLevel * 100)}%
-            </button>
-            <button
-              type="button"
-              aria-label="Tab Zoom In"
-              onClick={() => setZoomLevel((z) => Math.min(3.0, Number((z + 0.15).toFixed(2))))}
-              className="text-amber-200 hover:text-white px-1.5 py-0.5 text-xs font-bold cursor-pointer"
-              title="Zoom In (or Pinch Out on Trackpad)"
-            >
-              +
-            </button>
-            <div className="w-px h-3.5 bg-amber-300/25 mx-0.5" />
-            <button
-              type="button"
-              aria-label="Fit All Tab View"
-              onClick={handleFitAll}
-              className="text-emerald-300 hover:text-emerald-200 px-1.5 py-0.5 text-[11px] font-semibold cursor-pointer"
-              title="Fit all instrument tab staves and measures into view"
-            >
-              Fit All
-            </button>
+              {availableTracks.map((trk) => {
+                const isSel = selectedTrackId === trk.id;
+                return (
+                  <button
+                    key={trk.id}
+                    type="button"
+                    aria-label={`Filter chord flow by ${trk.id}`}
+                    onClick={() => setSelectedTrackId(isSel ? null : trk.id)}
+                    className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono shrink-0 cursor-pointer border transition-colors ${
+                      isSel
+                        ? 'bg-amber-100 text-amber-950 border-white font-bold shadow-xs'
+                        : 'bg-black/35 text-amber-100/85 border-amber-300/20 hover:bg-black/55'
+                    }`}
+                  >
+                    <span
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{ backgroundColor: trk.color }}
+                    />
+                    <span>{trk.id}</span>
+                    <span className="opacity-65">({trk.count})</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {availableTracks.length > 3 && !isIphonePortrait && (
+              <button
+                type="button"
+                aria-label="Scroll Tab Tracks Right"
+                onClick={() =>
+                  trackPillsRef.current?.scrollBy({ left: 180, behavior: 'smooth' })
+                }
+                className="px-1.5 py-0.5 rounded bg-black/40 border border-amber-300/25 text-amber-100 hover:bg-black/60 text-[10px] font-mono cursor-pointer shrink-0"
+                title="Scroll instrument list right"
+              >
+                ▶
+              </button>
+            )}
           </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-1.5 shrink-0 ml-auto">
+          {!isTiktokCleanHud && (
+            <>
+              {/* Guitar Scroll Color Theme Selector + Custom Hex Color Picker */}
+              <div className="flex items-center gap-1 bg-black/45 border border-amber-300/30 rounded px-1.5 py-0.5 font-mono">
+                <span className="text-[10px] text-amber-200/90 hidden sm:inline">
+                  Scroll Color:
+                </span>
+                <select
+                  aria-label="Guitar Scroll Color Theme"
+                  value={scrollThemeId}
+                  onChange={(e) =>
+                    handleSelectScrollTheme(e.target.value as GuitarScrollThemeId)
+                  }
+                  className={`bg-black/50 border border-amber-300/30 text-amber-100 text-[11px] rounded px-1 py-0.5 outline-none cursor-pointer ${
+                    isIphonePortrait ? 'max-w-[112px] truncate' : ''
+                  }`}
+                  title="Change Guitar Scroll Background & Staff Color Theme"
+                >
+                  {Object.values(GUITAR_SCROLL_THEMES).map((thm) => (
+                    <option key={thm.id} value={thm.id}>
+                      {thm.label}
+                    </option>
+                  ))}
+                  <option value="custom">Custom Color ({customScrollHex})</option>
+                </select>
+                <input
+                  type="color"
+                  aria-label="Custom Guitar Scroll Color"
+                  value={activePalette.primaryHex}
+                  onChange={(e) => handleCustomHexChange(e.target.value)}
+                  className="w-4 h-4 rounded border border-amber-200/40 bg-transparent cursor-pointer p-0"
+                  title="Pick Custom Guitar Scroll Color"
+                />
+              </div>
+
+              <div className="flex items-center gap-0.5 shrink-0 bg-black/45 border border-amber-300/30 rounded px-1 py-0.5 font-mono">
+                <button
+                  type="button"
+                  aria-label="Tab Zoom Out"
+                  onClick={() =>
+                    setZoomLevel((z) => Math.max(0.2, Number((z - 0.15).toFixed(2))))
+                  }
+                  className="text-amber-200 hover:text-white px-1 py-0.5 text-xs font-bold cursor-pointer"
+                  title="Zoom Out (or Pinch In on Trackpad)"
+                >
+                  -
+                </button>
+                <button
+                  type="button"
+                  aria-label="Tab Reset Zoom"
+                  onClick={() => setZoomLevel(1.0)}
+                  className="text-amber-100 hover:text-white px-1 py-0.5 text-[10px] cursor-pointer min-w-[38px] text-center"
+                  title="Reset Zoom to 100%"
+                >
+                  {Math.round(zoomLevel * 100)}%
+                </button>
+                <button
+                  type="button"
+                  aria-label="Tab Zoom In"
+                  onClick={() =>
+                    setZoomLevel((z) => Math.min(3.0, Number((z + 0.15).toFixed(2))))
+                  }
+                  className="text-amber-200 hover:text-white px-1 py-0.5 text-xs font-bold cursor-pointer"
+                  title="Zoom In (or Pinch Out on Trackpad)"
+                >
+                  +
+                </button>
+                <div className="w-px h-3.5 bg-amber-300/25 mx-0.5" />
+                <button
+                  type="button"
+                  aria-label="Fit All Tab View"
+                  onClick={handleFitAll}
+                  className="text-emerald-300 hover:text-emerald-200 px-1 py-0.5 text-[10px] font-semibold cursor-pointer"
+                  title="Fit all instrument tab staves and measures into view"
+                >
+                  Fit All
+                </button>
+              </div>
+            </>
+          )}
+
+          <button
+            type="button"
+            data-testid="tab-tiktok-hud-btn"
+            aria-label="Toggle Clean TikTok Recording HUD"
+            aria-pressed={isTiktokCleanHud}
+            onClick={() => setIsTiktokCleanHud((prev) => !prev)}
+            className={`px-2 py-0.5 text-[11px] font-mono rounded border cursor-pointer transition-colors shrink-0 ${
+              isTiktokCleanHud
+                ? 'bg-pink-500/30 border-pink-300 text-pink-100 font-bold'
+                : 'bg-black/45 border-amber-300/30 text-amber-100 hover:bg-amber-500/20'
+            }`}
+            title="Hide secondary toolbars for clean TikTok / Reels vertical screen capture"
+          >
+            {isTiktokCleanHud ? 'TikTok HUD: ON' : 'TikTok HUD'}
+          </button>
 
           <button
             type="button"
@@ -1595,17 +1643,19 @@ export default function TabChordFlowView({
             style={{ backgroundColor: activePalette.headerBg }}
             className="flex sticky top-0 z-30 bg-[#3B1503] border-b border-amber-200/25 h-7 items-center"
           >
-            <div
-              style={{ width: `${headerWidthPx}px`, backgroundColor: activePalette.headerBg }}
-              className="sticky left-0 z-40 bg-[#3B1503] h-full px-3 border-r border-amber-200/25 flex items-center justify-between text-[10px] font-mono text-amber-200/90 uppercase tracking-wider shrink-0"
-            >
-              <span>Instrument / Fretboard</span>
-              <span>6-Str Tab</span>
-            </div>
+            {!isIphonePortrait && (
+              <div
+                style={{ width: `${headerWidthPx}px`, backgroundColor: activePalette.headerBg }}
+                className="sticky left-0 z-40 bg-[#3B1503] h-full px-3 border-r border-amber-200/25 flex items-center justify-between text-[10px] font-mono text-amber-200/90 uppercase tracking-wider shrink-0"
+              >
+                <span>Instrument / Fretboard</span>
+                <span>6-Str Tab</span>
+              </div>
+            )}
 
             <div className="relative h-full overflow-hidden" style={{ width: `${timelineWidthPx}px` }}>
               {Array.from({ length: Math.ceil(maxEndWhole) + 1 }).map((_, mIdx) => {
-                const x = mIdx * wholeNoteScale;
+                const x = effectiveHitZoneX + mIdx * wholeNoteScale;
                 const sliceAtMeasure = chordSlices.find(
                   (s) => Math.abs(s.startWhole - mIdx) < 0.26
                 );
@@ -1712,20 +1762,22 @@ export default function TabChordFlowView({
               <div
                 key={track.id}
                 data-testid={`instrument-tab-staff-${track.id}`}
-                style={{ height: `${staffHeightPx}px` }}
-                className="flex border-b border-amber-100/20 relative bg-black/10 hover:bg-black/20 transition-colors"
+                style={{ height: isIphonePortrait ? `${staffHeightPx + 34}px` : `${staffHeightPx}px` }}
+                className={`${
+                  isIphonePortrait ? 'flex flex-col w-full' : 'flex flex-row'
+                } border-b border-amber-100/20 relative bg-black/10 hover:bg-black/20 transition-colors`}
               >
-                {/* Opaque Sticky Left Per-Instrument Header + Mini 6-String Fretboard */}
-                <div
-                  style={{
-                    width: `${headerWidthPx}px`,
-                    borderLeft: `4px solid ${track.color}`,
-                    backgroundColor: activePalette.headerBg,
-                  }}
-                  className="sticky left-0 z-20 bg-[#3B1503] shadow-[4px_0_12px_rgba(0,0,0,0.45)] border-r border-amber-200/25 px-2.5 py-1.5 flex flex-col justify-between shrink-0"
-                >
-                  <div className="flex items-center justify-between gap-1">
-                    <div className="flex items-center gap-1.5 min-w-0">
+                {isIphonePortrait ? (
+                  /* Full-Width Compact Top Track Ribbon in Vertical iPhone 15 Pro Mode (0px Left Obstruction!) */
+                  <div
+                    data-testid={`portrait-track-header-${track.id}`}
+                    style={{
+                      borderLeft: `4px solid ${track.color}`,
+                      backgroundColor: activePalette.headerBg,
+                    }}
+                    className="sticky left-0 z-20 w-full h-[34px] px-3 border-b border-amber-200/20 flex items-center justify-between gap-2 shrink-0"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
                       <span
                         className="w-2.5 h-2.5 rounded-full shrink-0"
                         style={{ backgroundColor: track.color }}
@@ -1733,102 +1785,192 @@ export default function TabChordFlowView({
                       <span className="font-mono font-bold text-xs text-white truncate">
                         {track.name}
                       </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setSelectedTrackId(selectedTrackId === track.id ? null : track.id)
-                      }
-                      className="px-1.5 py-0.2 rounded bg-black/40 hover:bg-white/20 text-[9px] font-mono text-amber-200 border border-amber-300/25 cursor-pointer shrink-0"
-                      title="Isolate or restore this instrument tab staff"
-                    >
-                      {selectedTrackId === track.id ? 'All' : 'Focus'}
-                    </button>
-                  </div>
-
-                  {/* Per-Instrument Active Chord & Octave-Folded Mini 6-String Fretboard */}
-                  <div className="flex items-center justify-between gap-2 my-auto">
-                    <div className="min-w-0">
-                      <div className="text-sm font-sans font-bold text-amber-100 truncate">
-                        {trackChordSymbol ? trackChordSymbol.fullText : '—'}
-                      </div>
-                      <div className="text-[9px] font-mono text-amber-200/75 truncate">
+                      <span className="text-xs font-sans font-bold text-amber-200 shrink-0">
+                        · {trackChordSymbol ? trackChordSymbol.fullText : '—'}
+                      </span>
+                      <span className="text-[10px] font-mono text-amber-100/80 truncate">
                         {trackActiveMidis.length > 0
                           ? trackActiveMidis
-                              .slice(0, 4)
+                              .slice(0, 3)
                               .map((m) => formatMidiPitchDisplay(m, preferFlats))
                               .join(' ')
-                          : `${track.id} (${track.count}n)`}
-                      </div>
+                          : ''}
+                      </span>
                     </div>
 
-                    <svg
-                      data-testid={`mini-fretboard-${track.id}`}
-                      width={64}
-                      height={36}
-                      viewBox="0 0 130 76"
-                      className="shrink-0 bg-black/30 rounded p-0.5 border border-amber-200/20"
-                    >
-                      {Array.from({ length: 4 }).map((_, fIdx) => (
-                        <line
-                          key={fIdx}
-                          x1={15}
-                          y1={12 + fIdx * 16}
-                          x2={115}
-                          y2={12 + fIdx * 16}
-                          stroke="rgba(255,247,237,0.65)"
-                          strokeWidth={fIdx === 0 ? 2 : 1}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <svg
+                        data-testid={`mini-fretboard-${track.id}`}
+                        width={46}
+                        height={24}
+                        viewBox="0 0 130 76"
+                        className="shrink-0 bg-black/30 rounded p-0.5 border border-amber-200/20"
+                      >
+                        {Array.from({ length: 4 }).map((_, fIdx) => (
+                          <line
+                            key={fIdx}
+                            x1={15}
+                            y1={12 + fIdx * 16}
+                            x2={115}
+                            y2={12 + fIdx * 16}
+                            stroke="rgba(255,247,237,0.65)"
+                            strokeWidth={fIdx === 0 ? 2 : 1}
+                          />
+                        ))}
+                        {trackGuitarVoicing.strings.map((st, sIdx) => {
+                          const x = 15 + sIdx * 20;
+                          const bf = trackGuitarVoicing.baseFret || 1;
+                          return (
+                            <g key={sIdx}>
+                              <line
+                                x1={x}
+                                y1={12}
+                                x2={x}
+                                y2={60}
+                                stroke="rgba(255,247,237,0.65)"
+                                strokeWidth={1}
+                              />
+                              {typeof st.fret === 'number' && st.fret > 0 && (
+                                <circle
+                                  cx={x}
+                                  cy={12 + Math.min(3.5, Math.max(0.5, st.fret - bf + 0.5)) * 16}
+                                  r={5}
+                                  fill={track.color}
+                                />
+                              )}
+                            </g>
+                          );
+                        })}
+                      </svg>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSelectedTrackId(selectedTrackId === track.id ? null : track.id)
+                        }
+                        className="px-2 py-0.5 rounded bg-black/45 hover:bg-white/20 text-[10px] font-mono text-amber-200 border border-amber-300/30 cursor-pointer shrink-0"
+                        title="Isolate or restore this instrument tab staff"
+                      >
+                        {selectedTrackId === track.id ? 'All' : 'Focus'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  /* Desktop Opaque Sticky Left Per-Instrument Header + Mini 6-String Fretboard */
+                  <div
+                    style={{
+                      width: `${headerWidthPx}px`,
+                      borderLeft: `4px solid ${track.color}`,
+                      backgroundColor: activePalette.headerBg,
+                    }}
+                    className="sticky left-0 z-20 bg-[#3B1503] shadow-[4px_0_12px_rgba(0,0,0,0.45)] border-r border-amber-200/25 px-2.5 py-1.5 flex flex-col justify-between shrink-0"
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: track.color }}
                         />
-                      ))}
-                      {trackGuitarVoicing.strings.map((st, sIdx) => {
-                        const x = 15 + sIdx * 20;
-                        const bf = trackGuitarVoicing.baseFret || 1;
-                        return (
-                          <g key={sIdx}>
-                            <line
-                              x1={x}
-                              y1={12}
-                              x2={x}
-                              y2={60}
-                              stroke="rgba(255,247,237,0.65)"
-                              strokeWidth={1}
-                            />
-                            {st.fret === 0 && (
-                              <circle
-                                cx={x}
-                                cy={6}
-                                r={3}
-                                fill="none"
-                                stroke={track.color}
-                                strokeWidth={1.5}
-                              />
-                            )}
-                            {typeof st.fret === 'number' && st.fret > 0 && (
-                              <circle
-                                cx={x}
-                                cy={12 + Math.min(3.5, Math.max(0.5, st.fret - bf + 0.5)) * 16}
-                                r={4.5}
-                                fill={track.color}
-                              />
-                            )}
-                          </g>
-                        );
-                      })}
-                    </svg>
-                  </div>
+                        <span className="font-mono font-bold text-xs text-white truncate">
+                          {track.name}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSelectedTrackId(selectedTrackId === track.id ? null : track.id)
+                        }
+                        className="px-1.5 py-0.2 rounded bg-black/40 hover:bg-white/20 text-[9px] font-mono text-amber-200 border border-amber-300/25 cursor-pointer shrink-0"
+                        title="Isolate or restore this instrument tab staff"
+                      >
+                        {selectedTrackId === track.id ? 'All' : 'Focus'}
+                      </button>
+                    </div>
 
-                  <div className="flex items-center justify-between text-[8px] font-mono text-amber-200/60">
-                    <span>{track.id}</span>
-                    <span>e B G D A E</span>
-                  </div>
-                </div>
+                    {/* Per-Instrument Active Chord & Octave-Folded Mini 6-String Fretboard */}
+                    <div className="flex items-center justify-between gap-2 my-auto">
+                      <div className="min-w-0">
+                        <div className="text-sm font-sans font-bold text-amber-100 truncate">
+                          {trackChordSymbol ? trackChordSymbol.fullText : '—'}
+                        </div>
+                        <div className="text-[9px] font-mono text-amber-200/75 truncate">
+                          {trackActiveMidis.length > 0
+                            ? trackActiveMidis
+                                .slice(0, 4)
+                                .map((m) => formatMidiPitchDisplay(m, preferFlats))
+                                .join(' ')
+                            : `${track.id} (${track.count}n)`}
+                        </div>
+                      </div>
 
-                {/* Right Horizontal 6-String Tab Staff & Proportional Beat Bars */}
+                      <svg
+                        data-testid={`mini-fretboard-${track.id}`}
+                        width={64}
+                        height={36}
+                        viewBox="0 0 130 76"
+                        className="shrink-0 bg-black/30 rounded p-0.5 border border-amber-200/20"
+                      >
+                        {Array.from({ length: 4 }).map((_, fIdx) => (
+                          <line
+                            key={fIdx}
+                            x1={15}
+                            y1={12 + fIdx * 16}
+                            x2={115}
+                            y2={12 + fIdx * 16}
+                            stroke="rgba(255,247,237,0.65)"
+                            strokeWidth={fIdx === 0 ? 2 : 1}
+                          />
+                        ))}
+                        {trackGuitarVoicing.strings.map((st, sIdx) => {
+                          const x = 15 + sIdx * 20;
+                          const bf = trackGuitarVoicing.baseFret || 1;
+                          return (
+                            <g key={sIdx}>
+                              <line
+                                x1={x}
+                                y1={12}
+                                x2={x}
+                                y2={60}
+                                stroke="rgba(255,247,237,0.65)"
+                                strokeWidth={1}
+                              />
+                              {st.fret === 0 && (
+                                <circle
+                                  cx={x}
+                                  cy={6}
+                                  r={3}
+                                  fill="none"
+                                  stroke={track.color}
+                                  strokeWidth={1.5}
+                                />
+                              )}
+                              {typeof st.fret === 'number' && st.fret > 0 && (
+                                <circle
+                                  cx={x}
+                                  cy={12 + Math.min(3.5, Math.max(0.5, st.fret - bf + 0.5)) * 16}
+                                  r={4.5}
+                                  fill={track.color}
+                                />
+                              )}
+                            </g>
+                          );
+                        })}
+                      </svg>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[8px] font-mono text-amber-200/60">
+                      <span>{track.id}</span>
+                      <span>e B G D A E</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Full-Bleed Horizontal 6-String Tab Staff & Proportional Beat Bars */}
                 <div
                   className="relative overflow-hidden"
                   style={{ width: `${timelineWidthPx}px` }}
                 >
                   <svg
+                    data-testid={`tab-staff-${track.id}`}
                     width={timelineWidthPx}
                     height={staffHeightPx}
                     className="block"
@@ -1844,13 +1986,13 @@ export default function TabChordFlowView({
                             y1={y}
                             x2={timelineWidthPx}
                             y2={y}
-                            stroke="rgba(255, 237, 213, 0.22)"
-                            strokeWidth={sIdx >= 4 ? 1.15 : 0.8}
+                            stroke="rgba(255, 237, 213, 0.28)"
+                            strokeWidth={sIdx >= 4 ? 1.25 : 0.9}
                           />
                           <text
-                            x={4}
+                            x={isIphonePortrait ? 8 : 4}
                             y={y + 3}
-                            className="fill-amber-200/50 font-mono text-[9px]"
+                            className="fill-amber-200/70 font-mono text-[9.5px] font-semibold"
                           >
                             {sLabel}
                           </text>
@@ -1861,7 +2003,7 @@ export default function TabChordFlowView({
                     {/* Vertical Measure & Quarter-Beat Grid Lines */}
                     {Array.from({ length: Math.ceil(maxEndWhole * 4) }).map((_, bIdx) => {
                       const isBar = bIdx % 4 === 0;
-                      const x = (bIdx / 4) * wholeNoteScale;
+                      const x = effectiveHitZoneX + (bIdx / 4) * wholeNoteScale;
                       return (
                         <line
                           key={bIdx}
@@ -1881,8 +2023,8 @@ export default function TabChordFlowView({
 
                     {/* Proportional Beat Bars, Detune Shimmer Envelopes & Explicit Slides */}
                     {trackTrajectories.map((item) => {
-                      const xStart = item.startWhole * wholeNoteScale;
-                      const xEnd = item.endWhole * wholeNoteScale;
+                      const xStart = effectiveHitZoneX + item.startWhole * wholeNoteScale;
+                      const xEnd = effectiveHitZoneX + item.endWhole * wholeNoteScale;
                       const wPx = Math.max(4, xEnd - xStart - 1.5);
                       const yStart = trackMidiToY(item.startMidi);
 
@@ -1990,14 +2132,25 @@ export default function TabChordFlowView({
                       );
                     })}
 
-                    {/* Active Playhead Line & Left-Aligned De-Collided Orb Badges */}
+                    {/* Glowing Hit-Zone Highway Bar & Active Playhead Line */}
+                    {isIphonePortrait && (
+                      <line
+                        x1={playheadX}
+                        y1={0}
+                        x2={playheadX}
+                        y2={staffHeightPx}
+                        stroke={activePalette.playedLineColor}
+                        strokeOpacity={0.22}
+                        strokeWidth={6}
+                      />
+                    )}
                     <line
                       x1={playheadX}
                       y1={0}
                       x2={playheadX}
                       y2={staffHeightPx}
                       stroke="#FFFFFF"
-                      strokeOpacity={0.8}
+                      strokeOpacity={0.85}
                       strokeWidth={1.8}
                     />
 

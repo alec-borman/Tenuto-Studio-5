@@ -82,13 +82,19 @@ export default function Transport({
 
   return (
     <header className="w-full bg-slate-900 border-b border-slate-800 flex flex-col shrink-0 shadow-lg z-20 relative select-none">
-      {/* Tier 1: Single-Line Studio Control Bar (Brand, Transport, Clock, Master Volume & Export WAV) */}
-      <div className="h-11 w-full px-3 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+      {/* Tier 1: Studio Control Bar (Wraps cleanly inside 393px iPhone 15 Pro portrait frame without clipping) */}
+      <div
+        className={`${
+          isIphonePortrait
+            ? 'min-h-10 py-1.5 px-2 flex flex-wrap items-center justify-between gap-1.5'
+            : 'h-11 px-3 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar'
+        } w-full`}
+      >
         {/* Left: Brand & Demo Score Selector */}
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0">
           <div className="font-ui text-xs font-semibold tracking-wider text-slate-200 flex items-center whitespace-nowrap">
-            <span className="w-2 h-2 rounded-full bg-blue-500 mr-1.5 shadow-[0_0_8px_#3b82f6]" />
-            Tenuto<span className="text-blue-500 font-bold px-1">Studio</span>5
+            <span className="w-2 h-2 rounded-full bg-blue-500 mr-1 shadow-[0_0_8px_#3b82f6]" />
+            Tenuto<span className="text-blue-500 font-bold px-0.5">Studio</span>5
           </div>
 
           {onSelectPreset && (
@@ -99,7 +105,11 @@ export default function Transport({
                 const preset = PRESET_SCORES.find((p) => p.id === e.target.value);
                 if (preset) onSelectPreset(preset.code);
               }}
-              className="bg-slate-950 border border-slate-700 hover:border-slate-600 text-slate-300 text-xs rounded-md px-2 py-1 outline-none focus:border-blue-500 transition-colors max-w-[200px] truncate cursor-pointer"
+              className={`bg-slate-950 border border-slate-700 hover:border-slate-600 text-slate-300 rounded-md outline-none focus:border-blue-500 transition-colors truncate cursor-pointer ${
+                isIphonePortrait
+                  ? 'max-w-[118px] text-[11px] px-1.5 py-0.5'
+                  : 'max-w-[200px] text-xs px-2 py-1'
+              }`}
             >
               <option value="" disabled>
                 Load Demo Score...
@@ -114,13 +124,15 @@ export default function Transport({
         </div>
 
         {/* Center: Transport Action Buttons & Compact Clock Readout */}
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex flex-wrap items-center gap-1 shrink-0">
           <button
             type="button"
             onClick={onTogglePlay}
             className={`${
               isPlaying ? 'bg-amber-600 hover:bg-amber-500' : 'bg-blue-600 hover:bg-blue-500'
-            } transition-colors shadow-md text-white font-bold py-1 px-4 rounded-md text-xs uppercase tracking-wider cursor-pointer whitespace-nowrap shrink-0`}
+            } transition-colors shadow-md text-white font-bold ${
+              isIphonePortrait ? 'py-1 px-3 text-[11px]' : 'py-1 px-4 text-xs'
+            } rounded-md uppercase tracking-wider cursor-pointer whitespace-nowrap shrink-0`}
           >
             {isPlaying ? 'Pause' : 'Play'}
           </button>
@@ -223,9 +235,9 @@ export default function Transport({
           </div>
         </div>
 
-        {/* Right: Master Volume & Export WAV */}
-        <div className="flex items-center gap-2 shrink-0">
-          {onMasterVolumeChange && (
+        {/* Right: Master Volume, Rotate iPhone 15 Pro & Export WAV */}
+        <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+          {onMasterVolumeChange && !isIphonePortrait && (
             <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-md px-2 py-1 whitespace-nowrap">
               <label htmlFor="master-volume-slider" className="text-[11px] font-mono text-slate-400">
                 Vol
@@ -301,9 +313,15 @@ export default function Transport({
 
       {/* Tier 2: Dedicated Studio Navigation, Score Title, Key/Scale Lock & Bottom Dock Bar */}
       {hasSecondTier && (
-        <div className="h-9 w-full bg-slate-950/90 border-t border-slate-800/80 px-3 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+        <div
+          className={`${
+            isIphonePortrait
+              ? 'min-h-8 py-1 px-2 flex flex-wrap items-center justify-between gap-1'
+              : 'h-9 px-3 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar'
+          } w-full bg-slate-950/90 border-t border-slate-800/80`}
+        >
           {/* Left: .ten Code Toggle, Active Score Title & Global Key/Scale Selectors */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
             {onToggleCodeVisible && (
               <button
                 type="button"

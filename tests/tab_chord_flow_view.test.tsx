@@ -208,5 +208,34 @@ describe('TDB-733, TDB-736, TDB-739 & TDB-741: Detune-Only Tab Sliding, Sub-Bass
     expect(rootView).toHaveAttribute('data-native-resolution', '1179x2556');
     expect(rootView).toHaveAttribute('data-fullscreen', 'true');
     expect(rootView).toHaveStyle({ width: '393px', height: '852px' });
+    window.localStorage.removeItem('tenuto_viewport_iphone15pro_v1');
+  });
+
+  it('renders full-bleed vertical guitar scroll layout and toggles TikTok Clean HUD mode in iPhone 15 Pro portrait view', () => {
+    window.localStorage.setItem('tenuto_viewport_iphone15pro_v1', 'true');
+    const parser = new DocumentParser();
+    const score = parser.compile('pno: [c4 e4 g4]:1');
+
+    render(
+      <TabChordFlowView
+        events={score.events}
+        isPlaying={true}
+        playheadBeat={0.25}
+        rootKey="C"
+        score={score}
+      />
+    );
+
+    const rootView = screen.getByTestId('tab-chord-flow-view');
+    expect(rootView).toHaveAttribute('data-viewport-mode', 'iphone-15-pro-portrait');
+    expect(screen.getByTestId('portrait-track-header-pno')).toBeInTheDocument();
+
+    const tiktokHudBtn = screen.getByTestId('tab-tiktok-hud-btn');
+    expect(tiktokHudBtn).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(tiktokHudBtn);
+    expect(tiktokHudBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(rootView).toHaveAttribute('data-tiktok-clean-hud', 'true');
+
+    window.localStorage.removeItem('tenuto_viewport_iphone15pro_v1');
   });
 });

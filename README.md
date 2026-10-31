@@ -6,7 +6,7 @@
 
   [![Live Web Studio](https://img.shields.io/badge/Try_Live_Web_Studio-tenuto--studio--5--production.up.railway.app-10b981?style=for-the-badge)](https://tenuto-studio-5-production.up.railway.app/)
 
-  [![Release: v5.2.4](https://img.shields.io/badge/Release-v5.2.4-2563eb.svg)](./SPEC.md)
+  [![Release: v5.2.6](https://img.shields.io/badge/Release-v5.2.6-2563eb.svg)](./SPEC.md)
   [![Grammar Guide: TENUTO_GRAMMAR.md](https://img.shields.io/badge/Grammar_Guide-TENUTO__GRAMMAR.md-10b981.svg)](./TENUTO_GRAMMAR.md)
   [![Platform: macOS .pkg | Windows .exe | Web](https://img.shields.io/badge/Platform-macOS_.pkg_%7C_Windows_.exe_%7C_Web-8b5cf6.svg)](#installation--desktop-packaging)
   [![License: MIT](https://img.shields.io/badge/License-MIT-64748b.svg)](LICENSE)
@@ -24,7 +24,7 @@ Launch **Tenuto Studio 5** immediately in your browser with zero installation:
 
 ## Overview
 
-**Tenuto Studio 5** (`v5.2.4`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
+**Tenuto Studio 5** (`v5.2.6`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
 
 In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of Truth**:
 * **Code Projects the Entire Studio:** Writing or pasting `.ten` code (including raw Markdown blocks straight from Gemini, Claude, or ChatGPT) immediately compiles into four synchronized visual views (**Scrolling Piano Roll**, **Tab / Chord Flow**, **Session View Clip Matrix**, and **Arrangement View Timeline**), three interactive bottom studio docks (**Console Mixer**, **Device Chain & 8-Macro Rack**, and **Context Note/Score Inspector**), and a real-time WebAudio / PCM DSP engine.
@@ -82,6 +82,7 @@ In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of 
 * **Piano-Roll-Parity Pinch-to-Zoom, `Fit All` & Auto-Scroll:** Supports two-finger trackpad pinch-to-zoom (`20%` to `300%`), `-` / `100%` / `+` zoom buttons, 1-click **`Fit All`** (scaling both measure width and staff lane height to fit the viewport), `◀` / `▶` track pill scroll buttons, and real-time horizontal playhead auto-scrolling.
 * **Detune/Glide-Only Voice Modulation & Proportional Beat Bars:** Standard notes render as flat, proportional beat-duration bars at their exact MIDI pitch height so every beat is 100% visible at any zoom level (`20%–300%`). Notes only slide or modulate their line when `.detune(...)` (rendering a dual-wave unison detune shimmer envelope across its `start..end` window), `.glide(...)`, or `.mpe(bend)` is explicitly attached.
 * **Customizable Guitar Scroll Color Themes & Live Hex Picker (`GUITAR_SCROLL_THEMES`):** Switch the guitar scroll canvas between 6 studio themes (`Sunset Amber`, `Midnight Indigo`, `Emerald Stage`, `Ultraviolet Nebula`, `Crimson Velvet`, `Obsidian Studio`) or pick any custom hex color (`buildCustomGuitarScrollPalette`) to dynamically re-theme the radial backdrop, sticky fretboard headers, and tab fret pills with automatic `localStorage` persistence.
+* **TikTok Vertical Full-Bleed Guitar Tab Showcase UI (`isIphonePortrait` + `isTiktokCleanHud`):** In vertical iPhone 15 Pro (`393×852` / `1179×2556`) mode, automatically switches from the desktop `212px` left-column layout to a **100% full-width (`393px`) edge-to-edge 6-string guitar scroll highway** with tall vertical string spacing, a centered Hero Chord & Fretboard stage, zero toolbar overlap, and a one-click **TikTok Clean HUD** recording toggle (`data-testid="tab-tiktok-hud-btn"`).
 
 #### C. Ableton Session View Clip & Scene Matrix (`SessionView.tsx` & `FollowActionEngine.ts`)
 * **2D Track-by-Scene Launch Grid:** Launch individual clips (`▶`), launch full horizontal scene rows (`▶ Scene` with optional scene tempo changes), or stop tracks (`■ Stop`).
@@ -155,7 +156,7 @@ npm install
 npm run electron:build:mac
 
 # 3. Run the macOS installer
-open release/"Tenuto Studio 5-5.2.4-arm64.pkg"
+open release/"Tenuto Studio 5-5.2.6-arm64.pkg"
 ```
 
 ### Option 1B: Windows Desktop App (`.exe` NSIS Setup Installer)
@@ -172,7 +173,7 @@ npm install
 npm run electron:build:win
 
 # 3. Launch the generated Setup .exe inside the release/ folder
-start "" "release\Tenuto Studio 5 Setup 5.2.4.exe"
+start "" "release\Tenuto Studio 5 Setup 5.2.6.exe"
 ```
 
 ### Option 2: Local Web Development
@@ -322,8 +323,9 @@ npm run build
 
 ---
 
-## Release Notes (`v5.2.4`)
+## Release Notes (`v5.2.6`)
 
+* **`v5.2.6`:** Reimagined the vertical iPhone 15 Pro (`393×852` / `1179×2556`) and Fullscreen guitar tab UI for TikTok/Reels recording with a 100% full-bleed 6-string tab highway (eliminating the `212px` left blocker card in portrait mode), tall vertical string spacing, non-overlapping compact toolbars, and a `TikTok Clean HUD` mode (`tab-tiktok-hud-btn`).
 * **`v5.2.4`:** Added a Rotate Viewport button (`viewport-rotate-iphone15pro-btn` / `tab-rotate-iphone15pro-btn`) that switches the Tenuto Studio 5 interface into a vertical iPhone 15 Pro portrait layout (`393×852` logical / `1179×2556` physical `3x` resolution) across both standard and Fullscreen modes with `localStorage` persistence.
 * **`v5.2.2`:** Added Fullscreen Studio Mode (`Toggle Fullscreen` with native Fullscreen API + `tenuto-fullscreen-active` iframe/iOS fallback), a responsive Mobile Web View (`100dvh` dynamic viewport, single-pane mobile switching, and `mobile-bottom-nav` bar), and mobile touch gestures (1-finger touch note dragging and 2-finger touch pinch-to-zoom) on the Piano Roll.
 * **`v5.2.0`:** Added customizable Guitar Scroll color themes (`GUITAR_SCROLL_THEMES`: `Sunset Amber`, `Midnight Indigo`, `Emerald Stage`, `Ultraviolet Nebula`, `Crimson Velvet`, `Obsidian Studio`) and a live custom hex color picker (`buildCustomGuitarScrollPalette`) in `TabChordFlowView.tsx` with `localStorage` persistence, alongside detune-only tab voice modulation, proportional beat-duration bars, and Fullscreen / mobile touch pinch-to-zoom support.
