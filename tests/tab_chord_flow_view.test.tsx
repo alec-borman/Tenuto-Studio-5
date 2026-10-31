@@ -12,6 +12,11 @@ import TabChordFlowView, {
 } from '../src/components/TabChordFlowView';
 import { DocumentParser } from '../src/parser/DocumentParser';
 import SplitWorkspace from '../src/components/SplitWorkspace';
+import {
+  handleFrame240WorkerMessage,
+  TARGET_UI_FPS,
+  FRAME_BUDGET_240FPS_MS,
+} from '../src/workers/frame240Worker';
 import '@testing-library/jest-dom';
 
 vi.mock('@monaco-editor/react', () => ({
@@ -182,5 +187,48 @@ describe('TDB-733, TDB-736, TDB-739 & TDB-741: Detune-Only Tab Sliding, Sub-Bass
     expect(customPalette.id).toBe('custom');
     expect(customPalette.primaryHex).toBe('#2563EB');
     expect(customPalette.backgroundGradient).toContain('#2563EB');
+  });
+
+  it('engages the 240 FPS Web Worker frame pacer and offloads compilation and sub-beat timing', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile('pno: [c4 e4 g4]:1');
+
+    render(
+      <TabChordFlowView
+        events={score.events}
+        isPlaying={true}
+        playheadBeat={1.0}
+        rootKey="C"
+        score={score}
+      />
+    );
+
+    const rootView = screen.getByTestId('tab-chord-flow-view');
+    expect(rootView).toHaveAttribute('data-worker-fps', '240');
+
+    const workerBadge = screen.getByTestId('tab-240fps-worker-badge');
+    expect(workerBadge).toHaveTextContent('240 FPS WORKER (4.17ms)');
+
+    const compileRes = handleFrame240WorkerMessage({
+      id: 42,
+      type: 'COMPILE_SCORE',
+      code: '@tempo 120\npno: [c4 e4 g4]:1',
+    });
+    expect(compileRes.targetFps).toBe(TARGET_UI_FPS);
+    expect(compileRes.frameBudgetMs).toBeCloseTo(FRAME_BUDGET_240FPS_MS, 3);
+    expect(compileRes.events?.length).toBeGreaterThan(0);
+
+    const timingRes = handleFrame240WorkerMessage({
+      id: 43,
+      type: 'COMPUTE_FRAME_TIMING',
+      tempo: 120,
+      anchorBeat: 2.0,
+      anchorTimestampMs: 1000,
+      nowTimestampMs: 1250,
+      isPlaying: true,
+    });
+    // 250ms at 120 BPM (2 beats/sec) = +0.5 beats -> 2.5
+    expect(timingRes.interpolatedBeat).toBeCloseTo(2.5, 4);
+    expect(timingRes.targetFps).toBe(240);
   });
 });

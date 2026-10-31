@@ -22,6 +22,8 @@ describe('TDB-607, TDB-726, TDB-734 through TDB-742: Final Release Documentation
     expect(content).toContain('TENUTO STUDIO 5');
     expect(content).toContain('v5.2.2');
     expect(content).toContain('TENUTO_GRAMMAR.md');
+    expect(content).toContain('240 FPS Web Worker');
+    expect(content).toContain('frame240Worker.ts');
     expect(content).toContain('mobile-bottom-nav');
     expect(content).toContain('tenuto-fullscreen-active');
     expect(content).toContain('npm run electron:build:mac');

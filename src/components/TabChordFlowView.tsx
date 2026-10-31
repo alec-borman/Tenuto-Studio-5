@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { CompiledScore } from '../parser/DocumentParser';
 import { WindowedModulationSpec } from '../parser/ASTSerializer';
+import { use240HzFrameEngine } from '../utils/frame240Engine';
 
 export interface ChordSymbolInfo {
   rootLetter: string;
@@ -854,6 +855,11 @@ export default function TabChordFlowView({
   isPlaying = false,
   rootKey,
 }: TabChordFlowViewProps) {
+  const frame240Telemetry = use240HzFrameEngine(
+    playheadBeat,
+    score?.meta?.tempo ?? 120,
+    isPlaying
+  );
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [zoomLevel, setZoomLevel] = useState<number>(1.0);
   const [scrollThemeId, setScrollThemeId] = useState<GuitarScrollThemeId>(() => {
@@ -1133,7 +1139,7 @@ export default function TabChordFlowView({
     const pitched = activeGlobalItems.filter((item) => item.trackId !== 'drums');
     const source = pitched.length > 0 ? pitched : activeGlobalItems;
     if (source.length > 0) {
-      return Array.from(new Set(source.map((it) => Math.round(it.startMidi)))).sort(
+      return Array.from(new Set<number>(source.map((it) => Math.round(it.startMidi)))).sort(
         (a, b) => a - b
       );
     }
@@ -1162,8 +1168,10 @@ export default function TabChordFlowView({
     <div
       data-testid="tab-chord-flow-view"
       data-scroll-theme={activePalette.id}
+      data-worker-fps={frame240Telemetry.fps}
       style={{
         background: activePalette.backgroundGradient,
+        willChange: 'transform, contents',
       }}
       className="w-full h-full flex flex-col justify-between text-amber-50 overflow-hidden relative select-none"
     >
@@ -1181,6 +1189,14 @@ export default function TabChordFlowView({
           >
             All ({availableTracks.length})
           </button>
+
+          <span
+            data-testid="tab-240fps-worker-badge"
+            className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950/75 text-emerald-300 border border-emerald-400/35 shrink-0"
+            title={`Web Worker 240Hz Frame Pacer Active (${frame240Telemetry.frameBudgetMs}ms budget)`}
+          >
+            {frame240Telemetry.fps} FPS WORKER ({frame240Telemetry.frameBudgetMs}ms)
+          </span>
 
           <select
             aria-label="Chord Flow Track Filter"
@@ -1528,7 +1544,7 @@ export default function TabChordFlowView({
                 : trackTrajectories.filter((item) => item.startWhole < 0.25);
 
             const trackActiveMidis = Array.from(
-              new Set(fallbackTrackItems.map((it) => Math.round(it.startMidi)))
+              new Set<number>(fallbackTrackItems.map((it) => Math.round(it.startMidi)))
             ).sort((a, b) => a - b);
 
             const trackChordSymbol =
