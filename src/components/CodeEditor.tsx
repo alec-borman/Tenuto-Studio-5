@@ -490,35 +490,88 @@ export default function CodeEditor({
         </div>
       )}
 
-      <div className="flex-1 overflow-hidden">
-        <Editor
-          height="100%"
-          defaultLanguage="tenuto"
-          theme="tenuto-dark"
+      <div
+        className="flex-1 overflow-hidden relative select-text"
+        style={
+          {
+            userSelect: 'text',
+            WebkitUserSelect: 'text',
+            WebkitTouchCallout: 'default',
+          } as React.CSSProperties
+        }
+      >
+        <textarea
+          data-testid="karaoke-code-textarea"
+          aria-label="Tenuto Source Code Mobile Editor"
           value={code}
-          beforeMount={configureTenutoMonaco}
-          onMount={(editor, monaco) => {
-            editorRef.current = editor;
-            monacoRef.current = monaco;
-          }}
-          onChange={(val) => {
-            if (val !== undefined) {
-              onChange(val);
+          onChange={(e) => onChange(e.target.value)}
+          onPaste={(e) => {
+            const pastedText =
+              e.clipboardData?.getData('text/plain') ||
+              e.clipboardData?.getData('text') ||
+              '';
+            if (pastedText) {
+              e.preventDefault();
+              const el = e.currentTarget;
+              const start =
+                typeof el.selectionStart === 'number' ? el.selectionStart : 0;
+              const end =
+                typeof el.selectionEnd === 'number'
+                  ? el.selectionEnd
+                  : code.length;
+              const nextCode =
+                start === 0 && end === 0 && pastedText.includes('tenuto')
+                  ? pastedText
+                  : code.slice(0, start) + pastedText + code.slice(end);
+              onChange(nextCode);
             }
           }}
-          options={{
-            minimap: { enabled: false },
-            wordWrap: 'on',
-            lineNumbers: 'on',
-            scrollBeyondLastLine: false,
-            fontSize: 14,
-            lineHeight: 22,
-            fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-            padding: { top: 16, bottom: 16 },
-            renderLineHighlight: 'none',
-            smoothScrolling: true,
-          }}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoComplete="off"
+          autoCorrect="off"
+          style={
+            {
+              userSelect: 'text',
+              WebkitUserSelect: 'text',
+              WebkitTouchCallout: 'default',
+              touchAction: 'manipulation',
+            } as React.CSSProperties
+          }
+          className="w-full h-full md:sr-only bg-[#0B0F19] text-slate-100 font-mono text-sm leading-[22px] p-4 resize-none focus:outline-none select-text"
         />
+        <div className="w-full h-full max-md:hidden select-text">
+          <Editor
+            height="100%"
+            defaultLanguage="tenuto"
+            theme="tenuto-dark"
+            value={code}
+            beforeMount={configureTenutoMonaco}
+            onMount={(editor, monaco) => {
+              editorRef.current = editor;
+              monacoRef.current = monaco;
+            }}
+            onChange={(val) => {
+              if (val !== undefined) {
+                onChange(val);
+              }
+            }}
+            options={{
+              minimap: { enabled: false },
+              wordWrap: 'on',
+              lineNumbers: 'on',
+              scrollBeyondLastLine: false,
+              fontSize: 14,
+              lineHeight: 22,
+              fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+              padding: { top: 16, bottom: 16 },
+              renderLineHighlight: 'none',
+              smoothScrolling: true,
+              contextmenu: false,
+              domReadOnly: false,
+            }}
+          />
+        </div>
       </div>
     </div>
   );

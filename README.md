@@ -6,7 +6,7 @@
 
   [![Live Web Studio](https://img.shields.io/badge/Try_Live_Web_Studio-tenuto--studio--5--production.up.railway.app-10b981?style=for-the-badge)](https://tenuto-studio-5-production.up.railway.app/)
 
-  [![Release: v5.3.0](https://img.shields.io/badge/Release-v5.3.0-2563eb.svg)](./SPEC.md)
+  [![Release: v5.3.2](https://img.shields.io/badge/Release-v5.3.2-2563eb.svg)](./SPEC.md)
   [![Grammar Guide: TENUTO_GRAMMAR.md](https://img.shields.io/badge/Grammar_Guide-TENUTO__GRAMMAR.md-10b981.svg)](./TENUTO_GRAMMAR.md)
   [![Platform: macOS .pkg | Windows .exe | Web](https://img.shields.io/badge/Platform-macOS_.pkg_%7C_Windows_.exe_%7C_Web-8b5cf6.svg)](#installation--desktop-packaging)
   [![License: MIT](https://img.shields.io/badge/License-MIT-64748b.svg)](LICENSE)
@@ -24,7 +24,7 @@ Launch **Tenuto Studio 5** immediately in your browser with zero installation:
 
 ## Overview
 
-**Tenuto Studio 5** (`v5.3.0`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
+**Tenuto Studio 5** (`v5.3.2`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
 
 In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of Truth**:
 * **Code Projects the Entire Studio:** Writing or pasting `.ten` code (including raw Markdown blocks straight from Gemini, Claude, or ChatGPT) immediately compiles into four synchronized visual views (**Scrolling Piano Roll**, **Tab / Chord Flow**, **Session View Clip Matrix**, and **Arrangement View Timeline**), three interactive bottom studio docks (**Console Mixer**, **Device Chain & 8-Macro Rack**, and **Context Note/Score Inspector**), and a real-time WebAudio / PCM DSP engine.
@@ -64,6 +64,7 @@ In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of 
   * **Track-Line Pulse, Intra-Token Progress Sweep & Always-Centered Measure Scrolling:** Highlights active note/chord tokens (`tenuto-karaoke-token-active`), renders a top **`♫ Now Playing M<N>`** ticker ribbon with `0% -> 100%` progress fills and sung lyrics, and continuously centers the active `measure N { ... }` block (`computeActiveMeasureScrollTarget` via `revealLinesInCenter` / `revealLineInCenter`) in the vertical center of the code editor viewport.
 * **Debounced LocalStorage Code Memory (`DebouncedCodeMemory.ts`):**
   * Automatically saves `.ten` code edits to `localStorage` after `500ms` of idle time (`● Saving...` $\rightarrow$ `✓ Saved`), flushes pending edits immediately on window `beforeunload` (fast browser refresh), and provides a 1-click **Reset Memory** button.
+* **Mobile Long-Press Paste & One-Tap `.ten` Clipboard Paste (`paste-ten-code-btn`):** Enables native iOS Safari and Android Chrome long-press `Paste` callouts (`userSelect: 'text'`, `WebkitTouchCallout: 'default'`) on the `.ten` code editor `<textarea>` and provides a one-tap **`📋 Paste .ten`** button (`data-testid="paste-ten-code-btn"`) to paste full `.ten` compositions from the system clipboard on mobile phones.
 
 ---
 
@@ -159,7 +160,7 @@ npm install
 npm run electron:build:mac
 
 # 3. Run the macOS installer
-open release/"Tenuto Studio 5-5.3.0-arm64.pkg"
+open release/"Tenuto Studio 5-5.3.2-arm64.pkg"
 ```
 
 ### Option 1B: Windows Desktop App (`.exe` NSIS Setup Installer)
@@ -176,7 +177,7 @@ npm install
 npm run electron:build:win
 
 # 3. Launch the generated Setup .exe inside the release/ folder
-start "" "release\Tenuto Studio 5 Setup 5.3.0.exe"
+start "" "release\Tenuto Studio 5 Setup 5.3.2.exe"
 ```
 
 ### Option 2: Local Web Development
@@ -326,8 +327,9 @@ npm run build
 
 ---
 
-## Release Notes (`v5.3.0`)
+## Release Notes (`v5.3.2`)
 
+* **`v5.3.2`:** Restored native mobile long-press `Paste` popup callout support (`userSelect: 'text'`, `WebkitTouchCallout: 'default'`, and direct `onPaste` handling) on the `.ten` code editor `<textarea>` for iOS and Android browsers, and added a one-tap **`📋 Paste .ten`** clipboard button (`paste-ten-code-btn` / `stage-paste-ten-btn`).
 * **`v5.3.0`:** Added automatic top-bar hiding when playback starts (`data-topbar-hidden="true"`), revealing the top bar during playback only when the mouse moves over the top bar zone (`top-bar-hover-zone`) or when the touchpad is scrolled (`wheel` event), and locked the Top Hero Chord Banner, Measure Timeline Strip, and per-track Header Ribbons to fixed pixel heights with single-line `truncate` rules to eliminate vertical playback bounce.
 * **`v5.2.8`:** Dedicated 100% of the vertical iPhone 15 Pro (`393×852`) and Fullscreen interface exclusively to the Guitar Tab or Piano Roll scroll view (eliminating all DAW headers, docks, sub-toolbars, and scrollbars), added an always-visible `↺ Undo Rotation` button (`undo-rotation-btn`) and `✕ Exit Fullscreen (Esc)` button (`exit-fullscreen-btn`), and wired global `Escape` key exit support.
 * **`v5.2.6`:** Reimagined the vertical iPhone 15 Pro (`393×852` / `1179×2556`) and Fullscreen guitar tab UI for TikTok/Reels recording with a 100% full-bleed 6-string tab highway (eliminating the `212px` left blocker card in portrait mode), tall vertical string spacing, non-overlapping compact toolbars, and a `TikTok Clean HUD` mode (`tab-tiktok-hud-btn`).

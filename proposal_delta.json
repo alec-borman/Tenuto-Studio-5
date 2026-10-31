@@ -1,35 +1,42 @@
 {
-  "proposal_id": "tdb-746-v5.3.0-auto-hide-topbar-on-playback",
-  "target_intent": "TDB-746",
-  "delta_before": 0.0050,
+  "proposal_id": "tdb-747-v5.3.2-mobile-long-press-paste",
+  "target_intent": "TDB-747: Mobile Long-Press Paste Support & One-Tap Clipboard Paste Button for .ten Code Editor (v5.3.0 -> v5.3.2)",
+  "delta_before": 0.14,
   "mutations": [
     {
-      "file": "src/utils/usePlaybackAutoHideTopBar.ts",
-      "function": "usePlaybackAutoHideTopBar",
-      "ast_depth": 1,
-      "decay_weight": 0.95,
-      "patch": "@@ -0,0 +1,86 @@\n+export function usePlaybackAutoHideTopBar(isPlaying: boolean, idleHideDelayMs: number = TOP_BAR_IDLE_HIDE_DELAY_MS): PlaybackAutoHideTopBarState { ... }"
+      "file": "src/components/CodeEditor.tsx",
+      "function": "CodeEditor",
+      "ast_depth": 3,
+      "decay_weight": 0.85,
+      "patch": "@@ -493,6 +493,52 @@\n+      <div className=\"flex-1 overflow-hidden relative select-text\" style={{ userSelect: 'text', WebkitUserSelect: 'text', WebkitTouchCallout: 'default' }}>\n+        <textarea data-testid=\"karaoke-code-textarea\" value={code} onChange={(e) => onChange(e.target.value)} onPaste={...} style={{ userSelect: 'text', WebkitUserSelect: 'text', WebkitTouchCallout: 'default', touchAction: 'manipulation' }} />"
     },
     {
       "file": "src/components/SplitWorkspace.tsx",
       "function": "SplitWorkspace",
       "ast_depth": 2,
       "decay_weight": 0.9,
-      "patch": "@@ -76,0 +77 @@\n+  const { isTopBarHidden, revealTopBar } = usePlaybackAutoHideTopBar(isPlaying);"
+      "patch": "@@ -698,0 +699,13 @@\n+  const handlePasteTenFromClipboard = async () => { ... };\n@@ -1008,0 +1021,10 @@\n+  <button data-testid=\"stage-paste-ten-btn\" onClick={handlePasteTenFromClipboard}>📋 Paste .ten</button>\n@@ -1143,0 +1166,10 @@\n+  <button data-testid=\"paste-ten-code-btn\" onClick={handlePasteTenFromClipboard}>📋 Paste .ten</button>"
     },
     {
-      "file": "src/components/TabChordFlowView.tsx",
-      "function": "TabChordFlowView",
-      "ast_depth": 3,
-      "decay_weight": 0.85,
-      "patch": "@@ -914,0 +915 @@\n+  const { isTopBarHidden, revealTopBar } = usePlaybackAutoHideTopBar(Boolean(isPlaying));"
+      "file": "package.json",
+      "function": "version",
+      "ast_depth": 1,
+      "decay_weight": 0.95,
+      "patch": "@@ -4 +4 @@\n-  \"version\": \"5.3.0\",\n+  \"version\": \"5.3.2\","
     },
     {
-      "file": "src/components/WebGPUCanvas.tsx",
-      "function": "WebGPUCanvas",
-      "ast_depth": 3,
-      "decay_weight": 0.85,
-      "patch": "@@ -141,0 +142 @@\n+  const { isTopBarHidden, revealTopBar } = usePlaybackAutoHideTopBar(Boolean(isPlaying));"
+      "file": "electron-builder.json",
+      "function": "extraMetadata.version",
+      "ast_depth": 2,
+      "decay_weight": 0.9,
+      "patch": "@@ -11 +11 @@\n-    \"version\": \"5.3.0\"\n+    \"version\": \"5.3.2\""
+    },
+    {
+      "file": "README.md",
+      "function": "documentation",
+      "ast_depth": 1,
+      "decay_weight": 0.95,
+      "patch": "@@ -9 +9 @@\n-  [![Release: v5.3.0]...]\n+  [![Release: v5.3.2]...]\n@@ -67,0 +68 @@\n+* **Mobile Long-Press Paste & One-Tap `.ten` Clipboard Paste (`paste-ten-code-btn`):** ..."
     }
   ]
 }

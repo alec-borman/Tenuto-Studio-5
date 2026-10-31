@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import SplitWorkspace from '../src/components/SplitWorkspace';
 import App from '../src/App';
@@ -151,6 +151,37 @@ describe('TDB-706: Multi-View Studio Shell & Tab View Switcher', () => {
     fireEvent.keyDown(window, { key: 'Escape', code: 'Escape' });
     expect(viewportShell).toHaveAttribute('data-viewport-mode', 'desktop-landscape');
     expect(window.localStorage.getItem('tenuto_viewport_iphone15pro_v1')).toBe('false');
+  });
+
+  it('supports native mobile long-press paste events on the editor textarea and one-tap clipboard paste via paste-ten-code-btn', async () => {
+    window.localStorage.removeItem('tenuto_viewport_iphone15pro_v1');
+    render(<App />);
+
+    const textarea = screen.getByTestId('karaoke-code-textarea') as HTMLTextAreaElement;
+    expect(textarea).toHaveStyle({ userSelect: 'text' });
+
+    const pastedTenScore = `tenuto "6.0" {\n  meta @{ title: "Mobile Paste Test", tempo: 96, time: "4/4", key: "E", scale: "major" }\n  def gtr "Lead Guitar" style=synth patch="saw_lead"\n  measure 1 { gtr: e4:1 | }\n}`;
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        getData: (type: string) => (type === 'text/plain' || type === 'text' ? pastedTenScore : ''),
+      },
+    });
+    expect(textarea.value).toContain('Mobile Paste Test');
+
+    // Verify one-tap clipboard paste button (paste-ten-code-btn)
+    const clipScore = `tenuto "6.0" {\n  meta @{ title: "Clipboard Button Score", tempo: 110, time: "4/4", key: "A", scale: "minor" }\n  def gtr "Lead Guitar" style=synth patch="pluck_lead"\n  measure 1 { gtr: a3:1 | }\n}`;
+    Object.assign(navigator, {
+      clipboard: {
+        readText: vi.fn().mockResolvedValue(clipScore),
+      },
+    });
+
+    const pasteBtn = screen.getByTestId('paste-ten-code-btn');
+    fireEvent.click(pasteBtn);
+
+    await waitFor(() => {
+      expect(textarea.value).toContain('Clipboard Button Score');
+    });
   });
 });
 

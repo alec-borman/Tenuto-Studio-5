@@ -697,6 +697,20 @@ export default function SplitWorkspace() {
     });
   };
 
+  const handlePasteTenFromClipboard = async () => {
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+        const clipText = await navigator.clipboard.readText();
+        if (clipText && clipText.trim().length > 0) {
+          handleCodeEdit(clipText);
+          setIsCodeVisible(true);
+        }
+      }
+    } catch {
+      // Browser requires explicit user gesture or native long-press inside textarea
+    }
+  };
+
   const handleCanvasMutation = (
     eventData: any,
     deltaX: number,
@@ -1006,6 +1020,17 @@ export default function SplitWorkspace() {
               {activeMainView === 'tab_flow' ? 'View: Guitar Tab' : 'View: Scroll Roll'}
             </button>
 
+            <button
+              type="button"
+              data-testid="stage-paste-ten-btn"
+              aria-label="Paste Tenuto Score from Clipboard"
+              onClick={handlePasteTenFromClipboard}
+              className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-400 text-black hover:bg-amber-300 cursor-pointer shadow-xs shrink-0 whitespace-nowrap"
+              title="Paste .ten code from clipboard"
+            >
+              📋 Paste .ten
+            </button>
+
             {isIphonePortrait && (
               <button
                 type="button"
@@ -1140,6 +1165,16 @@ export default function SplitWorkspace() {
               <span className="text-[11px] font-mono text-slate-500 hidden sm:inline">
                 Single Source of Truth • Tab switches View
               </span>
+              <button
+                type="button"
+                data-testid="paste-ten-code-btn"
+                aria-label="Paste Tenuto Code from Clipboard"
+                onClick={handlePasteTenFromClipboard}
+                className="text-[10px] font-mono font-semibold px-2.5 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/50 text-amber-200 transition-colors cursor-pointer"
+                title="One-tap paste .ten score from clipboard (Mobile & Desktop)"
+              >
+                📋 Paste .ten
+              </button>
               <button
                 type="button"
                 aria-label="Reset Code Memory"
