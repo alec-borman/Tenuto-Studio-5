@@ -183,4 +183,30 @@ describe('TDB-733, TDB-736, TDB-739 & TDB-741: Detune-Only Tab Sliding, Sub-Bass
     expect(customPalette.primaryHex).toBe('#2563EB');
     expect(customPalette.backgroundGradient).toContain('#2563EB');
   });
+
+  it('maintains vertical iPhone 15 Pro resolution (393x852 / 1179x2556) while in Fullscreen mode', () => {
+    window.localStorage.removeItem('tenuto_viewport_iphone15pro_v1');
+    const parser = new DocumentParser();
+    const score = parser.compile('pno: [c4 e4 g4]:1');
+
+    render(
+      <TabChordFlowView
+        events={score.events}
+        isPlaying={false}
+        playheadBeat={0}
+        rootKey="C"
+        score={score}
+      />
+    );
+
+    const rootView = screen.getByTestId('tab-chord-flow-view');
+    fireEvent.click(screen.getByTestId('tab-fullscreen-btn'));
+    expect(rootView).toHaveAttribute('data-fullscreen', 'true');
+
+    fireEvent.click(screen.getByTestId('tab-rotate-iphone15pro-btn'));
+    expect(rootView).toHaveAttribute('data-viewport-mode', 'iphone-15-pro-portrait');
+    expect(rootView).toHaveAttribute('data-native-resolution', '1179x2556');
+    expect(rootView).toHaveAttribute('data-fullscreen', 'true');
+    expect(rootView).toHaveStyle({ width: '393px', height: '852px' });
+  });
 });

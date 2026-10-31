@@ -2,6 +2,7 @@ import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import SplitWorkspace from '../src/components/SplitWorkspace';
+import App from '../src/App';
 import '@testing-library/jest-dom';
 
 vi.mock('@monaco-editor/react', () => ({
@@ -112,6 +113,31 @@ describe('TDB-706: Multi-View Studio Shell & Tab View Switcher', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Mobile Dock Mixer/i }));
     expect(screen.getByTestId('bottom-studio-dock')).not.toHaveClass('sr-only');
+  });
+
+  it('rotates the interface into a vertical iPhone 15 Pro viewport (393x852 logical / 1179x2556 physical) and persists state', () => {
+    window.localStorage.removeItem('tenuto_viewport_iphone15pro_v1');
+    render(<App />);
+
+    const viewportShell = screen.getByTestId('tenuto-app-viewport-shell');
+    expect(viewportShell).toHaveAttribute('data-viewport-mode', 'desktop-landscape');
+
+    const rotateBtn = screen.getByTestId('viewport-rotate-iphone15pro-btn');
+    fireEvent.click(rotateBtn);
+
+    expect(viewportShell).toHaveAttribute('data-viewport-mode', 'iphone-15-pro-portrait');
+    expect(viewportShell).toHaveAttribute('data-logical-resolution', '393x852');
+    expect(viewportShell).toHaveAttribute('data-native-resolution', '1179x2556');
+
+    const viewportFrame = screen.getByTestId('tenuto-viewport-frame');
+    expect(viewportFrame).toHaveStyle({ width: '393px', height: '852px' });
+    expect(screen.getByTestId('iphone15pro-dynamic-island-bar')).toBeInTheDocument();
+    expect(window.localStorage.getItem('tenuto_viewport_iphone15pro_v1')).toBe('true');
+
+    // Clicking again restores desktop landscape mode
+    fireEvent.click(rotateBtn);
+    expect(viewportShell).toHaveAttribute('data-viewport-mode', 'desktop-landscape');
+    expect(window.localStorage.getItem('tenuto_viewport_iphone15pro_v1')).toBe('false');
   });
 });
 

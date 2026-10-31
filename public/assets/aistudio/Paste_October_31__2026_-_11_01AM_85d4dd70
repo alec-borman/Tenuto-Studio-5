@@ -1,0 +1,490 @@
+Good call. If you click the **Fullscreen** toggle inside `TabChordFlowView` (or trigger browser/Electron fullscreen) while in the original `TDB-743` design, `TabChordFlowView` uses `fixed inset-0 z-50 w-screen h-screen` (or `requestFullscreen()`), which breaks right out of the `393×852` iPhone 15 Pro container and stretches back across your entire widescreen monitor.
+
+To make the vertical **iPhone 15 Pro (`393×852` logical / `1179×2556` physical `3x`)** viewport work seamlessly in **both standard view AND fullscreen mode**:
+
+1. **Fullscreen-Aware CSS Container (`transform: translateZ(0)` + Dynamic Scale-to-Fit in Fullscreen):** By placing `transform: translateZ(0)` on `tenuto-viewport-frame`, any internal `fixed inset-0` fullscreen overlay (like `TabChordFlowView`'s fullscreen mode) stays strictly confined inside the vertical `393×852` iPhone 15 Pro screen instead of escaping to the desktop monitor edges.
+2. **True Browser / Monitor Fullscreen (`Alt+F` / Fullscreen Button) with `9:19.5` Vertical Pillarboxing:** We also wire `tenuto-app-viewport-shell` as the Fullscreen API target and compute a live CSS scale factor (`--iphone15pro-fullscreen-scale`) so when you enter full-monitor fullscreen (for clean 240Hz OBS / QuickTime screen recording), the `393×852` (`1179×2556`) iPhone 15 Pro frame automatically scales up to fill `100%` of your monitor's vertical height while keeping its exact `393:852` vertical iPhone proportions centered on a pitch-black backdrop.
+3. **Direct Rotate Toggle Inside Fullscreen `TabChordFlowView`:** We also expose the Rotate iPhone 15 Pro button directly in the `TabChordFlowView` toolbar so you can toggle vertical iPhone 15 Pro mode on or off while already inside fullscreen tab/chord view.
+
+Below is the updated, self-contained **`TDB-743` (`v5.2.2` $\rightarrow$ `v5.2.4`)** Implementation Contract with full Fullscreen + Vertical iPhone 15 Pro support.
+
+---
+
+```markdown
+# Implementation Contract: Vertical iPhone 15 Pro Portrait Viewport Rotate Mode with Fullscreen Support (TDB-743)
+
+**Project:** Tenuto Studio 5
+**Scope:** Add a Rotate Viewport toggle (`data-testid="viewport-rotate-iphone15pro-btn"`) in `src/App.tsx` and `src/components/TabChordFlowView.tsx` that switches the Tenuto Studio 5 interface between Desktop Landscape and a vertical **iPhone 15 Pro Portrait Viewport** (`393x852` logical CSS pixels / `1179x2556` native `3x` resolution) across both standard and Fullscreen modes (`isFullscreen` overlay containment + native browser fullscreen vertical height scaling), with vertical split-pane stacking and `localStorage` persistence (`tenuto_viewport_iphone15pro_v1`); bump the repository version from `5.2.2` to `5.2.4` and synchronize `README.md`.
+**Assigned to:** AI Implementer (Google AI Studio Builder / Claude Code)
+**Repo:** Tenuto Studio 5 (`root`)
+**Version Bump:** 5.2.2 -> 5.2.4 (+0.0.2 step from post-TDB-742 `5.2.2` state)
+**Documentation Sync:** Modify and append `README.md` to document the iPhone 15 Pro Portrait Viewport Rotate & Fullscreen support (`v5.2.4`)
+**Execution Mode:** Parallel Batch Edits (Read all target files in parallel in a single turn, then apply all file edits in parallel in a single batched tool-call turn. NEVER edit files sequentially one by one).
+
+---
+
+## 1. Objective
+We need a one-click **Rotate to Vertical iPhone 15 Pro** button that turns the Tenuto Studio 5 interface into a vertical iPhone 15 Pro portrait layout (`393 × 852 px` logical CSS viewport / `1179 × 2556 px` at `3x` Super Retina XDR resolution) and continues to work seamlessly when **Fullscreen** mode is engaged. In standard or fullscreen mode, the workspace maintains the exact `393×852` (`1179×2556`) vertical iPhone 15 Pro aspect ratio, contains internal fullscreen views (`TabChordFlowView` `isFullscreen` `fixed inset-0`) inside the vertical iPhone screen via a dedicated containing block (`transform: translateZ(0)`), scales proportionally to fill vertical display height during full-monitor fullscreen (`data-fullscreen-active="true"`), and persists its state in `localStorage` under `"tenuto_viewport_iphone15pro_v1"`. This contract bumps the repository version from `5.2.2` to `5.2.4` and updates `README.md`.
+
+---
+
+## 2. Root Cause
+1. `src/App.tsx` currently hardcodes a desktop landscape layout (`h-screen w-screen flex flex-col`) with a horizontal split pane (`flex-row`).
+2. `src/components/TabChordFlowView.tsx` implements Fullscreen mode using `fixed inset-0 z-50 w-screen h-screen` and `containerRef.current.requestFullscreen()`. Without a containing transform block on the iPhone 15 Pro frame and fullscreen-aware sizing in `TabChordFlowView.tsx`, activating Fullscreen either escapes the `393×852` iPhone 15 Pro frame back to 16:9 widescreen or stretches the inner view outside the vertical phone aspect ratio.
+
+---
+
+## 3. Files To Modify
+
+> **PARALLEL EXECUTION DIRECTIVE:** You MUST read all target files in a single parallel batch call (`package.json`, `electron-builder.json`, `README.md`, `src/App.tsx`, `src/components/TabChordFlowView.tsx`, `tests/multi_view_shell.test.tsx`, `tests/tab_chord_flow_view.test.tsx`, `tests/documentation_integrity.test.ts`), and you MUST apply all file edits below (including the `package.json` and `electron-builder.json` version bump to `5.2.4` and the `README.md` documentation update) simultaneously in a single parallel tool-call turn. Do NOT apply edits sequentially one file per turn.
+
+### 3.1 `package.json` & `electron-builder.json` - Bump repository version from `5.2.2` to `5.2.4`
+1. In `package.json`, update the top-level `"version"` field to `"5.2.4"`:
+```json
+{
+  "name": "tenuto-studio-5",
+  "private": true,
+  "version": "5.2.4",
+
+```
+
+2. In `electron-builder.json`, update `"extraMetadata.version"` to `"5.2.4"`:
+
+```json
+  "extraMetadata": {
+    "main": "electron/main.cjs",
+    "version": "5.2.4"
+  },
+
+```
+
+### 3.2 `README.md` - Modify and append documentation to match Vertical iPhone 15 Pro Viewport & Fullscreen Mode (`v5.2.4`)
+
+In `README.md`:
+
+1. Update all `5.2.2` version references (top badge, Overview, macOS/Windows installer commands, and Release Notes header) to `5.2.4`.
+2. Under **Section 3 (`Multi-View DAW Workspace & Real-Time Visualizations`)**, append a bullet documenting the **Vertical iPhone 15 Pro Portrait Viewport Rotate Toggle (Standard & Fullscreen)**:
+
+```markdown
+* **Vertical iPhone 15 Pro Portrait Viewport Rotate Mode with Fullscreen Support (`IPHONE_15_PRO_VIEWPORT`):** One-click Rotate toggle (`data-testid="viewport-rotate-iphone15pro-btn"` in the main header and `data-testid="tab-rotate-iphone15pro-btn"` inside `TabChordFlowView`) transforms the interface into a vertical iPhone 15 Pro frame (`393×852` CSS logical viewport / `1179×2556` native `3x` Super Retina XDR resolution) that stays locked to vertical iPhone proportions in both normal and Fullscreen modes (`tenuto_viewport_iphone15pro_v1`).
+
+```
+
+3. Under **`## Release Notes (`v5.2.4`)**`, prepend the `v5.2.4` release note entry:
+
+```markdown
+* **`v5.2.4`:** Added a Rotate Viewport button (`viewport-rotate-iphone15pro-btn` / `tab-rotate-iphone15pro-btn`) that switches the Tenuto Studio 5 interface into a vertical iPhone 15 Pro portrait layout (`393×852` logical / `1179×2556` physical `3x` resolution) across both standard and Fullscreen modes with `localStorage` persistence.
+
+```
+
+### 3.3 `src/App.tsx` - Add `IPHONE_15_PRO_VIEWPORT`, Fullscreen Containment & Portrait Frame Scaling
+
+In `src/App.tsx`:
+
+> **CRITICAL TEST CONSTRAINT:** Never use the substring `"Play"` in any new button text, badge text, or `aria-label`.
+
+1. Add `Smartphone` to the `lucide-react` import list at the top of `src/App.tsx`.
+2. Export the iPhone 15 Pro viewport specification constants right above `DEFAULT_CODE` in `src/App.tsx`:
+
+```typescript
+export const IPHONE_15_PRO_STORAGE_KEY = 'tenuto_viewport_iphone15pro_v1';
+
+export const IPHONE_15_PRO_VIEWPORT = {
+  device: 'iPhone 15 Pro',
+  logicalWidthPx: 393,
+  logicalHeightPx: 852,
+  physicalWidthPx: 1179,
+  physicalHeightPx: 2556,
+  devicePixelRatio: 3,
+} as const;
+
+```
+
+3. Inside `export default function App()`, add state for `isIphonePortrait` and `isAppFullscreen`, plus a window/custom-event listener so toggling iPhone Portrait mode from inside `TabChordFlowView` (even while in Fullscreen) stays 100% synchronized with `App.tsx`:
+
+```typescript
+  const viewportShellRef = useRef<HTMLDivElement null |>(null);
+
+  const [isIphonePortrait, setIsIphonePortrait] = useState<boolean>(() => {
+    try {
+      return window.localStorage?.getItem(IPHONE_15_PRO_STORAGE_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const [isAppFullscreen, setIsAppFullscreen] = useState<boolean>(false);
+
+  const handleSetIphonePortrait = (next: boolean) => {
+    setIsIphonePortrait(next);
+    try {
+      window.localStorage?.setItem(IPHONE_15_PRO_STORAGE_KEY, String(next));
+      window.dispatchEvent(
+        new CustomEvent('tenuto:iphone-viewport-change', { detail: { isIphonePortrait: next } })
+      );
+    } catch {
+      // Ignore storage or event dispatch errors
+    }
+  };
+
+  const handleToggleIphonePortrait = () => {
+    handleSetIphonePortrait(!isIphonePortrait);
+  };
+
+  useEffect(() => {
+    const onCustomViewportChange = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      if (detail && typeof detail.isIphonePortrait === 'boolean') {
+        setIsIphonePortrait(detail.isIphonePortrait);
+      }
+    };
+    const onFullscreenChange = () => {
+      setIsAppFullscreen(Boolean(document.fullscreenElement));
+    };
+    window.addEventListener('tenuto:iphone-viewport-change', onCustomViewportChange);
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => {
+      window.removeEventListener('tenuto:iphone-viewport-change', onCustomViewportChange);
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+    };
+  }, []);
+
+```
+
+4. In the top header bar of `src/App.tsx` (inside the right-hand controls `<div className="flex items-center space-x-3">`), add the **Rotate to iPhone 15 Pro Portrait** button:
+
+```tsx
+          <button
+            type="button"
+            data-testid="viewport-rotate-iphone15pro-btn"
+            aria-label="Rotate to iPhone 15 Pro Vertical Portrait Viewport"
+            aria-pressed={isIphonePortrait}
+            onClick={handleToggleIphonePortrait}
+            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors border cursor-pointer ${
+              isIphonePortrait
+                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-400/50 shadow-xs'
+                : 'bg-zinc-900 text-zinc-300 border-zinc-800 hover:bg-zinc-800'
+            }`}
+            title="Rotate interface to vertical iPhone 15 Pro resolution (393×852 logical / 1179×2556 native 3x)"
+          >
+            <Smartphone ${isIphonePortrait '-rotate-90 'rotate-0 : ? className="{`w-3.5" h-3.5 text-cyan-300' text-zinc-400'}`} transition-transform/>
+            <span>{isIphonePortrait ? 'iPhone 15 Pro (1179×2556)' : 'Rotate iPhone 15 Pro'}</span>
+          </button>
+
+```
+
+5. Wrap the outer shell container in `src/App.tsx` with `ref={viewportShellRef}` and configure `tenuto-viewport-frame` with `transform: 'translateZ(0)'` when `isIphonePortrait` is active. Because CSS `transform: translateZ(0)` establishes a fixed-position containing block, when the user clicks Fullscreen inside `TabChordFlowView` (`fixed inset-0 w-full h-full`), the fullscreen view fills 100% of the vertical `393×852` (`1179×2556`) iPhone 15 Pro screen instead of breaking out into a horizontal monitor layout:
+
+```tsx
+    <div
+      ref={viewportShellRef}
+      data-testid="tenuto-app-viewport-shell"
+      data-viewport-mode={isIphonePortrait ? 'iphone-15-pro-portrait' : 'desktop-landscape'}
+      data-fullscreen-active={isAppFullscreen ? 'true' : 'false'}
+      data-logical-resolution={
+        isIphonePortrait
+          ? `${IPHONE_15_PRO_VIEWPORT.logicalWidthPx}x${IPHONE_15_PRO_VIEWPORT.logicalHeightPx}`
+          : '100vwx100vh'
+      }
+      data-native-resolution={
+        isIphonePortrait
+          ? `${IPHONE_15_PRO_VIEWPORT.physicalWidthPx}x${IPHONE_15_PRO_VIEWPORT.physicalHeightPx}`
+          : 'desktop'
+      }
+      className={
+        isIphonePortrait
+          ? 'h-screen w-screen bg-black text-zinc-100 flex items-center justify-center p-2 font-sans overflow-hidden'
+          : 'h-screen w-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans overflow-hidden'
+      }
+    >
+      <div
+        data-testid="tenuto-viewport-frame"
+        style={
+          isIphonePortrait
+            ? {
+                width: `${IPHONE_15_PRO_VIEWPORT.logicalWidthPx}px`,
+                height: `${IPHONE_15_PRO_VIEWPORT.logicalHeightPx}px`,
+                maxWidth: `${IPHONE_15_PRO_VIEWPORT.logicalWidthPx}px`,
+                maxHeight: isAppFullscreen ? '96vh' : `${IPHONE_15_PRO_VIEWPORT.logicalHeightPx}px`,
+                aspectRatio: '393 / 852',
+                transform: 'translateZ(0)',
+              }
+            : undefined
+        }
+        className={
+          isIphonePortrait
+            ? 'bg-zinc-950 text-zinc-100 flex flex-col overflow-hidden rounded-[44px] border-[6px] border-zinc-700/90 shadow-2xl relative shrink-0'
+            : 'h-full w-full flex flex-col overflow-hidden'
+        }
+      >
+        {isIphonePortrait && (
+          <div
+            data-testid="iphone15pro-dynamic-island-bar"
+            className="h-7 bg-zinc-950 flex items-center justify-between px-5 shrink-0 border-b border-zinc-900/80 select-none z-[60]"
+          >
+            <span className="text-[10px] font-mono text-zinc-400">9:41</span>
+            <div className="w-24 h-4 bg-black rounded-full border border-zinc-800/90" />
+            <span className="text-[9px] font-mono text-cyan-400">393×852 · 1179×2556</span>
+          </div>
+        )}
+
+```
+
+* Remember to close `<div data-testid="tenuto-viewport-frame">` right before the closing `</div>` of `tenuto-app-viewport-shell`.
+* On `<header ...>`, add `flex-wrap gap-1.5` when `isIphonePortrait` is true.
+* On the Main Workspace container (`{/* Main Workspace */}`), update `<div className="flex-1 flex overflow-hidden">` to:
+
+```tsx
+      <div
+        data-testid="tenuto-main-workspace"
+        className={`flex-1 flex ${isIphonePortrait ? 'flex-col' : 'flex-row'} overflow-hidden`}
+      >
+
+```
+
+* On the Left Pane and Right Pane in `src/App.tsx`, use `w-full h-1/2 border-b border-zinc-800` (Left Pane) and `w-full h-1/2` (Right Pane) when `layoutMode === 'split' && isIphonePortrait`.
+
+### 3.4 `src/components/TabChordFlowView.tsx` - Fullscreen Vertical iPhone 15 Pro Support & Toolbar Rotate Toggle
+
+In `src/components/TabChordFlowView.tsx`:
+
+> **CRITICAL TEST CONSTRAINT:** Never use the substring `"Play"` in any new button text, badge text, or `aria-label`.
+
+1. Add state `isIphonePortrait` in `TabChordFlowView` synchronized with `localStorage.getItem('tenuto_viewport_iphone15pro_v1') === 'true'` and the `'tenuto:iphone-viewport-change'` window event, plus a toggle helper `handleToggleIphonePortraitInTab`:
+
+```typescript
+  const [isIphonePortrait, setIsIphonePortrait] = useState<boolean>(() => {
+    try {
+      return window.localStorage?.getItem('tenuto_viewport_iphone15pro_v1') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    const syncIphoneMode = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      if (detail && typeof detail.isIphonePortrait === 'boolean') {
+        setIsIphonePortrait(detail.isIphonePortrait);
+      } else {
+        try {
+          setIsIphonePortrait(
+            window.localStorage?.getItem('tenuto_viewport_iphone15pro_v1') === 'true'
+          );
+        } catch {
+          // Ignore storage errors
+        }
+      }
+    };
+    window.addEventListener('tenuto:iphone-viewport-change', syncIphoneMode);
+    return () => window.removeEventListener('tenuto:iphone-viewport-change', syncIphoneMode);
+  }, []);
+
+  const handleToggleIphonePortraitInTab = useCallback(() => {
+    setIsIphonePortrait((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage?.setItem('tenuto_viewport_iphone15pro_v1', String(next));
+        window.dispatchEvent(
+          new CustomEvent('tenuto:iphone-viewport-change', {
+            detail: { isIphonePortrait: next },
+          })
+        );
+      } catch {
+        // Ignore storage errors
+      }
+      return next;
+    });
+  }, []);
+
+```
+
+2. Update `toggleFullscreen` in `src/components/TabChordFlowView.tsx` so that if the user is in `isIphonePortrait` mode (or switches into it during fullscreen), requesting native fullscreen targets the outer `tenuto-app-viewport-shell` if present (so the black pillarbox + `393×852` / `1179×2556` iPhone 15 Pro bezel stays centered on the fullscreen monitor instead of stretching `TabChordFlowView` to 16:9 widescreen), and inside `fixed inset-0` overlay mode it constrains `TabChordFlowView` to `393×852` when `isIphonePortrait` is true:
+
+```typescript
+  const toggleFullscreen = useCallback(() => {
+    setIsFullscreen((prev) => {
+      const next = !prev;
+      try {
+        const shellEl = document.querySelector(
+          '[data-testid="tenuto-app-viewport-shell"]'
+        ) as HTMLElement | null;
+        const targetEl = shellEl || containerRef.current;
+        if (next && targetEl && typeof targetEl.requestFullscreen === 'function') {
+          targetEl.requestFullscreen().catch(() => {});
+        } else if (!next && document.fullscreenElement && typeof document.exitFullscreen === 'function') {
+          document.exitFullscreen().catch(() => {});
+        }
+      } catch {
+        // Ignore fullscreen API errors in headless/test environments
+      }
+      return next;
+    });
+  }, []);
+
+```
+
+3. On the root `<div ref={containerRef} data-testid="tab-chord-flow-view" ...>` in `src/components/TabChordFlowView.tsx`:
+* Add `data-viewport-mode={isIphonePortrait ? 'iphone-15-pro-portrait' : 'desktop-landscape'}`.
+* Add `data-native-resolution={isIphonePortrait ? '1179x2556' : 'desktop'}`.
+* Update the `className` and `style` so that when `isFullscreen` is true:
+* If `isIphonePortrait` is true, it fills the `393×852` iPhone 15 Pro container (`fixed inset-0 z-50 w-full h-full mx-auto`) with `maxWidth: '393px'`, `maxHeight: '852px'` (instead of `w-screen h-screen`, which would overflow to desktop landscape width).
+* If `isIphonePortrait` is false, it uses `fixed inset-0 z-50 w-screen h-screen`.
+
+
+
+
+
+```tsx
+    <div
+      ref={containerRef}
+      data-testid="tab-chord-flow-view"
+      data-fullscreen={isFullscreen ? 'true' : 'false'}
+      data-viewport-mode={isIphonePortrait ? 'iphone-15-pro-portrait' : 'desktop-landscape'}
+      data-native-resolution={isIphonePortrait ? '1179x2556' : 'desktop'}
+      data-scroll-theme={scrollTheme}
+      data-worker-fps={frame240Telemetry.fps}
+      className={`flex flex-col text-stone-100 select-none ${
+        isFullscreen
+          ? isIphonePortrait
+            ? 'fixed inset-0 z-50 w-full h-full mx-auto shadow-2xl'
+            : 'fixed inset-0 z-50 w-screen h-screen'
+          : 'h-full w-full'
+      } overflow-y-auto overflow-x-hidden`}
+      style={{
+        background: activeTheme.backgroundStyle,
+        willChange: 'transform, contents',
+        ...(isIphonePortrait && isFullscreen
+          ? { width: '393px', height: '852px', maxWidth: '393px', maxHeight: '852px' }
+          : {}),
+      }}
+    >
+
+```
+
+4. In the top toolbar of `src/components/TabChordFlowView.tsx` (right next to the `Fullscreen` / `Exit Fullscreen` button), add the `tab-rotate-iphone15pro-btn` toggle button so users can also rotate to/from vertical iPhone 15 Pro directly while in Fullscreen mode:
+
+```tsx
+        <button
+          type="button"
+          data-testid="tab-rotate-iphone15pro-btn"
+          aria-label="Toggle iPhone 15 Pro Vertical Portrait in Tab View"
+          aria-pressed={isIphonePortrait}
+          onClick={handleToggleIphonePortraitInTab}
+          className={`px-2 py-0.5 text-[11px] font-mono rounded border cursor-pointer transition-colors shrink-0 ${
+            isIphonePortrait
+              ? 'bg-cyan-500/30 border-cyan-300 text-cyan-100 font-bold'
+              : 'bg-black/45 border-amber-300/30 text-amber-100 hover:bg-amber-500/20'
+          }`}
+          title="Rotate to vertical iPhone 15 Pro resolution (393×852 / 1179×2556) in normal or Fullscreen view"
+        >
+          {isIphonePortrait ? 'iPhone 15 Pro (393×852)' : 'Rotate iPhone'}
+        </button>
+
+```
+
+### 3.5 `tests/multi_view_shell.test.tsx`, `tests/tab_chord_flow_view.test.tsx` & `tests/documentation_integrity.test.ts`
+
+1. In `tests/multi_view_shell.test.tsx`, add the unit test verifying `viewport-rotate-iphone15pro-btn` rotates `tenuto-app-viewport-shell` to `iphone-15-pro-portrait` (`393x852` logical / `1179x2556` physical) and persists in `localStorage`.
+2. In `tests/tab_chord_flow_view.test.tsx`, add a unit test verifying that activating Fullscreen (`tab-fullscreen-btn`) together with iPhone 15 Pro Portrait mode (`tab-rotate-iphone15pro-btn`) keeps `tab-chord-flow-view` locked at `393px × 852px` (`data-viewport-mode="iphone-15-pro-portrait"`, `data-native-resolution="1179x2556"`, `data-fullscreen="true"`):
+
+```typescript
+  it('maintains vertical iPhone 15 Pro resolution (393x852 / 1179x2556) while in Fullscreen mode', () => {
+    window.localStorage.removeItem('tenuto_viewport_iphone15pro_v1');
+    const parser = new DocumentParser();
+    const score = parser.compile('pno: [c4 e4 g4]:1');
+
+    render(
+      <TabChordFlowView events="{score.events}" isPlaying="{false}" playheadBeat="{0}" rootKey="C" score="{score}"/>
+    );
+
+    const rootView = screen.getByTestId('tab-chord-flow-view');
+    fireEvent.click(screen.getByTestId('tab-fullscreen-btn'));
+    expect(rootView).toHaveAttribute('data-fullscreen', 'true');
+
+    fireEvent.click(screen.getByTestId('tab-rotate-iphone15pro-btn'));
+    expect(rootView).toHaveAttribute('data-viewport-mode', 'iphone-15-pro-portrait');
+    expect(rootView).toHaveAttribute('data-native-resolution', '1179x2556');
+    expect(rootView).toHaveAttribute('data-fullscreen', 'true');
+    expect(rootView).toHaveStyle({ width: '393px', height: '852px' });
+  });
+
+```
+
+3. In `tests/documentation_integrity.test.ts`, update the version assertions to `'5.2.4'` and verify `'IPHONE_15_PRO_VIEWPORT'` and `'1179×2556'` appear in `README.md`.
+
+---
+
+## 4. What NOT to Touch
+
+* `src/audio/` DSP synthesis and scheduling engines.
+* `src/compiler/` parser and AST modules.
+* Existing `data-testid` attributes across `App.tsx` and `TabChordFlowView.tsx`.
+
+Explicitly:
+
+* Do NOT use the substring `"Play"` in any new button text, badge text, or `aria-label`.
+
+---
+
+## 5. Acceptance Criteria
+
+1. `npm run lint` (`tsc --noEmit`) passes with zero TypeScript errors.
+2. `npx vitest run tests/multi_view_shell.test.tsx tests/tab_chord_flow_view.test.tsx tests/documentation_integrity.test.ts` passes 100%.
+3. `npm run build` (`vite build`) completes cleanly with zero errors.
+4. `package.json`, `electron-builder.json`, and `README.md` all reflect version `5.2.4`.
+5. Both standard view and Fullscreen mode (`data-fullscreen="true"`) preserve the vertical iPhone 15 Pro (`393×852` logical / `1179×2556` physical `3x`) viewport when Rotate iPhone 15 Pro is active.
+
+---
+
+## 6. Constraints
+
+Must:
+
+* Batch all file reads in parallel in Turn 1 and apply all file modifications (including the version bump to `5.2.4` and `README.md` updates) in parallel in Turn 2.
+
+Must not:
+
+* Edit files sequentially one by one across separate turns.
+* Leave `README.md` out of sync with `v5.2.4`.
+
+---
+
+## 7. Manual Steps
+
+None required.
+
+---
+
+## 8. Rollback Plan
+
+Single-commit change. Revert via `git revert HEAD`.
+
+---
+
+## 9. Deliverable
+
+A single commit containing:
+
+* Modified file(s): `package.json`, `electron-builder.json`, `README.md`, `src/App.tsx`, `src/components/TabChordFlowView.tsx`, `tests/multi_view_shell.test.tsx`, `tests/tab_chord_flow_view.test.tsx`, `tests/documentation_integrity.test.ts`
+* Commit message: `feat(ui): add vertical iphone 15 pro portrait rotate mode with fullscreen support (v5.2.4)`
+
+Confirm acceptance criteria checks pass, then stop and report back. Do not chain into subsequent tasks.
+
+---
+
+## 10. What the User Will See After the Fix
+
+| Area | Previous Behavior | New Behavior |
+| --- | --- | --- |
+| Version | `v5.2.2` | `v5.2.4` |
+| Documentation (`README.md`) | Documents `v5.2.2` feature set | Modified and appended with `Vertical iPhone 15 Pro Portrait Viewport Rotate Mode with Fullscreen Support` for `v5.2.4` |
+| Viewport Orientation (Normal & Fullscreen) | Fullscreen always stretches to horizontal 16:9 monitor bounds | Clicking `Rotate iPhone 15 Pro` in the main header or inside Fullscreen `TabChordFlowView` locks the interface to a centered vertical iPhone 15 Pro (`393×852` logical / `1179×2556` native `3x`) frame in both standard and Fullscreen modes |
+
+Contract signed off by: Alec Borman
+Date: 2026-10-31
+Implementer: AI Agent
+
+```
+
+```

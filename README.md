@@ -6,7 +6,7 @@
 
   [![Live Web Studio](https://img.shields.io/badge/Try_Live_Web_Studio-tenuto--studio--5--production.up.railway.app-10b981?style=for-the-badge)](https://tenuto-studio-5-production.up.railway.app/)
 
-  [![Release: v5.2.2](https://img.shields.io/badge/Release-v5.2.2-2563eb.svg)](./SPEC.md)
+  [![Release: v5.2.4](https://img.shields.io/badge/Release-v5.2.4-2563eb.svg)](./SPEC.md)
   [![Grammar Guide: TENUTO_GRAMMAR.md](https://img.shields.io/badge/Grammar_Guide-TENUTO__GRAMMAR.md-10b981.svg)](./TENUTO_GRAMMAR.md)
   [![Platform: macOS .pkg | Windows .exe | Web](https://img.shields.io/badge/Platform-macOS_.pkg_%7C_Windows_.exe_%7C_Web-8b5cf6.svg)](#installation--desktop-packaging)
   [![License: MIT](https://img.shields.io/badge/License-MIT-64748b.svg)](LICENSE)
@@ -24,7 +24,7 @@ Launch **Tenuto Studio 5** immediately in your browser with zero installation:
 
 ## Overview
 
-**Tenuto Studio 5** (`v5.2.2`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
+**Tenuto Studio 5** (`v5.2.4`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
 
 In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of Truth**:
 * **Code Projects the Entire Studio:** Writing or pasting `.ten` code (including raw Markdown blocks straight from Gemini, Claude, or ChatGPT) immediately compiles into four synchronized visual views (**Scrolling Piano Roll**, **Tab / Chord Flow**, **Session View Clip Matrix**, and **Arrangement View Timeline**), three interactive bottom studio docks (**Console Mixer**, **Device Chain & 8-Macro Rack**, and **Context Note/Score Inspector**), and a real-time WebAudio / PCM DSP engine.
@@ -52,6 +52,7 @@ In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of 
 * **Fullscreen Studio Mode & Responsive Mobile Web View (`TDB-742`):**
   * **Cross-Browser & Iframe Fullscreen (`Toggle Fullscreen`):** 1-click `⛶ Fullscreen` / `⤓ Exit Full` button in `Transport.tsx` combining the native Fullscreen API (`requestFullscreen` / `webkitRequestFullscreen`) with a fixed `100dvh` viewport-fill fallback (`tenuto-fullscreen-active`) for embedded webviews and iOS Safari.
   * **Single-Pane Mobile Studio & Mobile Bottom Navigation Bar (`mobile-bottom-nav`):** On mobile phones and narrow viewports (`< 768px`), automatically switches from a side-by-side split to a full-width single-pane mobile layout with a dedicated bottom bar (`Code`, `Roll`, `Tab`, `Session`, `Arrange`, `Mixer`, `FX`, `Inspect`) and touch gestures (1-finger note drag/resize and 2-finger touch pinch-to-zoom).
+* **Vertical iPhone 15 Pro Portrait Viewport Rotate Mode with Fullscreen Support (`IPHONE_15_PRO_VIEWPORT`):** One-click Rotate toggle (`data-testid="viewport-rotate-iphone15pro-btn"` in the main header and `data-testid="tab-rotate-iphone15pro-btn"` inside `TabChordFlowView`) transforms the interface into a vertical iPhone 15 Pro frame (`393×852` CSS logical viewport / `1179×2556` native `3x` Super Retina XDR resolution) that stays locked to vertical iPhone proportions in both normal and Fullscreen modes (`tenuto_viewport_iphone15pro_v1`).
 
 ---
 
@@ -154,7 +155,7 @@ npm install
 npm run electron:build:mac
 
 # 3. Run the macOS installer
-open release/"Tenuto Studio 5-5.2.2-arm64.pkg"
+open release/"Tenuto Studio 5-5.2.4-arm64.pkg"
 ```
 
 ### Option 1B: Windows Desktop App (`.exe` NSIS Setup Installer)
@@ -171,7 +172,7 @@ npm install
 npm run electron:build:win
 
 # 3. Launch the generated Setup .exe inside the release/ folder
-start "" "release\Tenuto Studio 5 Setup 5.2.2.exe"
+start "" "release\Tenuto Studio 5 Setup 5.2.4.exe"
 ```
 
 ### Option 2: Local Web Development
@@ -321,8 +322,9 @@ npm run build
 
 ---
 
-## Release Notes (`v5.2.2`)
+## Release Notes (`v5.2.4`)
 
+* **`v5.2.4`:** Added a Rotate Viewport button (`viewport-rotate-iphone15pro-btn` / `tab-rotate-iphone15pro-btn`) that switches the Tenuto Studio 5 interface into a vertical iPhone 15 Pro portrait layout (`393×852` logical / `1179×2556` physical `3x` resolution) across both standard and Fullscreen modes with `localStorage` persistence.
 * **`v5.2.2`:** Added Fullscreen Studio Mode (`Toggle Fullscreen` with native Fullscreen API + `tenuto-fullscreen-active` iframe/iOS fallback), a responsive Mobile Web View (`100dvh` dynamic viewport, single-pane mobile switching, and `mobile-bottom-nav` bar), and mobile touch gestures (1-finger touch note dragging and 2-finger touch pinch-to-zoom) on the Piano Roll.
 * **`v5.2.0`:** Added customizable Guitar Scroll color themes (`GUITAR_SCROLL_THEMES`: `Sunset Amber`, `Midnight Indigo`, `Emerald Stage`, `Ultraviolet Nebula`, `Crimson Velvet`, `Obsidian Studio`) and a live custom hex color picker (`buildCustomGuitarScrollPalette`) in `TabChordFlowView.tsx` with `localStorage` persistence, alongside detune-only tab voice modulation, proportional beat-duration bars, and Fullscreen / mobile touch pinch-to-zoom support.
 * **`v5.1.8`:** Added `Shift + Click` and `Shift + Drag` beat-wide pitch transposition on the Piano Roll (`transposeBeatEventsInSource` in `TopologicalMutator.ts`, `WebGPUCanvas.tsx`, and `SplitWorkspace.tsx`), allowing users to repitch all notes and chords on a beat across all melodic tracks in one click or drag.

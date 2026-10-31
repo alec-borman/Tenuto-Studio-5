@@ -1,4 +1,5 @@
 import React from 'react';
+import { Smartphone } from 'lucide-react';
 import { PRESET_SCORES } from '../presets/presetScores';
 
 export type MainStudioView = 'piano_roll' | 'tab_flow' | 'session' | 'arrangement';
@@ -35,6 +36,8 @@ interface TransportProps {
   onCaptureMidi?: () => void;
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
+  isIphonePortrait?: boolean;
+  onToggleIphonePortrait?: () => void;
 }
 
 export default function Transport({
@@ -68,6 +71,8 @@ export default function Transport({
   onCaptureMidi,
   isFullscreen = false,
   onToggleFullscreen,
+  isIphonePortrait = false,
+  onToggleIphonePortrait,
 }: TransportProps) {
   const measureNum = Math.floor(currentBeat / 4) + 1;
   const beatInMeasure = Math.floor(currentBeat % 4) + 1;
@@ -248,6 +253,31 @@ export default function Transport({
               className="bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/50 text-emerald-300 text-xs font-semibold py-1 px-3 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               Export WAV
+            </button>
+          )}
+
+          {onToggleIphonePortrait && (
+            <button
+              type="button"
+              data-testid="viewport-rotate-iphone15pro-btn"
+              aria-label="Rotate to iPhone 15 Pro Vertical Portrait Viewport"
+              aria-pressed={isIphonePortrait}
+              onClick={onToggleIphonePortrait}
+              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-colors border cursor-pointer whitespace-nowrap shrink-0 ${
+                isIphonePortrait
+                  ? 'bg-cyan-500/20 text-cyan-300 border-cyan-400/50 shadow-xs'
+                  : 'bg-slate-950 hover:bg-slate-800 text-slate-300 border-slate-700'
+              }`}
+              title="Rotate interface to vertical iPhone 15 Pro resolution (393×852 logical / 1179×2556 native 3x)"
+            >
+              <Smartphone
+                className={`w-3.5 h-3.5 transition-transform ${
+                  isIphonePortrait ? 'rotate-0 text-cyan-300' : '-rotate-90 text-slate-400'
+                }`}
+              />
+              <span>
+                {isIphonePortrait ? 'iPhone 15 Pro (1179×2556)' : 'Rotate iPhone 15 Pro'}
+              </span>
             </button>
           )}
 

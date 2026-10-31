@@ -25,6 +25,17 @@ import {
 } from '../mutator/MidiTransformAndGeneratorEngine';
 import { DebouncedCodeMemory } from '../utils/DebouncedCodeMemory';
 
+export const IPHONE_15_PRO_STORAGE_KEY = 'tenuto_viewport_iphone15pro_v1';
+
+export const IPHONE_15_PRO_VIEWPORT = {
+  device: 'iPhone 15 Pro',
+  logicalWidthPx: 393,
+  logicalHeightPx: 852,
+  physicalWidthPx: 1179,
+  physicalHeightPx: 2556,
+  devicePixelRatio: 3,
+} as const;
+
 export default function SplitWorkspace() {
   const codeMemory = useMemo(() => new DebouncedCodeMemory(), []);
   const [sourceCode, setSourceCode] = useState<string>(() => codeMemory.load('pno: c4:4'));
@@ -51,10 +62,53 @@ export default function SplitWorkspace() {
   const [loopEndMeasure, setLoopEndMeasure] = useState<number | null>(null);
   const [isMetronomeEnabled, setIsMetronomeEnabled] = useState<boolean>(false);
   const [countInBars, setCountInBars] = useState<number>(0);
+  const viewportShellRef = useRef<HTMLDivElement>(null);
   const workspaceRootRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [isAppFullscreen, setIsAppFullscreen] = useState<boolean>(false);
   const [mobileFocusPane, setMobileFocusPane] = useState<'code' | 'visual'>('visual');
+  const [isIphonePortrait, setIsIphonePortrait] = useState<boolean>(() => {
+    try {
+      return window.localStorage?.getItem(IPHONE_15_PRO_STORAGE_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
   const isAudioInitialized = useRef<boolean>(false);
+
+  const handleSetIphonePortrait = (next: boolean) => {
+    setIsIphonePortrait(next);
+    try {
+      window.localStorage?.setItem(IPHONE_15_PRO_STORAGE_KEY, String(next));
+      window.dispatchEvent(
+        new CustomEvent('tenuto:iphone-viewport-change', { detail: { isIphonePortrait: next } })
+      );
+    } catch {
+      // Ignore storage or event dispatch errors
+    }
+  };
+
+  const handleToggleIphonePortrait = () => {
+    handleSetIphonePortrait(!isIphonePortrait);
+  };
+
+  useEffect(() => {
+    const onCustomViewportChange = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      if (detail && typeof detail.isIphonePortrait === 'boolean') {
+        setIsIphonePortrait(detail.isIphonePortrait);
+      }
+    };
+    const onFullscreenChange = () => {
+      setIsAppFullscreen(Boolean(document.fullscreenElement));
+    };
+    window.addEventListener('tenuto:iphone-viewport-change', onCustomViewportChange);
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => {
+      window.removeEventListener('tenuto:iphone-viewport-change', onCustomViewportChange);
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+    };
+  }, []);
 
   const [astState, setAstState] = useState<ASTState>({
     tracks: [{ id: 'vox', volume: 100, fx: [] }],
@@ -155,11 +209,13 @@ export default function SplitWorkspace() {
   const handleToggleFullscreen = async () => {
     const nextFs = !isFullscreen;
     setIsFullscreen(nextFs);
+    setIsAppFullscreen(nextFs);
     try {
       const fsElement =
         document.fullscreenElement || (document as any).webkitFullscreenElement;
       if (nextFs && !fsElement) {
-        const targetEl = workspaceRootRef.current || document.documentElement;
+        const targetEl =
+          viewportShellRef.current || workspaceRootRef.current || document.documentElement;
         if (typeof targetEl.requestFullscreen === 'function') {
           await targetEl.requestFullscreen();
         } else if (typeof (targetEl as any).webkitRequestFullscreen === 'function') {
@@ -799,73 +855,132 @@ export default function SplitWorkspace() {
 
   return (
     <div
-      ref={workspaceRootRef}
-      data-testid="studio-workspace-root"
-      className={`${
-        isFullscreen ? 'tenuto-fullscreen-active' : ''
-      } h-[100dvh] w-full max-w-[100vw] bg-slate-950 text-slate-100 overflow-hidden flex flex-col`}
+      ref={viewportShellRef}
+      data-testid="tenuto-app-viewport-shell"
+      data-viewport-mode={isIphonePortrait ? 'iphone-15-pro-portrait' : 'desktop-landscape'}
+      data-fullscreen-active={isAppFullscreen || isFullscreen ? 'true' : 'false'}
+      data-logical-resolution={
+        isIphonePortrait
+          ? `${IPHONE_15_PRO_VIEWPORT.logicalWidthPx}x${IPHONE_15_PRO_VIEWPORT.logicalHeightPx}`
+          : '100vwx100vh'
+      }
+      data-native-resolution={
+        isIphonePortrait
+          ? `${IPHONE_15_PRO_VIEWPORT.physicalWidthPx}x${IPHONE_15_PRO_VIEWPORT.physicalHeightPx}`
+          : 'desktop'
+      }
+      className={
+        isIphonePortrait
+          ? 'min-h-screen w-screen bg-black text-slate-100 flex items-center justify-center p-2 font-sans overflow-auto'
+          : 'h-screen w-screen bg-slate-950 text-slate-100 flex flex-col font-sans overflow-hidden'
+      }
     >
-      {/* Top Bar: Transport Controls & Demo Selector */}
-      <Transport
-        isPlaying={isPlaying}
-        onTogglePlay={handleTogglePlay}
-        onStop={handleStop}
-        isLooping={isLooping}
-        onToggleLoop={handleToggleLoop}
-        tempo={scoreMeta.tempo}
-        timeSignature={scoreMeta.time}
-        title={scoreMeta.title}
-        currentBeat={playheadBeat}
-        rootKey={scoreMeta.key}
-        scaleName={scoreMeta.scale}
-        onKeyScaleChange={handleKeyScaleChange}
-        onSelectPreset={(presetCode) => handleCodeEdit(presetCode)}
-        onExportWav={handleExportWav}
-        masterVolume={masterVolume}
-        onMasterVolumeChange={handleMasterVolumeChange}
-        activeMainView={activeMainView}
-        onMainViewChange={(view) => {
-          setActiveMainView(view);
-          setMobileFocusPane('visual');
-        }}
-        activeBottomDock={activeBottomDock}
-        onToggleBottomDock={handleToggleBottomDock}
-        isCodeVisible={isCodeVisible}
-        onToggleCodeVisible={() => {
-          setIsCodeVisible((prev) => {
-            const next = !prev;
-            if (next && mobileFocusPane === 'visual') {
-              setMobileFocusPane('code');
-            }
-            return next;
-          });
-        }}
-        isMetronomeEnabled={isMetronomeEnabled}
-        onToggleMetronome={handleToggleMetronome}
-        countInBars={countInBars}
-        onCountInBarsChange={handleCountInBarsChange}
-        onTapTempo={handleTapTempo}
-        onCaptureMidi={handleCaptureMidi}
-        isFullscreen={isFullscreen}
-        onToggleFullscreen={handleToggleFullscreen}
-      />
-
-      {/* Main Split Workspace (Responsive 1-Column on Mobile, 2-Column 50/50 Split on Desktop) */}
-      <main
-        data-testid="workspace-main-grid"
-        className={`flex-1 grid ${
-          isCodeVisible ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'
-        } min-h-0 overflow-hidden`}
+      <div
+        data-testid="tenuto-viewport-frame"
+        style={
+          isIphonePortrait
+            ? {
+                width: `${IPHONE_15_PRO_VIEWPORT.logicalWidthPx}px`,
+                height: `${IPHONE_15_PRO_VIEWPORT.logicalHeightPx}px`,
+                maxWidth: `${IPHONE_15_PRO_VIEWPORT.logicalWidthPx}px`,
+                maxHeight: isAppFullscreen ? '96vh' : `${IPHONE_15_PRO_VIEWPORT.logicalHeightPx}px`,
+                aspectRatio: '393 / 852',
+                transform: 'translateZ(0)',
+              }
+            : undefined
+        }
+        className={
+          isIphonePortrait
+            ? 'bg-slate-950 text-slate-100 flex flex-col overflow-hidden rounded-[44px] border-[6px] border-slate-700/90 shadow-2xl relative shrink-0'
+            : 'h-full w-full flex flex-col overflow-hidden'
+        }
       >
-        {/* Left Side: Tenuto Code Editor */}
-        <section
-          data-testid="code-editor-pane"
+        {isIphonePortrait && (
+          <div
+            data-testid="iphone15pro-dynamic-island-bar"
+            className="h-7 bg-slate-950 flex items-center justify-between px-5 shrink-0 border-b border-slate-900/80 select-none z-[60]"
+          >
+            <span className="text-[10px] font-mono text-slate-400">9:41</span>
+            <div className="w-24 h-4 bg-black rounded-full border border-slate-800/90" />
+            <span className="text-[9px] font-mono text-cyan-400">393×852 · 1179×2556</span>
+          </div>
+        )}
+        <div
+          ref={workspaceRootRef}
+          data-testid="studio-workspace-root"
           className={`${
-            isCodeVisible ? 'flex' : 'hidden'
-          } ${
-            mobileFocusPane === 'visual' ? 'max-md:hidden' : ''
-          } h-full w-full border-r border-slate-800 bg-[#0B0F19] flex-col min-h-0 overflow-hidden`}
+            isFullscreen ? 'tenuto-fullscreen-active' : ''
+          } flex-1 w-full max-w-[100vw] bg-slate-950 text-slate-100 overflow-hidden flex flex-col min-h-0`}
         >
+          {/* Top Bar: Transport Controls & Demo Selector */}
+          <Transport
+            isPlaying={isPlaying}
+            onTogglePlay={handleTogglePlay}
+            onStop={handleStop}
+            isLooping={isLooping}
+            onToggleLoop={handleToggleLoop}
+            tempo={scoreMeta.tempo}
+            timeSignature={scoreMeta.time}
+            title={scoreMeta.title}
+            currentBeat={playheadBeat}
+            rootKey={scoreMeta.key}
+            scaleName={scoreMeta.scale}
+            onKeyScaleChange={handleKeyScaleChange}
+            onSelectPreset={(presetCode) => handleCodeEdit(presetCode)}
+            onExportWav={handleExportWav}
+            masterVolume={masterVolume}
+            onMasterVolumeChange={handleMasterVolumeChange}
+            activeMainView={activeMainView}
+            onMainViewChange={(view) => {
+              setActiveMainView(view);
+              setMobileFocusPane('visual');
+            }}
+            activeBottomDock={activeBottomDock}
+            onToggleBottomDock={handleToggleBottomDock}
+            isCodeVisible={isCodeVisible}
+            onToggleCodeVisible={() => {
+              setIsCodeVisible((prev) => {
+                const next = !prev;
+                if (next && mobileFocusPane === 'visual') {
+                  setMobileFocusPane('code');
+                }
+                return next;
+              });
+            }}
+            isMetronomeEnabled={isMetronomeEnabled}
+            onToggleMetronome={handleToggleMetronome}
+            countInBars={countInBars}
+            onCountInBarsChange={handleCountInBarsChange}
+            onTapTempo={handleTapTempo}
+            onCaptureMidi={handleCaptureMidi}
+            isFullscreen={isFullscreen}
+            onToggleFullscreen={handleToggleFullscreen}
+            isIphonePortrait={isIphonePortrait}
+            onToggleIphonePortrait={handleToggleIphonePortrait}
+          />
+
+          {/* Main Split Workspace (Vertical Stack in iPhone 15 Pro Portrait Mode, Responsive Grid in Desktop Mode) */}
+          <main
+            data-testid="tenuto-main-workspace"
+            className={`flex-1 ${
+              isIphonePortrait
+                ? 'flex flex-col'
+                : `grid ${isCodeVisible ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'}`
+            } min-h-0 overflow-hidden`}
+          >
+            {/* Left Side: Tenuto Code Editor */}
+            <section
+              data-testid="code-editor-pane"
+              className={`${
+                isCodeVisible ? 'flex' : 'hidden'
+              } ${
+                !isIphonePortrait && mobileFocusPane === 'visual' ? 'max-md:hidden' : ''
+              } ${
+                isIphonePortrait && isCodeVisible
+                  ? 'w-full h-1/2 border-b border-slate-800'
+                  : 'h-full w-full border-r border-slate-800'
+              } bg-[#0B0F19] flex-col min-h-0 overflow-hidden`}
+            >
           <div className="h-8 bg-slate-900 border-b border-slate-800 px-4 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2.5">
               <span className="text-[11px] uppercase font-semibold tracking-wider text-slate-400">
@@ -914,8 +1029,12 @@ export default function SplitWorkspace() {
         <section
           data-testid="visual-studio-pane"
           className={`${
-            isCodeVisible && mobileFocusPane === 'code' ? 'max-md:hidden' : 'flex'
-          } h-full w-full bg-slate-950 flex-col min-h-0 overflow-hidden`}
+            !isIphonePortrait && isCodeVisible && mobileFocusPane === 'code'
+              ? 'max-md:hidden'
+              : 'flex'
+          } ${
+            isIphonePortrait && isCodeVisible ? 'w-full h-1/2' : 'h-full w-full'
+          } bg-slate-950 flex-col min-h-0 overflow-hidden`}
         >
           <div className="h-8 bg-slate-900 border-b border-slate-800 px-4 flex items-center justify-between shrink-0">
             <span className="text-[11px] uppercase font-semibold tracking-wider text-slate-400">
@@ -1145,6 +1264,8 @@ export default function SplitWorkspace() {
           </button>
         ))}
       </nav>
+        </div>
+      </div>
     </div>
   );
 }

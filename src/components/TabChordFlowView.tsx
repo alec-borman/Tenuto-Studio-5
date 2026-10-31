@@ -906,8 +906,77 @@ export default function TabChordFlowView({
       // Ignore
     }
   };
+  const containerRef = useRef<HTMLDivElement>(null);
   const scrollViewportRef = useRef<HTMLDivElement>(null);
   const trackPillsRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [isIphonePortrait, setIsIphonePortrait] = useState<boolean>(() => {
+    try {
+      return window.localStorage?.getItem('tenuto_viewport_iphone15pro_v1') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    const syncIphoneMode = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      if (detail && typeof detail.isIphonePortrait === 'boolean') {
+        setIsIphonePortrait(detail.isIphonePortrait);
+      } else {
+        try {
+          setIsIphonePortrait(
+            window.localStorage?.getItem('tenuto_viewport_iphone15pro_v1') === 'true'
+          );
+        } catch {
+          // Ignore storage errors
+        }
+      }
+    };
+    window.addEventListener('tenuto:iphone-viewport-change', syncIphoneMode);
+    return () => window.removeEventListener('tenuto:iphone-viewport-change', syncIphoneMode);
+  }, []);
+
+  const handleToggleIphonePortraitInTab = useCallback(() => {
+    setIsIphonePortrait((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage?.setItem('tenuto_viewport_iphone15pro_v1', String(next));
+        window.dispatchEvent(
+          new CustomEvent('tenuto:iphone-viewport-change', {
+            detail: { isIphonePortrait: next },
+          })
+        );
+      } catch {
+        // Ignore storage errors
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleFullscreen = useCallback(() => {
+    setIsFullscreen((prev) => {
+      const next = !prev;
+      try {
+        const shellEl = document.querySelector(
+          '[data-testid="tenuto-app-viewport-shell"]'
+        ) as HTMLElement | null;
+        const targetEl = shellEl || containerRef.current;
+        if (next && targetEl && typeof targetEl.requestFullscreen === 'function') {
+          targetEl.requestFullscreen().catch(() => {});
+        } else if (
+          !next &&
+          document.fullscreenElement &&
+          typeof document.exitFullscreen === 'function'
+        ) {
+          document.exitFullscreen().catch(() => {});
+        }
+      } catch {
+        // Ignore fullscreen API errors in headless/test environments
+      }
+      return next;
+    });
+  }, []);
 
   const preferFlats = useMemo(() => {
     const k = (rootKey || score?.meta?.key || '').trim();
@@ -1160,12 +1229,26 @@ export default function TabChordFlowView({
 
   return (
     <div
+      ref={containerRef}
       data-testid="tab-chord-flow-view"
+      data-fullscreen={isFullscreen ? 'true' : 'false'}
+      data-viewport-mode={isIphonePortrait ? 'iphone-15-pro-portrait' : 'desktop-landscape'}
+      data-native-resolution={isIphonePortrait ? '1179x2556' : 'desktop'}
       data-scroll-theme={activePalette.id}
       style={{
         background: activePalette.backgroundGradient,
+        willChange: 'transform, contents',
+        ...(isIphonePortrait && isFullscreen
+          ? { width: '393px', height: '852px', maxWidth: '393px', maxHeight: '852px' }
+          : {}),
       }}
-      className="w-full h-full flex flex-col justify-between text-amber-50 overflow-hidden relative select-none"
+      className={`flex flex-col justify-between text-amber-50 overflow-hidden relative select-none ${
+        isFullscreen
+          ? isIphonePortrait
+            ? 'fixed inset-0 z-50 w-full h-full mx-auto shadow-2xl'
+            : 'fixed inset-0 z-50 w-screen h-screen'
+          : 'w-full h-full'
+      }`}
     >
       {/* Top Piano-Roll-Parity Control Bar */}
       <div className="bg-black/35 border-b border-amber-300/20 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 z-20">
@@ -1326,6 +1409,38 @@ export default function TabChordFlowView({
               Fit All
             </button>
           </div>
+
+          <button
+            type="button"
+            data-testid="tab-rotate-iphone15pro-btn"
+            aria-label="Toggle iPhone 15 Pro Vertical Portrait in Tab View"
+            aria-pressed={isIphonePortrait}
+            onClick={handleToggleIphonePortraitInTab}
+            className={`px-2 py-0.5 text-[11px] font-mono rounded border cursor-pointer transition-colors shrink-0 ${
+              isIphonePortrait
+                ? 'bg-cyan-500/30 border-cyan-300 text-cyan-100 font-bold'
+                : 'bg-black/45 border-amber-300/30 text-amber-100 hover:bg-amber-500/20'
+            }`}
+            title="Rotate to vertical iPhone 15 Pro resolution (393×852 / 1179×2556) in normal or Fullscreen view"
+          >
+            {isIphonePortrait ? 'iPhone 15 Pro (393×852)' : 'Rotate iPhone'}
+          </button>
+
+          <button
+            type="button"
+            data-testid="tab-fullscreen-btn"
+            aria-label="Toggle Tab View Fullscreen"
+            aria-pressed={isFullscreen}
+            onClick={toggleFullscreen}
+            className={`px-2 py-0.5 text-[11px] font-mono rounded border cursor-pointer transition-colors shrink-0 ${
+              isFullscreen
+                ? 'bg-amber-500/30 border-amber-300 text-white font-bold'
+                : 'bg-black/45 border-amber-300/30 text-amber-100 hover:bg-amber-500/20'
+            }`}
+            title={isFullscreen ? 'Exit Tab Fullscreen' : 'Enter Tab Fullscreen'}
+          >
+            {isFullscreen ? 'Exit Full' : 'Fullscreen'}
+          </button>
         </div>
       </div>
 
