@@ -40,13 +40,13 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     expect(content).toContain('Copy-Paste Prompt for Gemini');
   });
 
-  it('provides the synchronized v5.4.6 README.md, package.json, and electron-builder.json free of third-party hardware/platform trademarks', () => {
+  it('provides the synchronized v5.4.8 README.md, package.json, and electron-builder.json free of third-party hardware/platform trademarks', () => {
     const readmePath = path.resolve(__dirname, '../README.md');
     expect(fs.existsSync(readmePath)).toBe(true);
 
     const content = fs.readFileSync(readmePath, 'utf-8');
     expect(content).toContain('TENUTO STUDIO 5');
-    expect(content).toContain('v5.4.6');
+    expect(content).toContain('v5.4.8');
     expect(content).toContain('TENUTO_GRAMMAR.md');
     expect(content).toContain('repomix.config.json');
     expect(content).toContain('npm run electron:build:mac');
@@ -59,7 +59,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     );
     expect(fs.existsSync(guidePath)).toBe(true);
     const guideContent = fs.readFileSync(guidePath, 'utf-8');
-    expect(guideContent).toContain('v5.4.6');
+    expect(guideContent).toContain('v5.4.8');
     expect(guideContent).toContain('Blueprint 1:');
     expect(guideContent).toContain('Blueprint 6:');
 
@@ -86,7 +86,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     const pkgJson = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8')
     );
-    expect(pkgJson.version).toBe('5.4.6');
+    expect(pkgJson.version).toBe('5.4.8');
     expect(pkgJson.scripts['clean:bloat']).toBeDefined();
     expect(pkgJson.scripts['electron:build:mac']).toContain('--mac pkg');
     expect(pkgJson.scripts['electron:build:win']).toContain('--win nsis');
@@ -94,7 +94,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     const builderJson = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '../electron-builder.json'), 'utf-8')
     );
-    expect(builderJson.extraMetadata.version).toBe('5.4.6');
+    expect(builderJson.extraMetadata.version).toBe('5.4.8');
   });
 });
 

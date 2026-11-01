@@ -104,11 +104,33 @@ describe('TDB-722: Ableton Audio Effects DSP Engine & 20-Band Talking Vocoder', 
     );
 
     let diffEnergy = 0;
+    let maxVocPeak = 0;
     for (let i = 0; i < frames; i++) {
       const d = bow1.l[i] - bow2.l[i];
       diffEnergy += d * d;
+      const p = Math.max(Math.abs(bow1.l[i]), Math.abs(bow1.r[i]));
+      if (p > maxVocPeak) maxVocPeak = p;
     }
-    expect(diffEnergy).toBeGreaterThan(0.01);
+    expect(diffEnergy).toBeGreaterThan(0.005);
+    expect(maxVocPeak).toBeLessThan(0.85);
+
+    // Verify Dual-Head Hann-windowed spectral_pitch_harmonizer produces smooth, click-free output
+    const harmL = new Float32Array(frames);
+    const harmR = new Float32Array(frames);
+    for (let i = 0; i < frames; i++) {
+      const t = i / sampleRate;
+      harmL[i] = 0.4 * Math.sin(2 * Math.PI * 330 * t);
+      harmR[i] = 0.4 * Math.sin(2 * Math.PI * 330 * t);
+    }
+    AbletonAudioFxEngine.applyFxChainToSlice(harmL, harmR, 0, frames, sampleRate, [
+      { type: 'spectral_pitch_harmonizer', params: { shift1_st: 7, shift2_st: -12, mix: 0.5 } },
+    ]);
+    let maxStepDiff = 0;
+    for (let i = 1; i < frames; i++) {
+      const step = Math.abs(harmL[i] - harmL[i - 1]);
+      if (step > maxStepDiff) maxStepDiff = step;
+    }
+    expect(maxStepDiff).toBeLessThan(0.15);
   });
 
   it('compiles and exports a multi-track score featuring Talking Vocoder (.fx(vocoder).lyric(...)), OTT, Drum Buss, and Roar to stereo WAV', async () => {

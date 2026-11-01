@@ -369,9 +369,11 @@ export class AbletonAudioFxEngine {
     let f1Coeff = 0.08;
     let f2Coeff = 0.22;
     let f3Coeff = 0.36;
-    const qDamp1 = 0.14;
-    const qDamp2 = 0.11;
-    const qDamp3 = 0.16;
+    const qDamp1 = 0.065;
+    const qDamp2 = 0.055;
+    const qDamp3 = 0.075;
+    let tractLpL = 0;
+    let tractLpR = 0;
 
     const v1 = phoneme.primaryVowel;
     const v2 = phoneme.secondaryVowel || v1;
@@ -418,37 +420,32 @@ export class AbletonAudioFxEngine {
         f3Coeff = clamp(2 * Math.sin((Math.PI * clamp(f3, 1400, 7500)) / sampleRate), 0.04, 0.9);
       }
 
-      // Scale carrier excitation proportionally to dry amplitude so .p / .mp vocoder pads
-      // preserve their musical dynamics instead of slamming into a 0 dBFS square wave.
       const dryL = left[idx];
       const dryR = right[idx];
-      const absPeak = Math.max(1e-5, Math.abs(dryL), Math.abs(dryR));
-      const glottalExciterL = Math.tanh((dryL / absPeak) * 1.65) * absPeak;
-      const glottalExciterR = Math.tanh((dryR / absPeak) * 1.65) * absPeak;
+      const absPeak = Math.max(Math.abs(dryL), Math.abs(dryR));
 
-      // Filter Left Carrier through Unity-Gain-Normalized Formant Bank (multiply input by qDamp)
-      const hp1L = qDamp1 * glottalExciterL - lp1L - qDamp1 * bp1L;
+      // Linear polyphonic carrier into unity-gain qDamp-normalized formant resonators (zero intermodulation buzz)
+      const hp1L = qDamp1 * dryL - lp1L - qDamp1 * bp1L;
       bp1L += f1Coeff * hp1L;
       lp1L += f1Coeff * bp1L;
 
-      const hp2L = qDamp2 * glottalExciterL - lp2L - qDamp2 * bp2L;
+      const hp2L = qDamp2 * dryL - lp2L - qDamp2 * bp2L;
       bp2L += f2Coeff * hp2L;
       lp2L += f2Coeff * bp2L;
 
-      const hp3L = qDamp3 * glottalExciterL - lp3L - qDamp3 * bp3L;
+      const hp3L = qDamp3 * dryL - lp3L - qDamp3 * bp3L;
       bp3L += f3Coeff * hp3L;
       lp3L += f3Coeff * bp3L;
 
-      // Filter Right Carrier through Unity-Gain-Normalized Formant Bank
-      const hp1R = qDamp1 * glottalExciterR - lp1R - qDamp1 * bp1R;
+      const hp1R = qDamp1 * dryR - lp1R - qDamp1 * bp1R;
       bp1R += f1Coeff * hp1R;
       lp1R += f1Coeff * bp1R;
 
-      const hp2R = qDamp2 * glottalExciterR - lp2R - qDamp2 * bp2R;
+      const hp2R = qDamp2 * dryR - lp2R - qDamp2 * bp2R;
       bp2R += f2Coeff * hp2R;
       lp2R += f2Coeff * bp2R;
 
-      const hp3R = qDamp3 * glottalExciterR - lp3R - qDamp3 * bp3R;
+      const hp3R = qDamp3 * dryR - lp3R - qDamp3 * bp3R;
       bp3R += f3Coeff * hp3R;
       lp3R += f3Coeff * bp3R;
 
@@ -478,7 +475,7 @@ export class AbletonAudioFxEngine {
         const nhp = 0.25 * white - noiseLpState - 0.25 * noiseBpState;
         noiseBpState += nf * nhp;
         noiseLpState += nf * noiseBpState;
-        consonantBurst = noiseBpState * noiseEnv * Math.min(0.35, absPeak * 1.2);
+        consonantBurst = noiseBpState * noiseEnv;
       }
 
       // Syllable articulation envelope (prevents click on consonant transitions)
@@ -489,17 +486,19 @@ export class AbletonAudioFxEngine {
           ? Math.max(0, (durSec - t) / 0.012)
           : 1.0;
 
-      // Blend 35% warm dry harmonic body with 65% articulated formant bands so chords sound lush, never harsh
-      const vocodedL =
-        ((bp1L * w1 + bp2L * w2 + bp3L * w3) * 0.72 + consonantBurst) * sylEnv;
-      const vocodedR =
-        ((bp1R * w1 + bp2R * w2 + bp3R * w3) * 0.72 + consonantBurst) * sylEnv;
+      const rawVocL =
+        (bp1L * w1 * 0.48 + bp2L * w2 * 0.44 + bp3L * w3 * 0.28 + consonantBurst * 0.16 * absPeak) * sylEnv;
+      const rawVocR =
+        (bp1R * w1 * 0.48 + bp2R * w2 * 0.44 + bp3R * w3 * 0.28 + consonantBurst * 0.16 * absPeak) * sylEnv;
 
-      const blendedWetL = dryL * 0.35 + Math.tanh(vocodedL * 1.1) * 0.75;
-      const blendedWetR = dryR * 0.35 + Math.tanh(vocodedR * 1.1) * 0.75;
+      const tractAlpha = Math.min(0.45, (2 * Math.PI * 3600) / sampleRate);
+      tractLpL += tractAlpha * (rawVocL - tractLpL);
+      tractLpR += tractAlpha * (rawVocR - tractLpR);
 
-      left[idx] = dryL * (1 - mix) + blendedWetL * mix;
-      right[idx] = dryR * (1 - mix) + blendedWetR * mix;
+      const wetL = dryL * 0.28 + Math.tanh(tractLpL * 0.95) * 0.58;
+      const wetR = dryR * 0.28 + Math.tanh(tractLpR * 0.95) * 0.58;
+      left[idx] = dryL * (1 - mix) + wetL * mix;
+      right[idx] = dryR * (1 - mix) + wetR * mix;
     }
   }
 
@@ -1061,31 +1060,44 @@ export class AbletonAudioFxEngine {
         break;
       }
 
-      case 'eventide_h9000': {
-        // Eventide H9000 Gen2 SIFT Polyphonic Harmonizer & SP2016 Diffusion
+      case 'eventide_h9000':
+      case 'spectral_pitch_harmonizer': {
         const shift1St = clamp(Number(p.shift1_st ?? 7), -24, 24);
         const shift2St = clamp(Number(p.shift2_st ?? -12), -24, 24);
-        const mix = clamp(Number(p.mix ?? 0.42), 0, 1);
+        const mix = clamp(Number(p.mix ?? 0.25), 0, 1);
         const copyL = left.slice(startFrame, endFrame);
         const copyR = right.slice(startFrame, endFrame);
         const rate1 = Math.pow(2, shift1St / 12);
         const rate2 = Math.pow(2, shift2St / 12);
-        const grainLen = Math.min(len, Math.max(256, Math.floor(0.042 * sampleRate)));
-        let pos1 = 0;
-        let pos2 = 0;
+        const grainLen = Math.max(512, Math.floor(0.048 * sampleRate));
+        const halfGrain = grainLen * 0.5;
+
+        const sampleGrain = (buf: Float32Array, centerIdx: number, rate: number): number => {
+          const drift = (rate - 1.0) * centerIdx;
+          const phaseA = ((drift % grainLen) + grainLen) % grainLen;
+          const phaseB = (((drift + halfGrain) % grainLen) + grainLen) % grainLen;
+          const wA = Math.sin((Math.PI * phaseA) / grainLen);
+          const weightA = wA * wA;
+          const weightB = 1.0 - weightA;
+
+          const readA = clamp(centerIdx - phaseA, 0, len - 2);
+          const iA = Math.floor(readA);
+          const fA = readA - iA;
+          const sA = buf[iA] + (buf[iA + 1] - buf[iA]) * fA;
+
+          const readB = clamp(centerIdx - phaseB, 0, len - 2);
+          const iB = Math.floor(readB);
+          const fB = readB - iB;
+          const sB = buf[iB] + (buf[iB + 1] - buf[iB]) * fB;
+
+          return sA * weightA + sB * weightB;
+        };
 
         for (let i = 0; i < len; i++) {
-          const idx1 = Math.floor(pos1) % grainLen;
-          const idx2 = Math.floor(pos2) % grainLen;
-          const baseWin = Math.max(0, i - (i % grainLen));
-          const r1 = Math.min(len - 1, baseWin + idx1);
-          const r2 = Math.min(len - 1, baseWin + idx2);
-          const harmL = copyL[r1] * 0.55 + copyR[r2] * 0.45;
-          const harmR = copyR[r1] * 0.55 + copyL[r2] * 0.45;
-          left[startFrame + i] = copyL[i] * (1 - mix) + Math.tanh(harmL * 1.15) * mix;
-          right[startFrame + i] = copyR[i] * (1 - mix) + Math.tanh(harmR * 1.15) * mix;
-          pos1 += rate1;
-          pos2 += rate2;
+          const harmL = sampleGrain(copyL, i, rate1) * 0.5 + sampleGrain(copyR, i, rate2) * 0.4;
+          const harmR = sampleGrain(copyR, i, rate1) * 0.5 + sampleGrain(copyL, i, rate2) * 0.4;
+          left[startFrame + i] = copyL[i] * (1 - mix) + harmL * mix;
+          right[startFrame + i] = copyR[i] * (1 - mix) + harmR * mix;
         }
         break;
       }

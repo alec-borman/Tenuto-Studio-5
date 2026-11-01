@@ -244,7 +244,10 @@ export class ContinuousSynthEngine {
           const dstNote = nextSorted[targetIdx];
           if (!dstNote) continue;
 
-          const semitoneDelta = dstNote.pitch.midi - srcNote.pitch.midi;
+          const semitoneDelta = Math.max(
+            -5,
+            Math.min(5, dstNote.pitch.midi - srcNote.pitch.midi)
+          );
           if (!srcNote.physics) srcNote.physics = {};
           if (!srcNote.physics.mpe?.bend) {
             srcNote.physics.mpe = {
@@ -820,13 +823,30 @@ export class ContinuousSynthEngine {
         let noteBendMultiplier = 1.0;
         const bendArr = cNote.mpeBend || phys?.mpe?.bend;
         if (bendArr && bendArr.length > 0) {
-          const scaled = normU * (bendArr.length - 1);
-          const b0 = Math.floor(scaled);
-          const b1 = Math.min(bendArr.length - 1, b0 + 1);
-          const bFrac = scaled - b0;
-          const smoothB = bFrac * bFrac * (3 - 2 * bFrac);
-          const bendSt = bendArr[b0] + (bendArr[b1] - bendArr[b0]) * smoothB;
-          if (bendSt !== 0) noteBendMultiplier = Math.pow(2, bendSt / 12);
+          if (
+            bendArr.length === 5 &&
+            bendArr[0] === 0 &&
+            bendArr[1] === 0 &&
+            bendArr[2] === 0 &&
+            bendArr[3] === 0
+          ) {
+            const glideSec = Math.min(0.35, Math.max(0.04, (phys?.glideMs ?? 180) / 1000));
+            const glideStartU = Math.max(0.65, 1.0 - glideSec / Math.max(0.15, item.durSec));
+            if (normU > glideStartU) {
+              const gU = (normU - glideStartU) / Math.max(1e-4, 1.0 - glideStartU);
+              const smoothB = gU * gU * (3 - 2 * gU);
+              const bendSt = bendArr[4] * smoothB;
+              if (bendSt !== 0) noteBendMultiplier = Math.pow(2, bendSt / 12);
+            }
+          } else {
+            const scaled = normU * (bendArr.length - 1);
+            const b0 = Math.floor(scaled);
+            const b1 = Math.min(bendArr.length - 1, b0 + 1);
+            const bFrac = scaled - b0;
+            const smoothB = bFrac * bFrac * (3 - 2 * bFrac);
+            const bendSt = bendArr[b0] + (bendArr[b1] - bendArr[b0]) * smoothB;
+            if (bendSt !== 0) noteBendMultiplier = Math.pow(2, bendSt / 12);
+          }
         }
 
         if (phys?.voiceBend && nIdx === phys.voiceBend.voiceIndex) {
