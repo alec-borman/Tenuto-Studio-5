@@ -69,6 +69,7 @@ interface ScheduledNoteEvent {
   }>;
   prebakedBuffer?: AudioBuffer;
   cacheKey?: string;
+  isBaked?: boolean;
 }
 
 interface ActiveVoiceCleanup {
@@ -127,7 +128,7 @@ export class StudioAudioEngine {
   private pendingBakeKeys: Map<string, Promise<void>> = new Map();
   private voicesAwaitingBake: Set<ScheduledNoteEvent> = new Set();
   private drumBufferCache: Map<string, AudioBuffer> = new Map();
-  public readonly voiceRingBuffer = new VoicePcmRingBuffer(96, 44100 * 96);
+  public readonly voiceRingBuffer = new VoicePcmRingBuffer(256, 44100 * 256);
   private static readonly MAX_BAKES_IN_FLIGHT = 64;
 
   public routingMatrix = new SpatialAudioMatrix();
@@ -1328,11 +1329,14 @@ export class StudioAudioEngine {
       const item = timeline[idx];
       if (item.startSec + item.durSec < fromSec) continue;
       if (item.startSec > toSec) break;
-      if (item.prebakedBuffer || this.pendingBakes.has(item)) continue;
+      if (item.prebakedBuffer || item.isBaked || this.pendingBakes.has(item)) continue;
       if (!this.isContinuousSynthItem(item)) continue;
 
       const cacheKey = this.getVoiceCacheKey(item, sr, tempoBpm);
-      if (this.voiceRingBuffer.has(cacheKey)) {
+      const cachedPcm = this.voiceRingBuffer.get(cacheKey);
+      if (cachedPcm) {
+        item.prebakedBuffer = this.createAudioBufferFromPcm(ctx, cachedPcm.left, cachedPcm.right, sr);
+        item.isBaked = true;
         continue;
       }
 
@@ -1343,6 +1347,13 @@ export class StudioAudioEngine {
         queued.push(
           existingKeyPromise.then(() => {
             this.pendingBakes.delete(item);
+            if (!item.prebakedBuffer && this.ctx === ctx && (ctx.state as string) !== 'closed') {
+              const pcm = this.voiceRingBuffer.get(cacheKey);
+              if (pcm) {
+                item.prebakedBuffer = this.createAudioBufferFromPcm(ctx, pcm.left, pcm.right, sr);
+                item.isBaked = true;
+              }
+            }
             if (this.voicesAwaitingBake.has(item)) {
               this.voicesAwaitingBake.delete(item);
               this.triggerDeferredVoice(item);
@@ -1370,7 +1381,7 @@ export class StudioAudioEngine {
     const sr = ctx.sampleRate || 44100;
     const key = cacheKey ?? this.getVoiceCacheKey(item, sr, tempoBpm);
     this.pendingBakes.add(item);
-    const { prebakedBuffer: _omit, cacheKey: _omitKey, ...payload } = item;
+    const { prebakedBuffer: _omit, cacheKey: _omitKey, isBaked: _omitBaked, ...payload } = item;
     const finish = () => {
       this.pendingBakes.delete(item);
       this.pendingBakeKeys.delete(key);
@@ -1382,6 +1393,10 @@ export class StudioAudioEngine {
     const promise = pool.bake(payload, sr, tempoBpm, voiceSeed, urgent).then(
       ({ left, right }) => {
         this.storeVoicePcmInCache(key, left, right);
+        item.isBaked = true;
+        if (!item.prebakedBuffer && this.ctx === ctx && (ctx.state as string) !== 'closed') {
+          item.prebakedBuffer = this.createAudioBufferFromPcm(ctx, left, right, sr);
+        }
         finish();
       },
       // On worker failure or cancellation, clean up pending state cleanly.
@@ -1397,10 +1412,10 @@ export class StudioAudioEngine {
     const ctx = this.ctx;
     const now = ctx.currentTime;
     const absStart = this.startContextTime + item.startSec;
-    const offset = Math.max(0, now + 0.01 - absStart);
-    if (item.durSec - offset < 0.02) return;
+    const offset = Math.max(0, now + 0.005 - absStart);
+    if (offset >= item.durSec) return;
     playbackDiag.recordDeferredTriggered();
-    this.triggerRealtimeVoice(ctx, item, Math.max(absStart, now + 0.01), offset);
+    this.triggerRealtimeVoice(ctx, item, Math.max(absStart, now + 0.005), offset);
   }
 
   /** Drops voices whose scheduled end has passed but whose cleanup never removed them. */
@@ -1765,10 +1780,11 @@ export class StudioAudioEngine {
           const sr = ctx.sampleRate || 44100;
           const tempo = this.tempoBpm || 120;
           const cacheKey = this.getVoiceCacheKey(item, sr, tempo);
-          const slotBuf = this.getOrCreateSlotAudioBuffer(ctx, cacheKey, sr);
-          if (slotBuf) {
-            buf = slotBuf;
+          const cachedPcm = this.voiceRingBuffer.get(cacheKey);
+          if (cachedPcm) {
+            buf = this.createAudioBufferFromPcm(ctx, cachedPcm.left, cachedPcm.right, sr);
             item.prebakedBuffer = buf;
+            item.isBaked = true;
           } else if (this.pendingBakes.has(item)) {
             // A worker is currently rendering this voice off-thread; let triggerDeferredVoice
             // schedule it as soon as the worker finishes so the main thread never stalls!
@@ -1777,36 +1793,7 @@ export class StudioAudioEngine {
             pannerNode?.disconnect();
             return;
           } else {
-            const activePool = this.getBakePool();
-            if (activePool && this.isPlaying) {
-              // Never block the main thread on heavy continuous synth DSP when the worker pool is active!
-              // Enqueue at the front of the worker pool (`urgent = true`) and join via triggerDeferredVoice.
-              this.voicesAwaitingBake.add(item);
-              playbackDiag.recordDeferredAwait();
-              const existingKeyPromise = this.pendingBakeKeys.get(cacheKey);
-              if (existingKeyPromise) {
-                this.pendingBakes.add(item);
-                existingKeyPromise.then(() => {
-                  this.pendingBakes.delete(item);
-                  if (this.voicesAwaitingBake.has(item)) {
-                    this.voicesAwaitingBake.delete(item);
-                    this.triggerDeferredVoice(item);
-                  }
-                });
-              } else {
-                this.bakeItemInWorker(
-                  ctx as AudioContext,
-                  activePool,
-                  item,
-                  tempo,
-                  (item.noteIndexInTrack ?? 0) + 1,
-                  cacheKey,
-                  true
-                );
-              }
-              pannerNode?.disconnect();
-              return;
-            }
+            // Render fallback synchronously so AUDIO NEVER CUTS OUT
             const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
             const { left: chL, right: chR } = renderContinuousVoicePcm(
               item,
@@ -1823,13 +1810,14 @@ export class StudioAudioEngine {
               noteDurSec: item.durSec,
               chordVoices: item.chordVoices ? item.chordVoices.length : 1,
               bakeMs,
-              reason: 'worker_pool_unavailable',
-              poolPending: 0,
+              reason: 'fallback_sync_render',
+              poolPending: this.bakePool ? this.bakePool.pendingCount : 0,
               pendingBakesSize: this.pendingBakes.size,
             });
             this.storeVoicePcmInCache(cacheKey, chL, chR);
             buf = this.createAudioBufferFromPcm(ctx, chL, chR, sr);
             item.prebakedBuffer = buf;
+            item.isBaked = true;
           }
         }
         playbackDiag.recordVoiceTriggered();
@@ -3400,14 +3388,24 @@ export class StudioAudioEngine {
     const baseTempo = this.tempoBpm;
     const tempoMap = score.meta?.tempoMap;
     let lastVisualUpdateSec = -1;
+    let lastRafTimeMs = 0;
+    const TARGET_FRAME_MS = 1000 / 60; // strictly 60 FPS (~16.66ms)
 
-    const tickVisualProgress = () => {
+    const tickVisualProgress = (frameTimeMs: DOMHighResTimeStamp) => {
       if (!this.isPlaying || this.playbackSessionId !== sessionId || !this.ctx) return;
+      this.rafId = requestAnimationFrame(tickVisualProgress);
+
+      const elapsedRafMs = frameTimeMs - lastRafTimeMs;
+      // Reduce/lock visual progress to strictly 60 FPS on high-refresh monitors (120Hz/144Hz/240Hz)
+      if (lastRafTimeMs > 0 && elapsedRafMs < TARGET_FRAME_MS - 1.5) {
+        return;
+      }
+      lastRafTimeMs = frameTimeMs;
+
       const now = this.ctx.currentTime;
       let progressCbMs = 0;
-      // Throttle React playhead state updates to ~20fps (48ms) so 1,000+ node SVG/Monaco views
-      // never starve the 25ms WebAudio scheduler on the main thread.
-      if (now - lastVisualUpdateSec >= 0.048) {
+      // Dispatch React playhead state updates at ~30fps (33ms) so Monaco/SVG layout is lightweight
+      if (now - lastVisualUpdateSec >= 0.033) {
         lastVisualUpdateSec = now;
         const hwLatencySec =
           Number((this.ctx as any).outputLatency) ||
@@ -3431,8 +3429,6 @@ export class StudioAudioEngine {
         progressCbMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - cbStart;
       }
       playbackDiag.recordRafTick(progressCbMs);
-
-      this.rafId = requestAnimationFrame(tickVisualProgress);
     };
 
     // Recompute signature after prewarmScoreSamples in case new SoundFont banks were decoded
@@ -3545,7 +3541,7 @@ export class StudioAudioEngine {
         this.scheduledTimeline,
         this.tempoBpm,
         0,
-        9.0
+        4.5
       ).length;
     }
     playbackDiag.recordInitialPrebake({
@@ -3592,7 +3588,7 @@ export class StudioAudioEngine {
             this.scheduledTimeline,
             this.tempoBpm,
             elapsed,
-            elapsed + 9.5
+            elapsed + 4.5
           );
         } else {
           // Fallback when Web Workers are unavailable (e.g. unit test environments)
@@ -3678,6 +3674,9 @@ export class StudioAudioEngine {
           this.startContextTime += musicalLoopSec;
           this.nextScheduleIndex = 0;
           this.voicesAwaitingBake.clear();
+          for (const it of this.scheduledTimeline) {
+            it.isBaked = false;
+          }
           nextMetronomeIdx = metronomeTicks.findIndex((t) => !t.isCountIn);
           if (nextMetronomeIdx < 0) nextMetronomeIdx = metronomeTicks.length;
           return;
