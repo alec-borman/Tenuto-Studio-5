@@ -23,7 +23,9 @@ import { WavetableEngine } from './synths/WavetableEngine';
 import { AbletonSynthSuite } from './synths/AbletonSynthSuite';
 import { SamplerAndDrumRackEngine } from './synths/SamplerAndDrumRackEngine';
 import { ContinuousSynthEngine } from './synths/ContinuousSynthEngine';
+import { renderContinuousVoicePcm } from './synths/renderContinuousVoicePcm';
 import { AbletonAudioFxEngine } from './fx/AbletonAudioFxEngine';
+import { VoiceBakePool } from './VoiceBakePool';
 
 export interface PlaybackProgress {
   isPlaying: boolean;
@@ -116,6 +118,11 @@ export class StudioAudioEngine {
   private isMetronomeEnabled: boolean = false;
   private countInBars: number = 0;
   private trackSends: Map<string, Map<string, { level: number; mode: SendTapMode }>> = new Map();
+  /** Off-main-thread synth renderer. `undefined` = not created yet, `null` = unavailable (falls back to main thread). */
+  private bakePool: VoiceBakePool | null | undefined = undefined;
+  private pendingBakes: Set<ScheduledNoteEvent> = new Set();
+  private voicesAwaitingBake: Set<ScheduledNoteEvent> = new Set();
+  private static readonly MAX_BAKES_IN_FLIGHT = 32;
 
   public routingMatrix = new SpatialAudioMatrix();
   public soundfontLoader = new SoundfontBankLoader();
@@ -1172,11 +1179,13 @@ export class StudioAudioEngine {
     tempoBpm: number,
     fromSec: number = 0,
     toSec: number = 14.0,
-    maxVoicesToBake: number = 24
+    maxVoicesToBake: number = 24,
+    timeBudgetMs: number = Infinity
   ): void {
     if (typeof ctx.createBuffer !== 'function') return;
     const sr = ctx.sampleRate || 44100;
     let bakedCount = 0;
+    const budgetStart = typeof performance !== 'undefined' ? performance.now() : 0;
 
     for (let idx = 0; idx < timeline.length; idx++) {
       const item = timeline[idx];
@@ -1191,46 +1200,129 @@ export class StudioAudioEngine {
       if (item.startSec + item.durSec < fromSec) continue;
       if (item.startSec > toSec) break;
       if (item.prebakedBuffer) continue;
-      if (
-        !ContinuousSynthEngine.isContinuousSynthPatch(
-          item.patch,
-          item.style,
-          item.event.physics
-        )
-      ) {
+      if (!this.isContinuousSynthItem(item)) {
         continue;
       }
 
-      const isStacc =
-        item.event.physics?.articulation === 'stacc' ||
-        item.event.physics?.articulation === 'staccato';
-      const relSec = isStacc ? 0.14 : 0.28;
-      const totalSec = Math.max(0.06, item.durSec + relSec);
-      const frames = Math.max(128, Math.floor(totalSec * sr));
-      const buf = ctx.createBuffer(2, frames, sr);
-      const left = buf.getChannelData(0);
-      const right = buf.getChannelData(1);
-
-      ContinuousSynthEngine.renderVoiceIntoTrackStem(
-        left,
-        right,
-        0,
-        frames,
-        sr,
-        tempoBpm,
-        idx + 1,
-        item
-      );
-      const activeFxChain = AbletonAudioFxEngine.resolveActiveFxChain(item.def, item.event);
-      if (activeFxChain.length > 0) {
-        AbletonAudioFxEngine.applyFxChainToSlice(left, right, 0, frames, sr, activeFxChain, {
-          lyric: item.event.physics?.lyric,
-          carrierFreqHz: item.freq,
-        });
-      }
+      const { left, right } = renderContinuousVoicePcm(item, sr, tempoBpm, idx + 1);
+      const buf = ctx.createBuffer(2, left.length, sr);
+      buf.getChannelData(0).set(left);
+      buf.getChannelData(1).set(right);
       item.prebakedBuffer = buf;
       bakedCount++;
       if (bakedCount >= maxVoicesToBake) break;
+      if (
+        timeBudgetMs !== Infinity &&
+        typeof performance !== 'undefined' &&
+        performance.now() - budgetStart >= timeBudgetMs
+      ) {
+        break;
+      }
+    }
+  }
+
+  private getBakePool(): VoiceBakePool | null {
+    if (this.bakePool === undefined) {
+      this.bakePool = this.soundfontLoader.isTestEnvironment() ? null : VoiceBakePool.create();
+    }
+    if (this.bakePool && this.bakePool.broken) {
+      this.bakePool = null;
+    }
+    return this.bakePool;
+  }
+
+  private isContinuousSynthItem(item: ScheduledNoteEvent): boolean {
+    return ContinuousSynthEngine.isContinuousSynthPatch(item.patch, item.style, item.event.physics);
+  }
+
+  /**
+   * Queues upcoming synth voices for rendering on the worker pool so the scheduler thread never
+   * runs DSP. Returns one promise per newly queued voice (they never reject).
+   */
+  private requestWorkerBakes(
+    ctx: AudioContext,
+    timeline: ScheduledNoteEvent[],
+    tempoBpm: number,
+    fromSec: number,
+    toSec: number
+  ): Promise<void>[] {
+    const pool = this.getBakePool();
+    if (!pool) return [];
+    const queued: Promise<void>[] = [];
+    for (let idx = 0; idx < timeline.length; idx++) {
+      const item = timeline[idx];
+      if (
+        !this.isLooping &&
+        item.prebakedBuffer &&
+        item.startSec + item.durSec + 0.6 < fromSec
+      ) {
+        item.prebakedBuffer = undefined;
+        continue;
+      }
+      if (item.startSec + item.durSec < fromSec) continue;
+      if (item.startSec > toSec) break;
+      if (item.prebakedBuffer || this.pendingBakes.has(item)) continue;
+      if (!this.isContinuousSynthItem(item)) continue;
+      if (pool.pendingCount >= StudioAudioEngine.MAX_BAKES_IN_FLIGHT) break;
+      queued.push(this.bakeItemInWorker(ctx, pool, item, tempoBpm, idx + 1));
+    }
+    return queued;
+  }
+
+  private bakeItemInWorker(
+    ctx: AudioContext,
+    pool: VoiceBakePool,
+    item: ScheduledNoteEvent,
+    tempoBpm: number,
+    voiceSeed: number
+  ): Promise<void> {
+    this.pendingBakes.add(item);
+    const { prebakedBuffer: _omit, ...payload } = item;
+    const finish = () => {
+      this.pendingBakes.delete(item);
+      if (this.voicesAwaitingBake.has(item)) {
+        this.voicesAwaitingBake.delete(item);
+        this.triggerDeferredVoice(item);
+      }
+    };
+    return pool.bake(payload, ctx.sampleRate || 44100, tempoBpm, voiceSeed).then(
+      ({ left, right }) => {
+        if (!item.prebakedBuffer && this.ctx === ctx && (ctx.state as string) !== 'closed') {
+          const buf = ctx.createBuffer(2, left.length, ctx.sampleRate || 44100);
+          buf.getChannelData(0).set(left);
+          buf.getChannelData(1).set(right);
+          item.prebakedBuffer = buf;
+        }
+        finish();
+      },
+      // On worker failure the deferred voice is rendered on the main thread instead of being lost.
+      () => finish()
+    );
+  }
+
+  /** Plays a voice whose worker bake finished after its scheduled start, joining it mid-note. */
+  private triggerDeferredVoice(item: ScheduledNoteEvent): void {
+    if (!this.isPlaying || !this.ctx) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const absStart = this.startContextTime + item.startSec;
+    const offset = Math.max(0, now + 0.01 - absStart);
+    if (item.durSec - offset < 0.02) return;
+    this.triggerRealtimeVoice(ctx, item, Math.max(absStart, now + 0.01), offset);
+  }
+
+  /** Drops voices whose scheduled end has passed but whose cleanup never removed them. */
+  private pruneFinishedVoices(now: number): void {
+    for (const [voice, meta] of Array.from(this.activeVoiceMeta.entries())) {
+      if (meta.endTime < now - 0.1) {
+        this.activeVoices.delete(voice);
+        this.activeVoiceMeta.delete(voice);
+        try {
+          voice.stopAndDisconnect();
+        } catch {
+          // Ignore
+        }
+      }
     }
   }
 
@@ -1440,17 +1532,32 @@ export class StudioAudioEngine {
 
     // Soft-steal the voice with the shortest remaining duration when active voices exceed 128
     // so short 16th-note percussion/ratchet bursts never kill long sustained sub-bass or pad holds.
+    if (this.activeVoices.size >= 128) {
+      this.pruneFinishedVoices(ctx.currentTime);
+    }
     while (this.activeVoices.size >= 128) {
+      // Only steal a voice that is already sounding; stealing one still queued in the lookahead
+      // window would cancel it before it is ever heard.
+      const nowSec = ctx.currentTime;
       let victim: ActiveVoiceCleanup | undefined;
       let earliestEndTime = Infinity;
+      let fallbackVictim: ActiveVoiceCleanup | undefined;
+      let fallbackEndTime = Infinity;
       for (const candidate of this.activeVoices) {
         const meta = this.activeVoiceMeta.get(candidate);
-        const endTime = meta ? meta.endTime : 0;
-        if (endTime < earliestEndTime) {
-          earliestEndTime = endTime;
-          victim = candidate;
+        const startTime = meta ? meta.startTime : nowSec;
+        const endTime = meta ? meta.endTime : nowSec + 0.3;
+        if (startTime <= nowSec) {
+          if (endTime < earliestEndTime) {
+            earliestEndTime = endTime;
+            victim = candidate;
+          }
+        } else if (endTime < fallbackEndTime) {
+          fallbackEndTime = endTime;
+          fallbackVictim = candidate;
         }
       }
+      victim = victim || fallbackVictim;
       if (!victim) {
         victim = this.activeVoices.values().next().value;
       }
@@ -1564,36 +1671,15 @@ export class StudioAudioEngine {
         let buf = item.prebakedBuffer;
         if (!buf) {
           const sr = ctx.sampleRate || 44100;
-          const totalVoiceSec = item.durSec + 0.28;
-          const voiceFrames = Math.max(128, Math.floor(totalVoiceSec * sr));
-          buf = ctx.createBuffer(2, voiceFrames, sr);
-          const chL = buf.getChannelData(0);
-          const chR = buf.getChannelData(1);
-          ContinuousSynthEngine.renderVoiceIntoTrackStem(
-            chL,
-            chR,
-            0,
-            voiceFrames,
+          const { left: chL, right: chR } = renderContinuousVoicePcm(
+            item,
             sr,
             this.tempoBpm || 120,
-            item.noteIndexInTrack ?? 0,
-            item
+            (item.noteIndexInTrack ?? 0) + 1
           );
-          const activeFxChain = AbletonAudioFxEngine.resolveActiveFxChain(item.def, item.event);
-          if (activeFxChain.length > 0) {
-            AbletonAudioFxEngine.applyFxChainToSlice(
-              chL,
-              chR,
-              0,
-              voiceFrames,
-              sr,
-              activeFxChain,
-              {
-                lyric: item.event.physics?.lyric,
-                carrierFreqHz: item.freq,
-              }
-            );
-          }
+          buf = ctx.createBuffer(2, chL.length, sr);
+          buf.getChannelData(0).set(chL);
+          buf.getChannelData(1).set(chR);
           item.prebakedBuffer = buf;
         }
         const src = ctx.createBufferSource();
@@ -2399,6 +2485,7 @@ export class StudioAudioEngine {
           if (cleaned) return;
           cleaned = true;
           this.activeVoices.delete(cleanup);
+          this.activeVoiceMeta.delete(cleanup);
           try {
             subOsc.stop();
             woodOsc1.stop();
@@ -2419,6 +2506,7 @@ export class StudioAudioEngine {
         },
       };
       this.activeVoices.add(cleanup);
+      this.activeVoiceMeta.set(cleanup, { startTime: startSec, endTime: startSec + 0.68 });
       subOsc.onended = () => cleanup.stopAndDisconnect();
       return;
     }
@@ -2467,6 +2555,7 @@ export class StudioAudioEngine {
           if (cleaned) return;
           cleaned = true;
           this.activeVoices.delete(cleanup);
+          this.activeVoiceMeta.delete(cleanup);
           try {
             subOsc.stop();
             bodyOsc.stop();
@@ -2485,6 +2574,7 @@ export class StudioAudioEngine {
         },
       };
       this.activeVoices.add(cleanup);
+      this.activeVoiceMeta.set(cleanup, { startTime: startSec, endTime: startSec + 0.34 });
       subOsc.onended = () => cleanup.stopAndDisconnect();
       return;
     }
@@ -2533,6 +2623,7 @@ export class StudioAudioEngine {
           if (cleaned) return;
           cleaned = true;
           this.activeVoices.delete(cleanup);
+          this.activeVoiceMeta.delete(cleanup);
           try {
             src.stop();
           } catch {
@@ -2549,6 +2640,7 @@ export class StudioAudioEngine {
         },
       };
       this.activeVoices.add(cleanup);
+      this.activeVoiceMeta.set(cleanup, { startTime: startSec, endTime: startSec + dur + 0.02 });
       src.onended = () => cleanup.stopAndDisconnect();
       return;
     }
@@ -2615,6 +2707,7 @@ export class StudioAudioEngine {
           if (cleaned) return;
           cleaned = true;
           this.activeVoices.delete(cleanup);
+          this.activeVoiceMeta.delete(cleanup);
           try {
             mode1.stop();
             mode2.stop();
@@ -2636,6 +2729,7 @@ export class StudioAudioEngine {
         },
       };
       this.activeVoices.add(cleanup);
+      this.activeVoiceMeta.set(cleanup, { startTime: startSec, endTime: startSec + dur + 0.02 });
       noiseSrc.onended = () => cleanup.stopAndDisconnect();
       return;
     }
@@ -2668,6 +2762,7 @@ export class StudioAudioEngine {
           if (cleaned) return;
           cleaned = true;
           this.activeVoices.delete(cleanup);
+          this.activeVoiceMeta.delete(cleanup);
           try {
             tomOsc.stop();
           } catch {
@@ -2683,6 +2778,7 @@ export class StudioAudioEngine {
         },
       };
       this.activeVoices.add(cleanup);
+      this.activeVoiceMeta.set(cleanup, { startTime: startSec, endTime: startSec + 0.31 });
       tomOsc.onended = () => cleanup.stopAndDisconnect();
       return;
     }
@@ -3171,32 +3267,15 @@ export class StudioAudioEngine {
     // Recompute signature after prewarmScoreSamples in case new SoundFont banks were decoded
     const postWarmSig = this.computeScoreSignature(score);
 
-    // Single-Buffer Master Stream Path (Browser / Electron Runtime):
-    // When running in a real browser/Electron environment (not mock unit tests),
-    // stream the unified stereo master mix buffer through a single AudioBufferSourceNode
-    // so Web Playback has 100% identical audio quality to Export WAV and 0% main-thread jitter!
+    // If the user explicitly pre-mastered this exact score via `predownloadAndCacheScore`,
+    // stream the cached master buffer directly. Otherwise use the non-blocking real-time
+    // lookahead scheduler + Web Worker voice bake pool so pressing Play starts immediately!
     if (
       !this.soundfontLoader.isTestEnvironment() &&
-      typeof ctx.createBuffer === 'function' &&
+      this.cachedMasterMixBuffer &&
+      this.cachedMasterMixSignature === postWarmSig &&
       typeof ctx.createBufferSource === 'function'
     ) {
-      if (
-        !this.cachedMasterMixBuffer ||
-        this.cachedMasterMixSignature !== postWarmSig
-      ) {
-        const rendered = await this.renderScoreToStereoPcm(score);
-        if (!this.isPlaying || this.playbackSessionId !== sessionId) return;
-        const mixBuf = ctx.createBuffer(
-          2,
-          rendered.left.length,
-          rendered.sampleRate
-        );
-        mixBuf.getChannelData(0).set(rendered.left);
-        mixBuf.getChannelData(1).set(rendered.right);
-        this.cachedMasterMixBuffer = mixBuf;
-        this.cachedMasterMixSignature = postWarmSig;
-      }
-
       const baseStart = ctx.currentTime + 0.04;
       this.startContextTime = baseStart;
 
@@ -3266,31 +3345,64 @@ export class StudioAudioEngine {
       return;
     }
 
-    // Rolling JIT Prebake fallback for mock-AudioContext unit tests:
-    this.prebakeTimelineWindow(ctx, this.scheduledTimeline, this.tempoBpm, 0, 2.5, 10);
+    if (this.getBakePool()) {
+      // Render the opening 3s of synth voices on the worker pool (capped wait) before starting the
+      // clock, then keep the workers 8s ahead of the playhead. No DSP runs on the main thread.
+      const opening = this.requestWorkerBakes(ctx, this.scheduledTimeline, this.tempoBpm, 0, 3.0);
+      if (opening.length > 0) {
+        await Promise.race([
+          Promise.all(opening),
+          new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+        ]);
+        if (!this.isPlaying || this.playbackSessionId !== sessionId) return;
+      }
+      this.requestWorkerBakes(ctx, this.scheduledTimeline, this.tempoBpm, 0, 8.0);
+    } else {
+      // Fallback (no Worker support): pre-render a compact 2.5s window on the main thread.
+      this.prebakeTimelineWindow(ctx, this.scheduledTimeline, this.tempoBpm, 0, 2.5, 10);
+    }
 
     const baseStart = ctx.currentTime + 0.06;
     this.startContextTime = baseStart;
 
-    const LOOKAHEAD_SEC = 0.6;
+    const DEFAULT_LOOKAHEAD_SEC = 0.6;
 
     const scheduleLookaheadSlice = () => {
-      if (!this.isPlaying || !this.ctx) return;
+      if (!this.isPlaying || this.playbackSessionId !== sessionId || !this.ctx) return;
       const now = this.ctx.currentTime;
       const elapsed = Math.max(0, now - this.startContextTime);
+      // Widen lookahead when the browser tab is hidden so 1s background timer throttling never drops notes
+      const lookaheadSec =
+        typeof document !== 'undefined' && document.hidden ? 1.6 : DEFAULT_LOOKAHEAD_SEC;
 
-      this.prebakeTimelineWindow(
-        this.ctx,
-        this.scheduledTimeline,
-        this.tempoBpm,
-        elapsed,
-        elapsed + 4.0,
-        3
-      );
+      if (this.getBakePool()) {
+        this.requestWorkerBakes(
+          this.ctx,
+          this.scheduledTimeline,
+          this.tempoBpm,
+          elapsed,
+          elapsed + 8.0
+        );
+      } else {
+        // Main-thread fallback: bake ahead under a 6ms budget per tick (at least one voice) so a
+        // burst of heavy voices cannot stall this timer past the lookahead window.
+        this.prebakeContinuousSynthTimeline(
+          this.ctx,
+          this.scheduledTimeline,
+          this.tempoBpm,
+          elapsed,
+          elapsed + 4.0,
+          3,
+          6
+        );
+      }
+      if (this.activeVoices.size > 32) {
+        this.pruneFinishedVoices(now);
+      }
 
       while (
         nextMetronomeIdx < metronomeTicks.length &&
-        metronomeTicks[nextMetronomeIdx].timeSec <= elapsed + LOOKAHEAD_SEC
+        metronomeTicks[nextMetronomeIdx].timeSec <= elapsed + lookaheadSec
       ) {
         const tick = metronomeTicks[nextMetronomeIdx];
         if (
@@ -3309,9 +3421,30 @@ export class StudioAudioEngine {
 
       while (
         this.nextScheduleIndex < this.scheduledTimeline.length &&
-        this.scheduledTimeline[this.nextScheduleIndex].startSec <= elapsed + LOOKAHEAD_SEC
+        this.scheduledTimeline[this.nextScheduleIndex].startSec <= elapsed + lookaheadSec
       ) {
         const item = this.scheduledTimeline[this.nextScheduleIndex];
+        if (
+          !item.prebakedBuffer &&
+          this.bakePool &&
+          !this.bakePool.broken &&
+          this.isContinuousSynthItem(item)
+        ) {
+          // Never render synth DSP inside the scheduler: wait for the worker and join the note
+          // when its buffer arrives (normally it is baked seconds before it is due).
+          if (!this.pendingBakes.has(item)) {
+            this.bakeItemInWorker(
+              this.ctx,
+              this.bakePool,
+              item,
+              this.tempoBpm,
+              this.nextScheduleIndex + 1
+            );
+          }
+          this.voicesAwaitingBake.add(item);
+          this.nextScheduleIndex++;
+          continue;
+        }
         const latenessSec = elapsed - item.startSec;
         if (latenessSec <= 0.04) {
           this.triggerRealtimeVoice(this.ctx, item, this.startContextTime + item.startSec, 0);
@@ -3328,7 +3461,14 @@ export class StudioAudioEngine {
 
       if (elapsed >= this.scoreDurationSec) {
         if (this.isLooping) {
-          this.playScore(score);
+          // Seamless gapless loop restart: preserve active reverb tails and shift startContextTime
+          // forward by the musical loop length without stopping the AudioContext or re-awaiting prewarm!
+          const musicalLoopSec = Math.max(0.1, this.scoreDurationSec - countInSec);
+          this.startContextTime += musicalLoopSec;
+          this.nextScheduleIndex = 0;
+          this.voicesAwaitingBake.clear();
+          nextMetronomeIdx = metronomeTicks.findIndex((t) => !t.isCountIn);
+          if (nextMetronomeIdx < 0) nextMetronomeIdx = metronomeTicks.length;
           return;
         }
         this.stop(true);
@@ -3345,6 +3485,7 @@ export class StudioAudioEngine {
   public stop(notify: boolean = true): void {
     this.isPlaying = false;
     this.playbackSessionId++;
+    this.voicesAwaitingBake.clear();
     if (this.schedulerIntervalId !== null) {
       window.clearInterval(this.schedulerIntervalId);
       this.schedulerIntervalId = null;

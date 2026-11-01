@@ -4,8 +4,18 @@ export class AudioContextManager {
 
   public async initialize(): Promise<void> {
     this.context = new AudioContext();
-    await this.context.audioWorklet.addModule('/src/audio/TenutoProcessor.ts');
-    this.workletNode = new AudioWorkletNode(this.context, 'TenutoProcessor');
+    try {
+      await this.context.audioWorklet.addModule('/src/audio/TenutoProcessor.ts');
+      this.workletNode = new AudioWorkletNode(this.context, 'TenutoProcessor');
+    } catch (err) {
+      try {
+        await this.context.close?.();
+      } catch {
+        // Ignore close errors
+      }
+      this.context = null;
+      throw err;
+    }
   }
 
   public get sampleRate(): number {

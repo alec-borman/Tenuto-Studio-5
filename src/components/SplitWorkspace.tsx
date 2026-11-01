@@ -349,7 +349,7 @@ export default function SplitWorkspace() {
     if (!isAudioInitialized.current) {
       isAudioInitialized.current = true;
       try {
-        await audioManager.initialize();
+        Promise.resolve(audioManager.initialize()).catch(() => {});
       } catch {
         // Continue to StudioAudioEngine when legacy worklet file is absent
       }
