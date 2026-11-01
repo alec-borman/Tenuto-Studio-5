@@ -100,6 +100,28 @@ export interface EventPhysics {
   reverbThrow?: WindowedModulationSpec;
   echoThrow?: WindowedModulationSpec;
   lyric?: string;
+  ratchet?: {
+    count: number;
+    curve: 'flat' | 'up' | 'down';
+  };
+  swarmSpreadSemitones?: number | number[];
+  swarmMod?: WindowedModulationSpec;
+  vowelFormant?: {
+    from: string;
+    to: string;
+    rateHz: number;
+  };
+  harmonicPlane?: string;
+  rootlessVoicing?: boolean;
+  wavefoldAmount?: number | number[];
+  wavefoldMod?: WindowedModulationSpec;
+  osmoseSqueeze?: number;
+  voiceBend?: {
+    voiceIndex: number;
+    cents: number;
+    startWindow?: number;
+    endWindow?: number;
+  };
 }
 
 export interface AtomicEvent {
@@ -121,6 +143,31 @@ export interface AtomicEvent {
   sourceEndOffset?: number;
   physics?: EventPhysics;
   astNodeId?: string;
+  velocity?: number;
+  pitches?: number[];
+  noteNames?: string[];
+  frequencies?: number[];
+  ratchet?: {
+    count: number;
+    curve: 'flat' | 'up' | 'down';
+  };
+  swarmSpreadSemitones?: number | number[];
+  vowelFormant?: {
+    from: string;
+    to: string;
+    rateHz: number;
+  };
+  harmonicPlane?: string;
+  rootlessVoicing?: boolean;
+  wavefoldAmount?: number | number[];
+  osmoseSqueeze?: number;
+  voiceBend?: {
+    voiceIndex: number;
+    cents: number;
+    startWindow?: number;
+    endWindow?: number;
+  };
+  continuousSynth?: Record<string, any>;
 }
 
 export class ASTSerializer {
@@ -680,10 +727,138 @@ export class ASTSerializer {
         }
         if (!physics.fx) physics.fx = [];
         physics.fx.push({ type: fxType, params });
+      } else if (mod.startsWith('ratchet(') && mod.endsWith(')')) {
+        const parts = mod.slice(8, -1).split(',').map((s) => s.trim());
+        const rawCount = parseInt(parts[0].replace(/x/gi, ''), 10);
+        const count = !isNaN(rawCount) && rawCount >= 1 ? Math.min(32, rawCount) : 2;
+        const rawCurve = (parts[1] || 'flat').replace(/["']/g, '').toLowerCase();
+        const curve: 'flat' | 'up' | 'down' =
+          rawCurve === 'up' || rawCurve === 'cresc' || rawCurve === '/'
+            ? 'up'
+            : rawCurve === 'down' || rawCurve === 'dim' || rawCurve === 'decresc' || rawCurve === '\\'
+              ? 'down'
+              : 'flat';
+        physics.ratchet = { count, curve };
+      } else if (mod === 'ratchet') {
+        physics.ratchet = { count: 2, curve: 'flat' };
+      } else if (mod.startsWith('swarm(') && mod.endsWith(')')) {
+        const inner = mod.slice(6, -1).trim();
+        const parsed = this.parseWindowedOrCurveArg(inner, 12);
+        if (parsed) {
+          if (parsed.spec.curve && parsed.spec.curve.length > 0) {
+            physics.swarmSpreadSemitones = parsed.spec.curve;
+          } else {
+            physics.swarmSpreadSemitones = Math.max(0, Math.min(12, parsed.scalar));
+          }
+          physics.swarmMod = parsed.spec;
+        }
+      } else if (mod === 'swarm') {
+        physics.swarmSpreadSemitones = 1.8;
+      } else if (mod.startsWith('vowel(') && mod.endsWith(')')) {
+        const parts = mod.slice(6, -1).split(',').map((s) => s.trim());
+        const from = (parts[0] || 'oh').replace(/["']/g, '').toLowerCase();
+        const to = (parts[1] || from || 'ooh').replace(/["']/g, '').toLowerCase();
+        const rateRaw = parts[2] ? parseFloat(parts[2].replace(/hz/gi, '').trim()) : 0.2;
+        const rateHz = !isNaN(rateRaw) && rateRaw > 0 ? Math.max(0.02, Math.min(20, rateRaw)) : 0.2;
+        physics.vowelFormant = { from, to, rateHz };
+      } else if (mod.startsWith('plane(') && mod.endsWith(')')) {
+        const chordType = mod.slice(6, -1).replace(/["']/g, '').trim().toLowerCase() || 'm9';
+        physics.harmonicPlane = chordType;
+      } else if (mod === 'plane') {
+        physics.harmonicPlane = 'm9';
+      } else if (mod === 'rootless') {
+        physics.rootlessVoicing = true;
+      } else if (mod.startsWith('fold(') && mod.endsWith(')')) {
+        const inner = mod.slice(5, -1).trim();
+        const parsed = this.parseWindowedOrCurveArg(inner, 100);
+        if (parsed) {
+          if (parsed.spec.curve && parsed.spec.curve.length > 0) {
+            physics.wavefoldAmount = parsed.spec.curve;
+          } else {
+            physics.wavefoldAmount = Math.max(0, Math.min(100, parsed.scalar));
+          }
+          physics.wavefoldMod = parsed.spec;
+        }
+      } else if (mod === 'fold') {
+        physics.wavefoldAmount = 65;
+      } else if (mod.startsWith('squeeze(') && mod.endsWith(')')) {
+        const parts = mod
+          .slice(8, -1)
+          .split(',')
+          .map((s) => parseFloat(s.replace('%', '').trim()))
+          .filter((n) => !isNaN(n));
+        if (parts.length > 0) {
+          const rawVal = parts[parts.length - 1];
+          const val = !mod.includes('%') && rawVal > 0 && rawVal <= 1 ? rawVal * 100 : rawVal;
+          physics.osmoseSqueeze = Math.max(0, Math.min(100, val));
+        } else {
+          physics.osmoseSqueeze = 85;
+        }
+      } else if (mod === 'squeeze') {
+        physics.osmoseSqueeze = 85;
+      } else if (mod.startsWith('bend_voice(') && mod.endsWith(')')) {
+        const parts = mod.slice(11, -1).split(',').map((s) => s.trim());
+        const voiceIndex = Math.max(0, parseInt(parts[0] || '0', 10) || 0);
+        const cents = parseFloat((parts[1] || '0').replace(/c|cents/gi, '').trim()) || 0;
+        let startWindow: number | undefined;
+        let endWindow: number | undefined;
+        if (parts[2]) {
+          const rangeMatch = parts[2].match(/^([0-9.]+)\.\.([0-9.]+)$/);
+          if (rangeMatch) {
+            startWindow = Math.max(0, Math.min(1, parseFloat(rangeMatch[1])));
+            endWindow = Math.max(startWindow, Math.min(1, parseFloat(rangeMatch[2])));
+          }
+        }
+        physics.voiceBend = { voiceIndex, cents, startWindow, endWindow };
       }
     }
 
     return physics;
+  }
+
+  private mirrorPhysicsToTopLevelEvent(ev: AtomicEvent): AtomicEvent {
+    const p = ev.physics;
+    if (!p) return ev;
+    if (p.velocity !== undefined) ev.velocity = p.velocity;
+    if (p.ratchet) ev.ratchet = p.ratchet;
+    if (p.swarmSpreadSemitones !== undefined) {
+      ev.swarmSpreadSemitones = p.swarmSpreadSemitones;
+      ev.continuousSynth = {
+        ...(ev.continuousSynth || {}),
+        swarmSpreadSemitones: p.swarmSpreadSemitones,
+      };
+    }
+    if (p.vowelFormant) {
+      ev.vowelFormant = p.vowelFormant;
+      ev.continuousSynth = {
+        ...(ev.continuousSynth || {}),
+        vowelFormant: p.vowelFormant,
+      };
+    }
+    if (p.harmonicPlane) ev.harmonicPlane = p.harmonicPlane;
+    if (p.rootlessVoicing) ev.rootlessVoicing = p.rootlessVoicing;
+    if (p.wavefoldAmount !== undefined) {
+      ev.wavefoldAmount = p.wavefoldAmount;
+      ev.continuousSynth = {
+        ...(ev.continuousSynth || {}),
+        wavefoldAmount: p.wavefoldAmount,
+      };
+    }
+    if (p.osmoseSqueeze !== undefined) {
+      ev.osmoseSqueeze = p.osmoseSqueeze;
+      ev.continuousSynth = {
+        ...(ev.continuousSynth || {}),
+        osmoseSqueeze: p.osmoseSqueeze,
+      };
+    }
+    if (p.voiceBend) {
+      ev.voiceBend = p.voiceBend;
+      ev.continuousSynth = {
+        ...(ev.continuousSynth || {}),
+        voiceBend: p.voiceBend,
+      };
+    }
+    return ev;
   }
 
   public parseToken(token: string, style: string = 'standard'): AtomicEvent {
@@ -723,9 +898,9 @@ export class ASTSerializer {
     if (hasTie) {
       const mergedPhysics = physics || { modifiers: [] };
       mergedPhysics.tie = true;
-      return { pitch, duration, physics: mergedPhysics };
+      return this.mirrorPhysicsToTopLevelEvent({ pitch, duration, physics: mergedPhysics });
     }
 
-    return physics ? { pitch, duration, physics } : { pitch, duration };
+    return this.mirrorPhysicsToTopLevelEvent(physics ? { pitch, duration, physics } : { pitch, duration });
   }
 }

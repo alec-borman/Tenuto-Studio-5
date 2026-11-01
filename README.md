@@ -6,7 +6,7 @@
 
   [![Live Web Studio](https://img.shields.io/badge/Try_Live_Web_Studio-tenuto--studio--5--production.up.railway.app-10b981?style=for-the-badge)](https://tenuto-studio-5-production.up.railway.app/)
 
-  [![Release: v5.3.2](https://img.shields.io/badge/Release-v5.3.2-2563eb.svg)](./SPEC.md)
+  [![Release: v5.3.6](https://img.shields.io/badge/Release-v5.3.6-2563eb.svg)](./SPEC.md)
   [![Grammar Guide: TENUTO_GRAMMAR.md](https://img.shields.io/badge/Grammar_Guide-TENUTO__GRAMMAR.md-10b981.svg)](./TENUTO_GRAMMAR.md)
   [![Platform: macOS .pkg | Windows .exe | Web](https://img.shields.io/badge/Platform-macOS_.pkg_%7C_Windows_.exe_%7C_Web-8b5cf6.svg)](#installation--desktop-packaging)
   [![License: MIT](https://img.shields.io/badge/License-MIT-64748b.svg)](LICENSE)
@@ -24,7 +24,7 @@ Launch **Tenuto Studio 5** immediately in your browser with zero installation:
 
 ## Overview
 
-**Tenuto Studio 5** (`v5.3.2`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
+**Tenuto Studio 5** (`v5.3.6`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
 
 In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of Truth**:
 * **Code Projects the Entire Studio:** Writing or pasting `.ten` code (including raw Markdown blocks straight from Gemini, Claude, or ChatGPT) immediately compiles into four synchronized visual views (**Scrolling Piano Roll**, **Tab / Chord Flow**, **Session View Clip Matrix**, and **Arrangement View Timeline**), three interactive bottom studio docks (**Console Mixer**, **Device Chain & 8-Macro Rack**, and **Context Note/Score Inspector**), and a real-time WebAudio / PCM DSP engine.
@@ -33,7 +33,6 @@ In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of 
 * **Live Production Web App:** [**`https://tenuto-studio-5-production.up.railway.app/`**](https://tenuto-studio-5-production.up.railway.app/)
 * **Songwriting & Prompt Reference:** [**`TENUTO_GRAMMAR.md`**](./TENUTO_GRAMMAR.md)
 * **Formal Language Specification:** [**`SPEC.md`**](./SPEC.md)
-* **Multi-Model Composition Case Study:** [**`Case Study.md`**](./Case%20Study.md)
 
 ---
 
@@ -123,7 +122,15 @@ In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of 
 * **Summed Track FX Bus & Bass-Mono Crossover:** Sums all unison and chord voices per track through a `120 Hz` phase-locked bass-mono crossover before running the track's `.fx(...)` chain so chords intermodulate and glue together.
 * **Intra-Note Windowed Modulation & 20+ Producer Modifiers:**
   * Target any slice of a sustained note using `start..end` normalized windows (e.g. `.detune(85%, 0.4..0.85)`) or multi-point curves (`.detune([0, 95, 20])`) with raised-cosine edge feathering.
-  * **Supported Synth Modifiers:** `.detune()`, `.detune_cents()`, `.filter(startHz, endHz)`, `.cutoff()`, `.res()`, `.glide(ms)` (automatic voice-leading across polyphonic chords), `.stack("octaves" | "fifths" | "seventh" | "super")`, `.flutter()`, `.warble()`, `.pitch_dip()` / `.tapestop`, `.noise(level, "white" | "pink" | "breath", start..end)`, `.sync()`, `.fm()`, `.ring()`, `.pwm()`, `.warp_wave("bend" | "mirror")`, `.keytrack()`, `.comb()`, `.duck()`, `.gate([1,0,1,1,...])`, `.pluck()` / `.zap`, `.haas()`, `.width()`, `.analog_slop()`, `.air()`, `.pre_swell`, `.open_voice` / `.drop2`, `.drive()`, `.ott()`.
+  * **Supported Synth Modifiers:** `.detune()`, `.detune_cents()`, `.filter(startHz, endHz)`, `.cutoff()`, `.res()`, `.glide(ms)` (automatic voice-leading across polyphonic chords), `.stack("octaves" | "fifths" | "seventh" | "super")`, `.flutter()`, `.warble()`, `.pitch_dip()` / `.tapestop`, `.noise(level, "white" | "pink" | "breath", start..end)`, `.sync()`, `.fm()`, `.ring()`, `.pwm()`, `.warp_wave("bend" | "mirror")`, `.keytrack()`, `.comb()`, `.duck()`, `.gate([1,0,1,1,...])`, `.pluck()` / `.zap`, `.haas()`, `.width()`, `.analog_slop()`, `.air()`, `.pre_swell`, `.open_voice` / `.drop2`, `.drive()`, `.ott()`, `.ratchet()`, `.swarm()`, `.vowel()`, `.plane()`, `.rootless`, `.fold()`, `.squeeze()`, `.bend_voice()`.
+* **Voltage & Gesture Synth Expansion (`.ratchet`, `.swarm`, `.vowel`, `.plane`, `.rootless`, `.fold`, `.squeeze`, `.bend_voice`, `carlos_alpha/beta/gamma`, `gated_reverb`):**
+  - **Anti-Skip AudioParam Curve/Glide Guard & Wavetable Cache (`clampCurveWindowBeforeGlide`):** Clamps `setValueCurveAtTime` windows (`clampCurveWindowBeforeGlide`) so intra-note `.detune([a, b, c])` and `.filter([f1, f2])` curves complete at least `6ms` before trailing `.glide(ms)` ramps—eliminating browser `NotSupportedError` voice drops—and caches `.warp_wave()` `PeriodicWave` tables in memory.
+  - **Step Ratcheting (`.ratchet(count, "flat" | "up" | "down")`):** Subdivides any step into $2\times, 3\times, 4\times,$ or $8\times$ envelope re-triggers with flat, crescendo, or decrescendo velocity curves.
+  - **Dewanatron Swarmatron (`patch="swarmatron"`, `.swarm(semitones | [start, end])`):** 8-oscillator continuous microtonal cluster spread ($0\text{–}6\text{ st}$).
+  - **Hauntology & Vowel Filter (`patch="hauntology_pad"`, `.vowel("oh", "ooh", 0.2)`, `meta.master_tune`):** 3-voice $30\%$-bent triangle pad ($8\text{c}$ detune, $900\text{ Hz}$ ladder LP, $20\%$ sub), dual-formant vowel LFO, and global cassette cent detuning (`master_tune: -25`).
+  - **Parallel Harmonic Planing & Rootless Voicings (`.plane("m9" | "maj9" | "m7" | "sus4")`, `.rootless`):** Transposes locked extended chord intervals in parallel blocks or strips the root note to prevent lower-midrange beating.
+  - **West Coast Wavefolding & Osmose 3D MPE (`patch="buchla_krell"`, `.fold(amount)`, `.squeeze(amount)`, `.bend_voice(voiceIdx, cents)`):** Buchla 259 wavefolder, Osmose zero-attack pressure squeeze, and single-voice inner-chord MPE pitch bend.
+  - **Wendy Carlos Non-Octave Tunings & Gated Reverb (`meta.temperament`, `.fx(gated_reverb, ...)`):** Supports `carlos_alpha` ($78.0\text{c}$), `carlos_beta` ($63.8\text{c}$), `carlos_gamma` ($35.1\text{c}$), and `just` intonation, plus '80s Synthwave `gated_reverb`.
 
 #### B. Ableton Flagship Synthesizers & Samplers (`WavetableEngine.ts`, `AbletonSynthSuite.ts`, `SamplerAndDrumRackEngine.ts`)
 * **`supersaw`, `reese_bass`, `flutter_pad`, `riser`, `pluck_lead`, `acid_lead`:** Dedicated producer synth patches with shorthand track attributes (`detune=`, `cutoff=`, `resonance=`, `sub=`, `air=`, `duck=`, `width=`, `slop=`, `noise=`).
@@ -160,7 +167,7 @@ npm install
 npm run electron:build:mac
 
 # 3. Run the macOS installer
-open release/"Tenuto Studio 5-5.3.2-arm64.pkg"
+open release/"Tenuto Studio 5-5.3.6-arm64.pkg"
 ```
 
 ### Option 1B: Windows Desktop App (`.exe` NSIS Setup Installer)
@@ -177,7 +184,7 @@ npm install
 npm run electron:build:win
 
 # 3. Launch the generated Setup .exe inside the release/ folder
-start "" "release\Tenuto Studio 5 Setup 5.3.2.exe"
+start "" "release\Tenuto Studio 5 Setup 5.3.6.exe"
 ```
 
 ### Option 2: Local Web Development
@@ -304,10 +311,10 @@ For the full grammar breakdown, see **[`TENUTO_GRAMMAR.md`](./TENUTO_GRAMMAR.md)
 │   │   └── presetScores.ts                   # Built-in multi-track showcase & Mahler 6 Finale scores
 │   └── utils/
 │       └── DebouncedCodeMemory.ts            # 500ms debounced localStorage persistence & beforeunload flush
-├── tests/                                    # 56 Vitest unit & integration test suites
+├── tests/                                    # 68 Vitest unit & integration test suites
 ├── electron-builder.json                     # macOS (.pkg) and Windows (NSIS .exe) build configuration
+├── repomix.config.json                       # Repomix configuration excluding paste dumps & build artifacts
 ├── TENUTO_GRAMMAR.md                         # Songwriting grammar & LLM composer prompt guide
-├── Case Study.md                             # Multi-model iterative refinement & diff composition case study
 ├── SPEC.md                                   # Canonical Tenuto 5.0.0 language specification
 └── README.md
 ```
@@ -315,20 +322,27 @@ For the full grammar breakdown, see **[`TENUTO_GRAMMAR.md`](./TENUTO_GRAMMAR.md)
 ### Running Verification Suites
 
 ```bash
+# Purge any unreferenced AI Studio paste dumps or root bloat files
+npm run clean:bloat
+
 # TypeScript type check
 npm run lint
 
-# Run all 56 Vitest unit & integration test suites
+# Run all 68 Vitest unit & integration test suites
 npx vitest run
 
 # Build production bundle
 npm run build
+
+# Pack lean repository snapshot (~236k tokens) using repomix.config.json
+npx repomix
 ```
 
 ---
 
-## Release Notes (`v5.3.2`)
+## Release Notes (`v5.3.6`)
 
+* **`v5.3.6`:** Purged 56 unreferenced `public/assets/aistudio/Paste_*` chat-paste files and 6 unreferenced root dump artifacts (reducing repository size by ~784,000 tokens with zero code loss), added `repomix.config.json` and `.gitignore` rules, and added automated bloat-purge protection in `vite.config.ts` and `npm run clean:bloat` alongside the Voltage & Gesture synth engine expansion (`.ratchet`, `swarmatron`, `hauntology_pad`, `.vowel`, `.plane`, `.rootless`, `.fold`, `.squeeze`, `.bend_voice`, `carlos_alpha`, `gated_reverb`, `clampCurveWindowBeforeGlide`).
 * **`v5.3.2`:** Restored native mobile long-press `Paste` popup callout support (`userSelect: 'text'`, `WebkitTouchCallout: 'default'`, and direct `onPaste` handling) on the `.ten` code editor `<textarea>` for iOS and Android browsers, and added a one-tap **`📋 Paste .ten`** clipboard button (`paste-ten-code-btn` / `stage-paste-ten-btn`).
 * **`v5.3.0`:** Added automatic top-bar hiding when playback starts (`data-topbar-hidden="true"`), revealing the top bar during playback only when the mouse moves over the top bar zone (`top-bar-hover-zone`) or when the touchpad is scrolled (`wheel` event), and locked the Top Hero Chord Banner, Measure Timeline Strip, and per-track Header Ribbons to fixed pixel heights with single-line `truncate` rules to eliminate vertical playback bounce.
 * **`v5.2.8`:** Dedicated 100% of the vertical iPhone 15 Pro (`393×852`) and Fullscreen interface exclusively to the Guitar Tab or Piano Roll scroll view (eliminating all DAW headers, docks, sub-toolbars, and scrollbars), added an always-visible `↺ Undo Rotation` button (`undo-rotation-btn`) and `✕ Exit Fullscreen (Esc)` button (`exit-fullscreen-btn`), and wired global `Escape` key exit support.

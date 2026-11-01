@@ -73,7 +73,8 @@ export class AbletonAudioFxEngine {
       norm === 'eq' ||
       norm === 'filter' ||
       norm === 'comp' ||
-      norm === 'glue'
+      norm === 'glue' ||
+      norm === 'gated_reverb'
     );
   }
 
@@ -206,8 +207,9 @@ export class AbletonAudioFxEngine {
           break;
         }
         case 'hybrid_reverb':
-        case 'reverb': {
-          const mix = clamp(Number(p.mix ?? 0.45), 0, 1);
+        case 'reverb':
+        case 'gated_reverb': {
+          const mix = clamp(Number(p.mix ?? (type === 'gated_reverb' ? 0.55 : 0.45)), 0, 1);
           reverbSendGain = Math.max(reverbSendGain, mix);
           break;
         }
@@ -738,6 +740,60 @@ export class AbletonAudioFxEngine {
 
           left[startFrame + i] = dryL * (1 - mix) + (dryL * 0.5 + revL * 0.85) * mix;
           right[startFrame + i] = dryR * (1 - mix) + (dryR * 0.5 + revR * 0.85) * mix;
+        }
+        break;
+      }
+
+      case 'gated_reverb': {
+        const decaySec = clamp(Number(p.decay ?? 3.5), 0.3, 12.0);
+        const gateMs = clamp(Number(p.gate_ms ?? 180), 20, 1200);
+        const thresholdDb = clamp(Number(p.threshold ?? -24), -60, -3);
+        const mix = clamp(Number(p.mix ?? 0.55), 0, 1);
+
+        const gateHoldFrames = Math.max(1, Math.floor((gateMs / 1000) * sampleRate));
+        const gateReleaseFrames = Math.max(1, Math.floor(0.012 * sampleRate));
+        const thresholdLin = dbToLinear(thresholdDb);
+        const tap1 = Math.max(1, Math.floor(0.013 * sampleRate));
+        const tap2 = Math.max(2, Math.floor(0.029 * sampleRate));
+        const tap3 = Math.max(3, Math.floor(0.043 * sampleRate));
+        const fbGain = clamp(Math.pow(0.001, 0.029 / decaySec), 0.35, 0.94);
+
+        const bufL = new Float32Array(len + tap3 + 4);
+        const bufR = new Float32Array(len + tap3 + 4);
+        let framesSinceTrigger = 0;
+
+        for (let i = 0; i < len; i++) {
+          const dryL = left[startFrame + i];
+          const dryR = right[startFrame + i];
+          const peak = Math.max(Math.abs(dryL), Math.abs(dryR));
+          if (peak >= thresholdLin) {
+            framesSinceTrigger = 0;
+          } else {
+            framesSinceTrigger++;
+          }
+
+          let gateEnv = 1.0;
+          if (framesSinceTrigger > gateHoldFrames) {
+            const rel = (framesSinceTrigger - gateHoldFrames) / gateReleaseFrames;
+            gateEnv = Math.max(0, 1 - rel);
+          }
+
+          const revL =
+            (i >= tap1 ? bufL[i - tap1] * 0.5 : 0) +
+            (i >= tap2 ? bufR[i - tap2] * 0.38 : 0) +
+            (i >= tap3 ? bufL[i - tap3] * 0.28 : 0);
+          const revR =
+            (i >= tap1 ? bufR[i - tap1] * 0.5 : 0) +
+            (i >= tap2 ? bufL[i - tap2] * 0.38 : 0) +
+            (i >= tap3 ? bufR[i - tap3] * 0.28 : 0);
+
+          bufL[i] = dryL + revL * fbGain;
+          bufR[i] = dryR + revR * fbGain;
+
+          const gatedRevL = revL * gateEnv;
+          const gatedRevR = revR * gateEnv;
+          left[startFrame + i] = dryL * (1 - mix) + (dryL * 0.55 + gatedRevL * 0.95) * mix;
+          right[startFrame + i] = dryR * (1 - mix) + (dryR * 0.55 + gatedRevR * 0.95) * mix;
         }
         break;
       }

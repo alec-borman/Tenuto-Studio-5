@@ -1,7 +1,12 @@
 node_modules/
 build/
 dist/
+release/
 coverage/
+public/assets/aistudio/
+repomix-output.*
+*.tela
+proposal_delta.json
 .DS_Store
 *.log
 .env*

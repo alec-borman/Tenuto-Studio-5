@@ -23,7 +23,123 @@ export interface ContinuousVoiceNote {
 
 const CONTROL_BLOCK_SIZE = 128;
 
+export const FORMANT_VOWEL_TABLE: Record<string, [number, number]> = {
+  a: [730, 1090],
+  ah: [730, 1090],
+  e: [530, 1840],
+  eh: [530, 1840],
+  i: [270, 2290],
+  ee: [270, 2290],
+  o: [570, 840],
+  oh: [490, 880],
+  ooh: [320, 800],
+  oo: [320, 800],
+  u: [300, 870],
+};
+
+/**
+ * Returns the [F1, F2] formant peak frequencies in Hz for Hauntology / vowel filter modulation.
+ */
+export function computeFormantVowelFrequencies(vowel: string): [number, number] {
+  const key = (vowel || 'a').trim().toLowerCase();
+  return FORMANT_VOWEL_TABLE[key] ?? [490, 880];
+}
+
+/**
+ * Clamps a normalized intra-note curve window (`curveStartNorm..curveEndNorm`) so its scheduled
+ * `setValueCurveAtTime` / modulation window completes at least `6ms` (`0.006s`) before a trailing
+ * `.glide()` ramp begins—preventing WebAudio `NotSupportedError` overlapping automation exceptions.
+ */
+export function clampCurveWindowBeforeGlide(
+  noteStartSec: number,
+  noteDurationSec: number,
+  curveStartNorm: number = 0,
+  curveEndNorm: number = 1,
+  glideDurationSec: number = 0
+): { startSec: number; durationSec: number } {
+  const safeDur = Math.max(0.02, noteDurationSec);
+  const glideReserve =
+    glideDurationSec > 0 ? Math.min(safeDur * 0.65, glideDurationSec + 0.006) : 0;
+  const maxEndSec = noteStartSec + Math.max(0.01, safeDur - glideReserve);
+  const rawStartSec = noteStartSec + Math.max(0, Math.min(0.95, curveStartNorm)) * safeDur;
+  const rawEndSec =
+    noteStartSec + Math.max(curveStartNorm + 0.02, Math.min(1, curveEndNorm)) * safeDur;
+  const clampedEndSec = Math.min(rawEndSec, maxEndSec);
+  const clampedStartSec = Math.min(rawStartSec, clampedEndSec - 0.005);
+  return {
+    startSec: Math.max(noteStartSec, clampedStartSec),
+    durationSec: Math.max(0.005, clampedEndSec - Math.max(noteStartSec, clampedStartSec)),
+  };
+}
+
+const PERIODIC_WAVE_CACHE = new WeakMap<BaseAudioContext, Map<string, PeriodicWave>>();
+const WARPED_WAVE_LOOKUP_CACHE = new Map<string, Float32Array>();
+
+/**
+ * Returns a cached `PeriodicWave` for `.warp_wave(mode, amount)` per `BaseAudioContext`
+ * keyed by `${mode}:${Math.round(amount)}` so wavetables are never regenerated per note.
+ */
+export function getOrCreateWarpedPeriodicWave(
+  ctx: BaseAudioContext,
+  mode: string = 'bend',
+  amount: number = 50
+): PeriodicWave | null {
+  let ctxMap = PERIODIC_WAVE_CACHE.get(ctx);
+  if (!ctxMap) {
+    ctxMap = new Map<string, PeriodicWave>();
+    PERIODIC_WAVE_CACHE.set(ctx, ctxMap);
+  }
+  const normAmount = Math.round(amount <= 1 ? amount * 100 : amount);
+  const key = `${(mode || 'bend').toLowerCase()}:${normAmount}`;
+  const cached = ctxMap.get(key);
+  if (cached) return cached;
+
+  if (typeof ctx.createPeriodicWave !== 'function') return null;
+  const harmonics = 32;
+  const real = new Float32Array(harmonics);
+  const imag = new Float32Array(harmonics);
+  const amt01 = Math.max(0, Math.min(1, normAmount / 100));
+  for (let h = 1; h < harmonics; h++) {
+    const baseSaw = 1 / h;
+    imag[h] =
+      mode === 'mirror'
+        ? h % 2 === 1
+          ? baseSaw * (1 + amt01 * 0.6)
+          : baseSaw * (1 - amt01 * 0.5)
+        : baseSaw * Math.pow(h, -amt01 * 0.35);
+  }
+  const wave = ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+  ctxMap.set(key, wave);
+  return wave;
+}
+
+export function getOrCreateWarpedWaveLookup(mode: string, amount: number): Float32Array {
+  const normAmount = Math.round(amount <= 1 ? amount * 100 : amount);
+  const key = `${(mode || 'bend').toLowerCase()}:${normAmount}`;
+  const existing = WARPED_WAVE_LOOKUP_CACHE.get(key);
+  if (existing) return existing;
+
+  const size = 256;
+  const table = new Float32Array(size);
+  const scale = 1 + (normAmount / 100) * 2.2;
+  for (let i = 0; i < size; i++) {
+    const p = i / size;
+    const raw = 2 * p - 1;
+    if (mode === 'mirror') {
+      table[i] = Math.abs(raw) * 2 - 0.8;
+    } else {
+      const x = raw * scale;
+      table[i] = x / (1 + Math.abs(x));
+    }
+  }
+  WARPED_WAVE_LOOKUP_CACHE.set(key, table);
+  return table;
+}
+
 export class ContinuousSynthEngine {
+  public static computeFormantVowelFrequencies = computeFormantVowelFrequencies;
+  public static clampCurveWindowBeforeGlide = clampCurveWindowBeforeGlide;
+  public static getOrCreateWarpedPeriodicWave = getOrCreateWarpedPeriodicWave;
   /**
    * Evaluates a WindowedModulationSpec (`peak`, `startNorm..endNorm`, or multi-point `curve`)
    * at normalized note progress `u` in `[0.0, 1.0]`, applying smooth cosine feathering at window
@@ -32,23 +148,39 @@ export class ContinuousSynthEngine {
   public static evaluateWindowedModulation(
     spec: WindowedModulationSpec | undefined,
     u: number,
-    defaultVal: number = 0
+    defaultVal: number = 0,
+    noteDurationSec: number = 0,
+    glideDurationSec: number = 0
   ): number {
     if (!spec) return defaultVal;
     const clampedU = Math.max(0, Math.min(1, u));
 
-    if (clampedU < spec.startNorm || clampedU > spec.endNorm) {
+    let startNorm = spec.startNorm;
+    let endNorm = spec.endNorm;
+    if (glideDurationSec > 0 && noteDurationSec > 0) {
+      const clampedWin = clampCurveWindowBeforeGlide(
+        0,
+        noteDurationSec,
+        spec.startNorm,
+        spec.endNorm,
+        glideDurationSec
+      );
+      startNorm = clampedWin.startSec / Math.max(0.02, noteDurationSec);
+      endNorm = (clampedWin.startSec + clampedWin.durationSec) / Math.max(0.02, noteDurationSec);
+    }
+
+    if (clampedU < startNorm || clampedU > endNorm) {
       return defaultVal;
     }
 
-    const windowSpan = Math.max(1e-5, spec.endNorm - spec.startNorm);
-    const localU = (clampedU - spec.startNorm) / windowSpan;
+    const windowSpan = Math.max(1e-5, endNorm - startNorm);
+    const localU = (clampedU - startNorm) / windowSpan;
 
     let edgeFeather = 1.0;
     const featherWidth = 0.12;
-    if (spec.startNorm > 0.001 && localU < featherWidth) {
+    if (startNorm > 0.001 && localU < featherWidth) {
       edgeFeather = 0.5 * (1 - Math.cos((Math.PI * localU) / featherWidth));
-    } else if (spec.endNorm < 0.999 && localU > 1 - featherWidth) {
+    } else if (endNorm < 0.999 && localU > 1 - featherWidth) {
       edgeFeather = 0.5 * (1 - Math.cos((Math.PI * (1 - localU)) / featherWidth));
     }
 
@@ -140,7 +272,11 @@ export class ContinuousSynthEngine {
       p === 'flutter_pad' ||
       p === 'riser' ||
       p === 'pluck_lead' ||
-      p === 'acid_lead'
+      p === 'acid_lead' ||
+      p === 'saw_lead' ||
+      p === 'swarmatron' ||
+      p === 'hauntology_pad' ||
+      p === 'buchla_krell'
     ) {
       return true;
     }
@@ -165,7 +301,13 @@ export class ContinuousSynthEngine {
         physics?.haasDelayMs ||
         physics?.analogSlop ||
         physics?.airSheen ||
-        physics?.preSwell
+        physics?.preSwell ||
+        physics?.swarmSpreadSemitones !== undefined ||
+        physics?.vowelFormant !== undefined ||
+        physics?.wavefoldAmount !== undefined ||
+        physics?.osmoseSqueeze !== undefined ||
+        physics?.voiceBend !== undefined ||
+        physics?.ratchet !== undefined
     );
   }
 
@@ -196,6 +338,9 @@ export class ContinuousSynthEngine {
     const isRiser = patch.includes('riser');
     const isFlutterPatch = patch.includes('flutter');
     const isPluckPatch = patch.includes('pluck') || patch.includes('acid');
+    const isSwarmatron = patch.includes('swarmatron') || phys?.swarmSpreadSemitones !== undefined;
+    const isHauntologyPad = patch.includes('hauntology');
+    const isBuchlaKrell = patch.includes('buchla') || patch.includes('krell');
 
     const chordNotes =
       item.chordVoices && item.chordVoices.length > 0
@@ -210,13 +355,23 @@ export class ContinuousSynthEngine {
           ];
 
     const numNotes = chordNotes.length;
-    // Scale unison count intelligently when a multi-note chord is coalesced (e.g. 2 unison x 7 notes = 14 oscs)
-    const numUnison = isReese ? 3 : numNotes >= 5 ? 2 : numNotes >= 3 ? 3 : 7;
+    // Scale unison count: 8 oscillators for Swarmatron, 3 for Hauntology/Reese, or adaptive chord unison
+    const numUnison = isSwarmatron
+      ? numNotes >= 4
+        ? 4
+        : 8
+      : isHauntologyPad || isReese
+        ? 3
+        : numNotes >= 5
+          ? 2
+          : numNotes >= 3
+            ? 3
+            : 7;
     const totalOscs = numNotes * numUnison;
 
     const slopAmount = Math.max(
       0,
-      Math.min(1, ((phys?.analogSlop ?? macros.slop ?? 18) as number) / 100)
+      Math.min(1, ((phys?.analogSlop ?? macros.slop ?? (isHauntologyPad ? 32 : 18)) as number) / 100)
     );
 
     const oscPhases = new Float32Array(totalOscs);
@@ -296,11 +451,16 @@ export class ContinuousSynthEngine {
         ? macros.cutoff > 127
           ? Number(macros.cutoff)
           : 180 * Math.pow(12000 / 180, Number(macros.cutoff) / 127)
-        : isReese
-          ? 520
-          : 7800);
+        : isHauntologyPad
+          ? 900
+          : isReese
+            ? 520
+            : isSwarmatron
+              ? 3400
+              : 7800);
 
-    const baseRes = phys?.resonance ?? (isPluckPatch ? 3.2 : 1.2);
+    const baseRes =
+      phys?.resonance ?? (isHauntologyPad ? 0.7 : isPluckPatch ? 3.2 : isSwarmatron ? 1.8 : 1.2);
     const qDamp = Math.max(0.12, Math.min(1.0, 1.0 / Math.max(0.6, baseRes * 0.7)));
     const invSampleRate = 1.0 / sampleRate;
     const durFrames = Math.max(1, Math.floor(item.durSec * sampleRate));
@@ -309,16 +469,19 @@ export class ContinuousSynthEngine {
     const subLevel =
       macros.sub_level !== undefined
         ? Number(macros.sub_level) / 100
-        : isReese
-          ? 0.85
-          : 0.42;
+        : isHauntologyPad
+          ? 0.2
+          : isReese
+            ? 0.85
+            : 0.42;
     const lowestNoteFreq = Math.min(...chordNotes.map((n) => n.freq));
     const airPct =
       (phys?.airSheen ?? (macros.air ? Number(macros.air) : patch === 'supersaw' ? 55 : 0)) / 100;
     const hasPwm = Boolean(phys?.pwmDuty);
     const hasWaveMirror = phys?.waveWarpMode === 'mirror';
-    const hasWaveBend = phys?.waveWarpMode === 'bend';
-    const waveBendScale = 1 + (phys?.waveWarpAmount ?? 0.5) * 2.2;
+    const hasWaveBend = phys?.waveWarpMode === 'bend' || isHauntologyPad;
+    const waveBendScale = 1 + (phys?.waveWarpAmount ?? (isHauntologyPad ? 0.3 : 0.5)) * 2.2;
+    const hasBuchlaFold = isBuchlaKrell || phys?.wavefoldAmount !== undefined;
     const chordAmpAvg =
       chordNotes.reduce((acc, n) => acc + n.amp, 0) / Math.max(1, numNotes);
 
@@ -333,7 +496,15 @@ export class ContinuousSynthEngine {
 
       // 1. Amplitude Envelope at k-rate
       let ampEnv = 1.0;
-      if (phys?.preSwell) {
+      if (phys?.osmoseSqueeze !== undefined && phys.osmoseSqueeze > 0) {
+        const sqNorm = Math.max(0.1, Math.min(1.0, phys.osmoseSqueeze / 100));
+        if (midSample <= durFrames) {
+          ampEnv = 0.25 + 0.75 * Math.sin(normU * Math.PI) * sqNorm;
+        } else {
+          const relProg = (midSample - durFrames) / Math.max(1, len - durFrames);
+          ampEnv = 0.45 * Math.pow(Math.max(0, 1 - relProg), 1.6);
+        }
+      } else if (phys?.preSwell) {
         if (midSample <= durFrames) {
           ampEnv = Math.pow(normU, 2.6);
         } else {
@@ -348,11 +519,15 @@ export class ContinuousSynthEngine {
           ampEnv = item.endAmp * Math.pow(Math.max(0, 1 - relProg), 1.6);
         }
       } else {
-        const attackSec = isPluckPatch ? 0.003 : 0.008;
+        const attackSec = isHauntologyPad ? Math.min(0.8, item.durSec * 0.35) : isPluckPatch ? 0.003 : 0.008;
         if (t < attackSec) {
-          ampEnv = t / attackSec;
+          ampEnv = t / Math.max(0.001, attackSec);
         } else if (midSample <= durFrames) {
-          ampEnv = isPluckPatch ? 0.35 + 0.65 * Math.exp(-(t - attackSec) * 6.5) : 0.92;
+          ampEnv = isPluckPatch
+            ? 0.35 + 0.65 * Math.exp(-(t - attackSec) * 6.5)
+            : isBuchlaKrell
+              ? 0.45 + 0.5 * (0.5 + 0.5 * Math.sin(2 * Math.PI * 1.8 * t))
+              : 0.92;
         } else {
           const relProg = (midSample - durFrames) / Math.max(1, len - durFrames);
           ampEnv = 0.92 * Math.pow(Math.max(0, 1 - relProg), 1.6);
@@ -415,11 +590,25 @@ export class ContinuousSynthEngine {
         syncRatio = phys.syncSweep[0] + (phys.syncSweep[1] - phys.syncSweep[0]) * normU;
       }
 
-      // 3. Windowed Unison Detune & Stereo Pan Gains at k-rate
+      // 3. Windowed Unison Detune, Swarmatron Ribbon Spread & Stereo Pan Gains at k-rate
       const activeDetunePct = phys?.detuneMod
         ? this.evaluateWindowedModulation(phys.detuneMod, normU, 8)
-        : baseDetunePct;
-      const maxSpreadOctaves = ((activeDetunePct / 100) * (isReese ? 34 : 42)) / 1200;
+        : isHauntologyPad && phys?.detune === undefined
+          ? 20
+          : baseDetunePct;
+      const activeSwarmSt = phys?.swarmMod
+        ? this.evaluateWindowedModulation(phys.swarmMod, normU, 0.2)
+        : typeof phys?.swarmSpreadSemitones === 'number'
+          ? phys.swarmSpreadSemitones
+          : isSwarmatron
+            ? 1.8
+            : 0;
+      const maxSpreadOctaves =
+        activeSwarmSt > 0
+          ? (activeSwarmSt * 0.5) / 12
+          : isHauntologyPad && phys?.detune === undefined
+            ? 8 / 1200
+            : ((activeDetunePct / 100) * (isReese ? 34 : 42)) / 1200;
 
       let widthScalar = baseWidthScalar;
       if (hasDynamicWidthCurve && phys?.widthCurve) {
@@ -440,6 +629,17 @@ export class ContinuousSynthEngine {
           const smoothB = bFrac * bFrac * (3 - 2 * bFrac);
           const bendSt = bendArr[b0] + (bendArr[b1] - bendArr[b0]) * smoothB;
           if (bendSt !== 0) noteBendMultiplier = Math.pow(2, bendSt / 12);
+        }
+
+        if (phys?.voiceBend && nIdx === phys.voiceBend.voiceIndex) {
+          const vb = phys.voiceBend;
+          const sW = vb.startWindow ?? 0;
+          const eW = vb.endWindow ?? 1;
+          if (normU >= sW && normU <= eW) {
+            const localU = (normU - sW) / Math.max(1e-4, eW - sW);
+            const env = Math.sin(localU * Math.PI);
+            noteBendMultiplier *= Math.pow(2, (vb.cents * env) / 1200);
+          }
         }
 
         const baseNoteFreq =
@@ -489,13 +689,32 @@ export class ContinuousSynthEngine {
         ? this.evaluateWindowedModulation(phys.noiseMod, normU, 0)
         : baseNoise;
 
-      const modCutoffHz = phys?.cutoffMod
+      let modCutoffHz = phys?.cutoffMod
         ? this.evaluateWindowedModulation(phys.cutoffMod, normU, baseCutoffHz)
         : phys?.preSwell
           ? 240 + (baseCutoffHz - 240) * Math.pow(normU, 2.2)
           : baseCutoffHz;
+
+      if (phys?.vowelFormant) {
+        const [f1From, f2From] = computeFormantVowelFrequencies(phys.vowelFormant.from);
+        const [f1To, f2To] = computeFormantVowelFrequencies(phys.vowelFormant.to);
+        const vLfo = 0.5 + 0.5 * Math.sin(2 * Math.PI * phys.vowelFormant.rateHz * songTimeSec);
+        const f1Active = f1From + (f1To - f1From) * vLfo;
+        const f2Active = f2From + (f2To - f2From) * vLfo;
+        modCutoffHz = 0.45 * f1Active + 0.55 * f2Active;
+      }
+
       const effectiveCutoff = Math.max(60, Math.min(15500, modCutoffHz * keytrackRatio));
       const svfF = Math.min(0.85, 2 * Math.sin((Math.PI * effectiveCutoff) * invSampleRate));
+
+      const activeFoldPct = phys?.wavefoldMod
+        ? this.evaluateWindowedModulation(phys.wavefoldMod, normU, 0)
+        : typeof phys?.wavefoldAmount === 'number'
+          ? phys.wavefoldAmount
+          : isBuchlaKrell
+            ? 65
+            : 0;
+      const foldDrive = activeFoldPct > 0 ? 1 + (activeFoldPct / 100) * 3.8 : 1.0;
 
       const driveVal = phys?.driveMod
         ? this.evaluateWindowedModulation(phys.driveMod, normU, 0)
@@ -508,7 +727,8 @@ export class ContinuousSynthEngine {
         (item.swell === 'crescendo' || item.swell === 'diminuendo' ? 1.0 : chordAmpAvg) *
         0.78;
 
-      const isFastSawPath = !hasPwm && !hasWaveMirror && !hasWaveBend && fmPhaseInc === 0;
+      const isFastSawPath =
+        !hasPwm && !hasWaveMirror && !hasWaveBend && !hasBuchlaFold && fmPhaseInc === 0;
 
       // 4. Tight Branchless Inner Sample Loop (64 samples)
       for (let i = blockStart; i < blockEnd; i++) {
@@ -542,13 +762,23 @@ export class ContinuousSynthEngine {
             if (p >= 1) p -= 1;
             else if (p < 0) p += 1;
 
-            let oscSample = hasPwm ? (p < pwmThreshold ? 0.85 : -0.85) : 2 * p - 1;
+            let oscSample = hasPwm
+              ? p < pwmThreshold
+                ? 0.85
+                : -0.85
+              : isHauntologyPad || isBuchlaKrell
+                ? 1 - 4 * Math.abs(p - 0.5)
+                : 2 * p - 1;
 
             if (hasWaveMirror) {
               oscSample = Math.abs(oscSample) * 2 - 0.8;
             } else if (hasWaveBend) {
               const x = oscSample * waveBendScale;
               oscSample = x / (1 + Math.abs(x));
+            }
+
+            if (hasBuchlaFold && foldDrive > 1.01) {
+              oscSample = Math.sin(oscSample * foldDrive * Math.PI * 0.5);
             }
 
             sigL += oscSample * oscGainL[o];

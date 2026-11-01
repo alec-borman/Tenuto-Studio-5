@@ -9,8 +9,65 @@ export interface PitchResult {
   microtoneCents?: number;
 }
 
+export type SynthTemperament =
+  | '12tet'
+  | 'just'
+  | 'carlos_alpha'
+  | 'carlos_beta'
+  | 'carlos_gamma';
+
+const JUST_INTONATION_CENTS_OFFSET: Record<number, number> = {
+  0: 0,
+  1: 11.73,
+  2: 3.91,
+  3: 15.64,
+  4: -13.69,
+  5: -1.96,
+  6: -9.78,
+  7: 1.96,
+  8: 13.69,
+  9: -15.64,
+  10: 17.6,
+  11: -11.73,
+};
+
+/**
+ * Applies Wendy Carlos non-octave equal temperaments (Alpha: 78.0c/step, Beta: 63.8c/step,
+ * Gamma: 35.1c/step), pure Just Intonation, and global master_tune cent offsets (-100..+100c).
+ */
+export function applyTemperamentAndMasterTune(
+  baseFreqHz: number,
+  midiNote: number,
+  temperament: string = '12tet',
+  masterTuneCents: number = 0,
+  rootMidi: number = 60
+): number {
+  let centsDelta = Number.isFinite(masterTuneCents) ? masterTuneCents : 0;
+  const stepsFromRoot = midiNote - rootMidi;
+  const normTemperament = (temperament || '12tet').toLowerCase();
+
+  if (normTemperament === 'carlos_alpha') {
+    // 78.0 cents per step instead of 100 cents
+    centsDelta += stepsFromRoot * (78.0 - 100.0);
+  } else if (normTemperament === 'carlos_beta') {
+    // 63.8 cents per step instead of 100 cents
+    centsDelta += stepsFromRoot * (63.8 - 100.0);
+  } else if (normTemperament === 'carlos_gamma') {
+    // 35.1 cents per step instead of 100 cents
+    centsDelta += stepsFromRoot * (35.1 - 100.0);
+  } else if (normTemperament === 'just') {
+    const degree = ((stepsFromRoot % 12) + 12) % 12;
+    centsDelta += JUST_INTONATION_CENTS_OFFSET[degree] ?? 0;
+  }
+
+  if (centsDelta === 0) return baseFreqHz;
+  return baseFreqHz * Math.pow(2, centsDelta / 1200);
+}
+
 export interface TuningConfiguration {
   system?: string;
+  temperament?: string;
+  masterTuneCents?: number;
   rootKey?: string;
   scaleName?: string;
   scaleLock?: boolean;
@@ -138,6 +195,8 @@ export const BUILTIN_TUNING_CENTS: Record<string, number[]> = {
   '24tet': Array.from({ length: 24 }, (_, i) => ((i + 1) * 1200) / 24),
   '31tet': Array.from({ length: 31 }, (_, i) => ((i + 1) * 1200) / 31),
   carlos_alpha: Array.from({ length: 9 }, (_, i) => (i + 1) * 78.0),
+  carlos_beta: Array.from({ length: 11 }, (_, i) => (i + 1) * 63.8),
+  carlos_gamma: Array.from({ length: 20 }, (_, i) => (i + 1) * 35.1),
   bohlen_pierce: Array.from({ length: 13 }, (_, i) => ((i + 1) * 1901.955) / 13),
   slendro: [240, 480, 720, 960, 1200],
   pelog: [120, 270, 540, 670, 785, 950, 1200],
@@ -283,12 +342,29 @@ export class PitchEngine {
       }
     }
 
-    if (!centsTable || systemKey === '12tet') {
-      return a4Hz * Math.pow(2, (midi - 69 + extraCents / 100) / 12);
-    }
-
     const { rootSemitone } = parseKeyRootSemitone(this.tuningConfig.rootKey || 'C');
     const rootMidi = 60 + rootSemitone; // Anchor tuning root in Octave 4
+    const masterTuneCents = this.tuningConfig.masterTuneCents || 0;
+    const temperament = this.tuningConfig.temperament;
+
+    if (temperament && temperament.toLowerCase() !== '12tet') {
+      const baseFreq = a4Hz * Math.pow(2, (midi - 69 + extraCents / 100) / 12);
+      return applyTemperamentAndMasterTune(
+        baseFreq,
+        midi,
+        temperament,
+        masterTuneCents,
+        rootMidi
+      );
+    }
+
+    if (!centsTable || systemKey === '12tet') {
+      const baseFreq = a4Hz * Math.pow(2, (midi - 69 + extraCents / 100) / 12);
+      return masterTuneCents !== 0
+        ? applyTemperamentAndMasterTune(baseFreq, midi, '12tet', masterTuneCents, rootMidi)
+        : baseFreq;
+    }
+
     const rootFreq = a4Hz * Math.pow(2, (rootMidi - 69) / 12);
 
     const degreeCount = centsTable.length;
@@ -298,7 +374,7 @@ export class PitchEngine {
     const periods = Math.floor(stepsFromRoot / degreeCount);
     const degreeIdx = ((stepsFromRoot % degreeCount) + degreeCount) % degreeCount;
     const degreeCents = degreeIdx === 0 ? 0 : centsTable[degreeIdx - 1];
-    const totalCents = periods * periodCents + degreeCents + extraCents;
+    const totalCents = periods * periodCents + degreeCents + extraCents + masterTuneCents;
 
     return rootFreq * Math.pow(2, totalCents / 1200.0);
   }

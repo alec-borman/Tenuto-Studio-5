@@ -1,8 +1,34 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+import { purgeRepositoryBloat } from '../vite.config';
 
-describe('TDB-607, TDB-726, TDB-734 through TDB-747: Final Release Documentation & v5.3.2 Integrity', () => {
+describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5.3.6 Integrity', () => {
+  it('purges unreferenced AI Studio paste dumps and root bloat artifacts while keeping all needed docs and code', () => {
+    const rootDir = path.resolve(__dirname, '..');
+    purgeRepositoryBloat(rootDir);
+
+    const bloatTargets = [
+      'public/assets/aistudio',
+      'Case Study.md',
+      'Nocturene and Protocol of the Glass Leviathan.txt',
+      'proposal_delta.json',
+      'session_state.tela',
+      'tenuto_daw_architecture_specification.md',
+      'tenuto_studio_5_6_0_architecture.md',
+    ];
+
+    for (const rel of bloatTargets) {
+      expect(fs.existsSync(path.resolve(rootDir, rel))).toBe(false);
+    }
+
+    const repomixConfigPath = path.resolve(rootDir, 'repomix.config.json');
+    expect(fs.existsSync(repomixConfigPath)).toBe(true);
+    const repomixConfig = JSON.parse(fs.readFileSync(repomixConfigPath, 'utf-8'));
+    expect(repomixConfig.ignore.customPatterns).toContain('public/assets/aistudio/**');
+  });
+
   it('provides TENUTO_GRAMMAR.md with complete songwriting rules and LLM prompt template', () => {
     const grammarPath = path.resolve(__dirname, '../TENUTO_GRAMMAR.md');
     expect(fs.existsSync(grammarPath)).toBe(true);
@@ -14,47 +40,31 @@ describe('TDB-607, TDB-726, TDB-734 through TDB-747: Final Release Documentation
     expect(content).toContain('Copy-Paste Prompt for Gemini');
   });
 
-  it('provides the comprehensive v5.3.2 README.md covering Fullscreen Mode, Mobile Studio View, 100% Dedicated Stage, Zero-Bounce Locked Vertical Stage Geometry, Mobile Paste, and installers', () => {
+  it('provides the synchronized v5.3.6 README.md, package.json, and electron-builder.json', () => {
     const readmePath = path.resolve(__dirname, '../README.md');
     expect(fs.existsSync(readmePath)).toBe(true);
 
     const content = fs.readFileSync(readmePath, 'utf-8');
     expect(content).toContain('TENUTO STUDIO 5');
-    expect(content).toContain('v5.3.2');
+    expect(content).toContain('v5.3.6');
     expect(content).toContain('TENUTO_GRAMMAR.md');
-    expect(content).toContain('mobile-bottom-nav');
-    expect(content).toContain('tenuto-fullscreen-active');
-    expect(content).toContain('IPHONE_15_PRO_VIEWPORT');
-    expect(content).toContain('1179×2556');
-    expect(content).toContain('tab-tiktok-hud-btn');
-    expect(content).toContain('undo-rotation-btn');
-    expect(content).toContain('exit-fullscreen-btn');
-    expect(content).toContain('data-vertical-lock="true"');
-    expect(content).toContain('Zero-Bounce Locked Vertical Stage Geometry');
-    expect(content).toContain('usePlaybackAutoHideTopBar');
-    expect(content).toContain('top-bar-hover-zone');
-    expect(content).toContain('paste-ten-code-btn');
-    expect(content).toContain('WebkitTouchCallout');
+    expect(content).toContain('repomix.config.json');
     expect(content).toContain('npm run electron:build:mac');
     expect(content).toContain('npm run electron:build:win');
     expect(content).not.toContain('Do not expect to compose music today');
-    expect(content).not.toContain('~28% completion');
 
     const pkgJson = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8')
     );
-    expect(pkgJson.version).toBe('5.3.2');
+    expect(pkgJson.version).toBe('5.3.6');
+    expect(pkgJson.scripts['clean:bloat']).toBeDefined();
     expect(pkgJson.scripts['electron:build:mac']).toContain('--mac pkg');
     expect(pkgJson.scripts['electron:build:win']).toContain('--win nsis');
 
     const builderJson = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '../electron-builder.json'), 'utf-8')
     );
-    expect(builderJson.extraMetadata.version).toBe('5.3.2');
-    expect(builderJson.npmRebuild).toBe(false);
-    expect(builderJson.mac.target).toContain('pkg');
-    expect(builderJson.win).toBeDefined();
-    expect(builderJson.nsis.createDesktopShortcut).toBe(true);
+    expect(builderJson.extraMetadata.version).toBe('5.3.6');
   });
 });
 

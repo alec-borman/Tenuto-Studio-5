@@ -1,0 +1,27 @@
+{
+  "output": {
+    "filePath": "repomix-output.xml",
+    "style": "xml",
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "topFilesLength": 10
+  },
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "public/assets/aistudio/**",
+      "release/**",
+      "dist/**",
+      "node_modules/**",
+      "coverage/**",
+      "repomix-output.*",
+      "*.tela",
+      "proposal_delta.json",
+      "Case Study.md",
+      "Nocturene and Protocol of the Glass Leviathan.txt",
+      "tenuto_daw_architecture_specification.md",
+      "tenuto_studio_5_6_0_architecture.md"
+    ]
+  }
+}

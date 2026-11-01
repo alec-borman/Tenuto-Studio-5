@@ -1,7 +1,28 @@
 import { ASTSerializer, AtomicEvent, WarpMode } from './ASTSerializer';
+import { applyTemperamentAndMasterTune } from './PitchEngine';
 import { TemporalResult } from './TemporalEngine';
 import { AutomationLane, compileAutomationLanes } from '../audio/AutomationEngine';
 import { ContinuousSynthEngine } from '../audio/synths/ContinuousSynthEngine';
+
+export type ScoreEvent = AtomicEvent;
+
+const HARMONIC_PLANE_INTERVALS: Record<string, number[]> = {
+  m9: [0, 3, 7, 10, 14],
+  maj9: [0, 4, 7, 11, 14],
+  m7: [0, 3, 7, 10],
+  maj7: [0, 4, 7, 11],
+  sus4: [0, 5, 7, 10, 14],
+  sus2: [0, 2, 7, 10, 14],
+};
+
+const SEMITONE_SHARP_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+function midiToSharpNoteName(midi: number): string {
+  const rounded = Math.round(midi);
+  const octave = Math.floor(rounded / 12) - 1;
+  const degree = ((rounded % 12) + 12) % 12;
+  return `${SEMITONE_SHARP_NAMES[degree]}${octave}`;
+}
 
 export interface FXChainItem {
   type: string;
@@ -96,6 +117,9 @@ export interface ScoreMeta {
   scale?: string;
   scaleLock?: boolean;
   tuning?: string;
+  temperament?: string;
+  masterTune?: number;
+  master_tune?: number;
   a4Hz?: number;
   quantizeLaunch?: string;
   crossfader?: number;
@@ -589,6 +613,36 @@ export class DocumentParser {
             }
           }
 
+          if (sharedPhysics?.harmonicPlane && chordEvents.length > 0) {
+            const planeType = sharedPhysics.harmonicPlane.toLowerCase();
+            const intervals = HARMONIC_PLANE_INTERVALS[planeType] || HARMONIC_PLANE_INTERVALS.m9;
+            const rootEv = [...chordEvents].sort((a, b) => a.pitch.midi - b.pitch.midi)[0];
+            const baseMidi = rootEv.pitch.midi;
+            const baseFreq = rootEv.pitch.frequency || 440 * Math.pow(2, (baseMidi - 69) / 12);
+            chordEvents.length = 0;
+            for (const semi of intervals) {
+              const m = baseMidi + semi;
+              const f = baseFreq * Math.pow(2, semi / 12);
+              chordEvents.push({
+                ...rootEv,
+                pitch: {
+                  midi: m,
+                  frequency: f,
+                  noteName: midiToSharpNoteName(m),
+                },
+                harmonicPlane: sharedPhysics.harmonicPlane,
+              });
+            }
+          }
+
+          if (sharedPhysics?.rootlessVoicing && chordEvents.length >= 3) {
+            chordEvents.sort((a, b) => a.pitch.midi - b.pitch.midi);
+            chordEvents.shift();
+            for (const cev of chordEvents) {
+              cev.rootlessVoicing = true;
+            }
+          }
+
           if (sharedPhysics?.openVoice && chordEvents.length >= 3) {
             const sorted = [...chordEvents].sort((a, b) => a.pitch.midi - b.pitch.midi);
             if (sorted[1] && sorted[1].pitch.midi >= 48) {
@@ -596,6 +650,22 @@ export class DocumentParser {
                 ...sorted[1].pitch,
                 midi: sorted[1].pitch.midi - 12,
                 frequency: sorted[1].pitch.frequency * 0.5,
+              };
+            }
+          }
+
+          if (sharedPhysics?.voiceBend && chordEvents.length > 0) {
+            const vb = sharedPhysics.voiceBend;
+            const sorted = [...chordEvents].sort((a, b) => a.pitch.midi - b.pitch.midi);
+            const targetVoice = sorted[Math.min(sorted.length - 1, Math.max(0, vb.voiceIndex))];
+            if (targetVoice) {
+              const bendSt = vb.cents / 100;
+              targetVoice.physics = {
+                ...(targetVoice.physics || {}),
+                mpe: {
+                  ...(targetVoice.physics?.mpe || {}),
+                  bend: [0, bendSt * 0.5, bendSt, bendSt * 0.5, 0],
+                },
               };
             }
           }
@@ -608,29 +678,67 @@ export class DocumentParser {
             });
           }
 
-          const rollSubdiv = sharedPhysics?.roll && sharedPhysics.roll > 1 ? sharedPhysics.roll : 1;
+          const chordPitchesArr = chordEvents.map((c) => c.pitch.midi);
+          const chordNamesArr = chordEvents.map((c) => c.pitch.noteName || midiToSharpNoteName(c.pitch.midi));
+          const chordFreqsArr = chordEvents.map((c) => c.pitch.frequency);
+          for (const cev of chordEvents) {
+            cev.pitches = chordPitchesArr;
+            cev.noteNames = chordNamesArr;
+            cev.frequencies = chordFreqsArr;
+          }
+
+          const ratchetSpec = sharedPhysics?.ratchet;
+          const rollSubdiv =
+            ratchetSpec && ratchetSpec.count > 1
+              ? ratchetSpec.count
+              : sharedPhysics?.roll && sharedPhysics.roll > 1
+                ? sharedPhysics.roll
+                : 1;
           if (rollSubdiv > 1 && chordDuration && !chordDuration.isGrace) {
             const subNum = chordDuration.numerator;
             const subDen = chordDuration.denominator * rollSubdiv;
             const div = this.gcd(subNum, subDen);
             const sliceDur = { numerator: subNum / div, denominator: subDen / div };
             let sliceCursor = { ...cursorTime };
+            const baseVel = sharedPhysics?.velocity ?? 80;
 
             for (let r = 0; r < rollSubdiv; r++) {
+              let subVel = baseVel;
+              if (ratchetSpec) {
+                if (ratchetSpec.curve === 'up') {
+                  const vStart = Math.max(20, Math.round(baseVel * 0.45));
+                  const vEnd = Math.min(127, Math.round(baseVel * 1.15));
+                  subVel =
+                    rollSubdiv > 1
+                      ? Math.round(vStart + ((vEnd - vStart) * r) / (rollSubdiv - 1))
+                      : baseVel;
+                } else if (ratchetSpec.curve === 'down') {
+                  const vStart = baseVel;
+                  const vEnd = Math.max(18, Math.round(baseVel * 0.25));
+                  subVel =
+                    rollSubdiv > 1
+                      ? Math.round(vStart + ((vEnd - vStart) * r) / (rollSubdiv - 1))
+                      : baseVel;
+                }
+              }
+
               for (const baseEv of chordEvents) {
                 const cloned: AtomicEvent = {
                   ...baseEv,
                   duration: { ...sliceDur },
                   startTime: { ...sliceCursor },
+                  velocity: subVel,
+                  ratchet: ratchetSpec ? { ...ratchetSpec } : undefined,
                   physics: baseEv.physics
                     ? {
                         ...baseEv.physics,
+                        velocity: subVel,
                         roll: undefined,
-                        legato: r > 0 ? true : baseEv.physics.legato,
+                        legato: r > 0 && !ratchetSpec ? true : baseEv.physics.legato,
                       }
-                    : r > 0
-                      ? { legato: true }
-                      : undefined,
+                    : r > 0 && !ratchetSpec
+                      ? { legato: true, velocity: subVel }
+                      : { velocity: subVel },
                 };
                 events.push(cloned);
               }
@@ -658,7 +766,59 @@ export class DocumentParser {
         ev.patch = trackDef.patch;
         ev.env = trackDef.env;
 
-        const rollCount = ev.physics?.roll && ev.physics.roll > 1 ? ev.physics.roll : 1;
+        // Handle Parallel Harmonic Planing (.plane("m9" | "maj9" | "m7" | "sus4")) on a single root note
+        if (ev.physics?.harmonicPlane && !ev.pitch.isRest && !ev.pitch.isSpacer) {
+          const planeType = ev.physics.harmonicPlane.toLowerCase();
+          const intervals = HARMONIC_PLANE_INTERVALS[planeType] || HARMONIC_PLANE_INTERVALS.m9;
+          // Parse raw pitch without scaleLock snapping so parallel planing root is exact
+          const rawPitchCore = token.split(':')[0].split('.')[0].trim();
+          const unquantizedSerializer = new ASTSerializer();
+          const rawParsed = unquantizedSerializer.parseToken(`${rawPitchCore}:4`, trackDef.style);
+          const rootMidi = rawParsed.pitch.midi || ev.pitch.midi;
+          const rootFreq = ev.pitch.frequency || 440 * Math.pow(2, (rootMidi - 69) / 12);
+
+          let activeIntervals = [...intervals];
+          if (ev.physics.rootlessVoicing && activeIntervals.length >= 3) {
+            activeIntervals = activeIntervals.slice(1);
+          }
+
+          const pitches = activeIntervals.map((semi) => rootMidi + semi);
+          const noteNames = pitches.map((m) => midiToSharpNoteName(m));
+          const frequencies = activeIntervals.map((semi) => rootFreq * Math.pow(2, semi / 12));
+
+          const planeEvents: AtomicEvent[] = activeIntervals.map((semi, idx) => {
+            const m = rootMidi + semi;
+            const f = frequencies[idx];
+            return {
+              ...ev,
+              pitch: {
+                midi: m,
+                frequency: f,
+                noteName: noteNames[idx],
+              },
+              pitches,
+              noteNames,
+              frequencies,
+              harmonicPlane: ev.physics?.harmonicPlane,
+              rootlessVoicing: Boolean(ev.physics?.rootlessVoicing),
+            };
+          });
+
+          events.push(...planeEvents);
+          if (!ev.duration.isGrace) {
+            cursorTime = this.addFractions(cursorTime, ev.duration);
+            voiceDuration = this.addFractions(voiceDuration, ev.duration);
+          }
+          continue;
+        }
+
+        const ratchetSpec = ev.physics?.ratchet;
+        const rollCount =
+          ratchetSpec && ratchetSpec.count > 1
+            ? ratchetSpec.count
+            : ev.physics?.roll && ev.physics.roll > 1
+              ? ev.physics.roll
+              : 1;
         const hasAuto = Boolean(
           ev.physics?.cc || (ev.physics?.automations && ev.physics.automations.length > 0)
         );
@@ -669,21 +829,44 @@ export class DocumentParser {
             const div = this.gcd(subNum, subDen);
             const sliceDur = { numerator: subNum / div, denominator: subDen / div };
             let sliceCursor = { ...cursorTime };
+            const baseVel = ev.physics?.velocity ?? 80;
 
             for (let r = 0; r < rollCount; r++) {
+              let subVel = baseVel;
+              if (ratchetSpec) {
+                if (ratchetSpec.curve === 'up') {
+                  const vStart = Math.max(20, Math.round(baseVel * 0.45));
+                  const vEnd = Math.min(127, Math.round(baseVel * 1.15));
+                  subVel =
+                    rollCount > 1
+                      ? Math.round(vStart + ((vEnd - vStart) * r) / (rollCount - 1))
+                      : baseVel;
+                } else if (ratchetSpec.curve === 'down') {
+                  const vStart = baseVel;
+                  const vEnd = Math.max(18, Math.round(baseVel * 0.25));
+                  subVel =
+                    rollCount > 1
+                      ? Math.round(vStart + ((vEnd - vStart) * r) / (rollCount - 1))
+                      : baseVel;
+                }
+              }
+
               events.push({
                 ...ev,
                 duration: { ...sliceDur },
                 startTime: { ...sliceCursor },
+                velocity: subVel,
+                ratchet: ratchetSpec ? { ...ratchetSpec } : undefined,
                 physics: ev.physics
                   ? {
                       ...ev.physics,
+                      velocity: subVel,
                       roll: undefined,
-                      legato: r > 0 ? true : ev.physics.legato,
+                      legato: r > 0 && !ratchetSpec ? true : ev.physics.legato,
                     }
-                  : r > 0
-                    ? { legato: true }
-                    : undefined,
+                  : r > 0 && !ratchetSpec
+                    ? { legato: true, velocity: subVel }
+                    : { velocity: subVel },
               });
               sliceCursor = this.addFractions(sliceCursor, sliceDur);
             }
@@ -885,6 +1068,20 @@ export class DocumentParser {
       if (typeof parsedMeta.scale === 'string') meta.scale = parsedMeta.scale;
       if (typeof parsedMeta.scale_lock === 'boolean') meta.scaleLock = parsedMeta.scale_lock;
       if (typeof parsedMeta.tuning === 'string') meta.tuning = parsedMeta.tuning;
+      if (typeof parsedMeta.temperament === 'string') {
+        meta.temperament = parsedMeta.temperament;
+        if (!meta.tuning) meta.tuning = parsedMeta.temperament;
+      }
+      if (typeof parsedMeta.master_tune === 'number') {
+        meta.masterTune = parsedMeta.master_tune;
+        meta.master_tune = parsedMeta.master_tune;
+      } else if (typeof parsedMeta.master_tune === 'string') {
+        const mt = parseFloat(parsedMeta.master_tune.replace(/c|cents/gi, '').trim());
+        if (!isNaN(mt)) {
+          meta.masterTune = mt;
+          meta.master_tune = mt;
+        }
+      }
       if (typeof parsedMeta.a4_hz === 'number') meta.a4Hz = parsedMeta.a4_hz;
       if (typeof parsedMeta.quantize_launch === 'string') meta.quantizeLaunch = parsedMeta.quantize_launch;
       else if (typeof parsedMeta.quantize === 'string') meta.quantizeLaunch = parsedMeta.quantize;
@@ -1157,6 +1354,8 @@ export class DocumentParser {
     // 6. Parse measure blocks and maintain per-track/voice sticky serializers across measures
     const tuningConfig = {
       system: meta.tuning || '12tet',
+      temperament: meta.temperament,
+      masterTuneCents: meta.masterTune ?? 0,
       rootKey: meta.key || 'C',
       scaleName: meta.scale || 'chromatic',
       scaleLock: Boolean(meta.scaleLock),
