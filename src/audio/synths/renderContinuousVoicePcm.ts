@@ -1,45 +1,132 @@
 import { ContinuousSynthEngine, ContinuousVoiceNote } from './ContinuousSynthEngine';
 import { AbletonAudioFxEngine } from '../fx/AbletonAudioFxEngine';
 
-/**
- * Pure (DOM-free) renderer for one ContinuousSynthEngine voice plus its `.fx(...)` chain.
- * Shared by the main-thread fallback and `voiceBakeWorker.ts` so both produce identical PCM.
- */
-export function continuousVoiceFrameCount(
-  item: ContinuousVoiceNote & { durSec: number },
-  sampleRate: number
-): number {
-  const art = item.event.physics?.articulation;
-  const relSec = art === 'stacc' || art === 'staccato' ? 0.14 : 0.28;
-  const totalSec = Math.max(0.06, item.durSec + relSec);
-  return Math.max(128, Math.floor(totalSec * sampleRate));
+export interface PcmBufferStats {
+  peak: number;
+  rms: number;
+  nanCount: number;
+  nonZeroFrames: number;
 }
 
+export interface RenderedContinuousVoicePcm extends PcmBufferStats {
+  left: Float32Array;
+  right: Float32Array;
+}
+
+/**
+ * Scrubs any NaN/Infinity values, soft-limits extreme runaway spikes (> 4.0) so WebAudio
+ * filters/compressors never blow up, and computes Peak + RMS + non-zero frame counts.
+ */
+export function measureAndSanitizeStereoPcm(
+  left: Float32Array,
+  right: Float32Array
+): PcmBufferStats {
+  const len = Math.min(left.length, right.length);
+  if (len === 0) {
+    return { peak: 0, rms: 0, nanCount: 0, nonZeroFrames: 0 };
+  }
+  let peak = 0;
+  let sumSq = 0;
+  let nanCount = 0;
+  let nonZeroFrames = 0;
+
+  for (let i = 0; i < len; i++) {
+    let l = left[i];
+    let r = right[i];
+
+    if (!Number.isFinite(l)) {
+      l = 0;
+      left[i] = 0;
+      nanCount++;
+    } else if (l > 4.0) {
+      l = 4.0;
+      left[i] = 4.0;
+    } else if (l < -4.0) {
+      l = -4.0;
+      left[i] = -4.0;
+    }
+
+    if (!Number.isFinite(r)) {
+      r = 0;
+      right[i] = 0;
+      nanCount++;
+    } else if (r > 4.0) {
+      r = 4.0;
+      right[i] = 4.0;
+    } else if (r < -4.0) {
+      r = -4.0;
+      right[i] = -4.0;
+    }
+
+    const absL = l < 0 ? -l : l;
+    const absR = r < 0 ? -r : r;
+    const maxLR = absL > absR ? absL : absR;
+    if (maxLR > peak) peak = maxLR;
+    if (maxLR > 1e-6) nonZeroFrames++;
+    sumSq += 0.5 * (l * l + r * r);
+  }
+
+  const rms = Math.sqrt(sumSq / len);
+  return { peak, rms, nanCount, nonZeroFrames };
+}
+
+/**
+ * Pure PCM renderer for a single `ContinuousSynthEngine` voice + its active FX chain.
+ * Runs identically on the main thread and inside `voiceBakeWorker`.
+ */
 export function renderContinuousVoicePcm(
-  item: ContinuousVoiceNote & { durSec: number; freq: number },
+  item: ContinuousVoiceNote,
   sampleRate: number,
   tempoBpm: number,
   voiceSeed: number
-): { left: Float32Array; right: Float32Array } {
-  const frames = continuousVoiceFrameCount(item, sampleRate);
-  const left = new Float32Array(frames);
-  const right = new Float32Array(frames);
+): RenderedContinuousVoicePcm {
+  const envRelease = item.def?.env?.release;
+  const baseReleaseSec = Math.min(0.45, Math.max(0.06, envRelease ? envRelease * 0.25 : 0.14));
+  const fxChain = AbletonAudioFxEngine.resolveActiveFxChain(item.def, item.event);
+  let fxTailSec = 0;
+  if (fxChain.length > 0) {
+    for (let i = 0; i < fxChain.length; i++) {
+      const fxType = fxChain[i].type.toLowerCase();
+      if (fxType.includes('reverb') || fxType.includes('echo') || fxType.includes('delay')) {
+        fxTailSec = 0.35;
+        break;
+      }
+    }
+  }
+  const releaseTailSec = baseReleaseSec + fxTailSec;
+  const totalFrames = Math.max(64, Math.ceil((item.durSec + releaseTailSec) * sampleRate));
+  const noteFrames = Math.max(32, Math.ceil(item.durSec * sampleRate));
+  const chL = new Float32Array(totalFrames);
+  const chR = new Float32Array(totalFrames);
+
   ContinuousSynthEngine.renderVoiceIntoTrackStem(
-    left,
-    right,
+    chL,
+    chR,
     0,
-    frames,
+    noteFrames,
     sampleRate,
     tempoBpm,
     voiceSeed,
     item
   );
-  const fxChain = AbletonAudioFxEngine.resolveActiveFxChain(item.def, item.event);
+
   if (fxChain.length > 0) {
-    AbletonAudioFxEngine.applyFxChainToSlice(left, right, 0, frames, sampleRate, fxChain, {
-      lyric: item.event.physics?.lyric,
-      carrierFreqHz: item.freq,
-    });
+    const fastChain = fxChain.filter((f) => f.type !== 'vocoder');
+    if (fastChain.length > 0) {
+      AbletonAudioFxEngine.applyFxChainToSlice(chL, chR, 0, totalFrames, sampleRate, fastChain, {
+        tempoBpm,
+        carrierFreqHz: item.freq,
+      });
+    }
   }
-  return { left, right };
+
+  const stats = measureAndSanitizeStereoPcm(chL, chR);
+  return {
+    left: chL,
+    right: chR,
+    peak: stats.peak,
+    rms: stats.rms,
+    nanCount: stats.nanCount,
+    nonZeroFrames: stats.nonZeroFrames,
+  };
 }

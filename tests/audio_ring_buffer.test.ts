@@ -112,4 +112,35 @@ describe('AudioRingBuffer & 30-Measure Crucible Stress Study', () => {
     expect(elapsedMs).toBeLessThan(500);
     expect(engine.voiceRingBuffer.currentFrames).toBeLessThanOrEqual(engine.voiceRingBuffer.maxFrames);
   });
+
+  it('records detailed multi-channel diagnostics and prevents stale worker queue starvation', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Ultraviolet Drift Diagnostic Check", tempo: 108, time: "4/4", key: "A", scale: "minor" }
+        def lead "Analog Saw Lead" style=synth patch="saw_lead" vol=92 detune=55 cutoff=3800
+        def arp "Pluck Synth Arp" style=synth patch="pluck_lead" vol=78 detune=40 cutoff=3200
+        measure 1 {
+          lead: r:2 e5:4.mp.legato g5:8.legato a5:8.legato |
+          arp:  a3:8.p e4:8 a4:8 b4:8 c5:8 b4:8 a4:8 e4:8 |
+        }
+        measure 2 {
+          lead: e5:2.mf.vib c5:4.mp.legato d5:4.legato |
+          arp:  f3:8.p c4:8 f4:8 g4:8 a4:8 g4:8 f4:8 c4:8 |
+        }
+      }
+    `);
+
+    const engine = new StudioAudioEngine();
+    const timeline = (engine as any).buildScheduledTimeline(score);
+    expect(timeline.length).toBeGreaterThanOrEqual(19);
+
+    for (let i = 0; i < timeline.length; i++) {
+      const res = renderContinuousVoicePcm(timeline[i], 44100, 108, i + 1);
+      expect(res.peak).toBeGreaterThan(0.01);
+      expect(res.rms).toBeGreaterThan(0.001);
+      expect(res.nanCount).toBe(0);
+    }
+  });
 });
+

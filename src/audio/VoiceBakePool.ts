@@ -3,14 +3,29 @@ import { playbackDiag } from './PlaybackDiagnostics';
 export interface BakedVoicePcm {
   left: Float32Array;
   right: Float32Array;
+  peak: number;
+  rms: number;
+  nanCount: number;
+  nonZeroFrames: number;
+  bakeMs: number;
+  queueWaitMs: number;
+}
+
+interface VoiceJobItemMeta {
+  startSec?: number;
+  durSec?: number;
+  patch?: string;
+  event?: { trackId?: string; measure?: number; beat?: number };
 }
 
 interface QueuedJob {
   jobId: number;
-  item: unknown;
+  item: VoiceJobItemMeta;
   sampleRate: number;
   tempoBpm: number;
   voiceSeed: number;
+  urgent: boolean;
+  enqueuedAtMs: number;
   resolve: (pcm: BakedVoicePcm) => void;
   reject: (err: Error) => void;
 }
@@ -23,12 +38,15 @@ interface ActiveJob extends QueuedJob {
 }
 
 /**
- * Small pool of dedicated workers that render synth voices off the main thread.
- * Uses a main-thread FIFO queue and dispatches at most 1 job per idle worker at a time:
- * - Per-job timeout (2,500ms) starts ONLY when the job is actually sent to an idle worker,
- *   preventing false queue-wait timeouts when 20+ voices are requested at once.
- * - `cancelPending()` on Stop/Play clears the waiting queue immediately in 0ms so workers
- *   never waste time grinding through stale jobs from a stopped session.
+ * Dedicated multi-worker pool that renders synth voices off the main thread.
+ *
+ * Key guarantees:
+ * - Earliest-`startSec`-first priority scheduling so the note closest to the playhead
+ *   is ALWAYS rendered first.
+ * - `cancelStaleJobs(playheadSec)` purges any queued job that the playhead has already
+ *   passed, preventing queue backlog starvation during dense passages.
+ * - `cancelQueuedBySeed(voiceSeed)` cancels a queued job if the main thread rendered
+ *   it synchronously as an urgent fallback.
  */
 export class VoiceBakePool {
   private workers: Worker[] = [];
@@ -43,7 +61,7 @@ export class VoiceBakePool {
     if (typeof Worker === 'undefined' || typeof window === 'undefined') return null;
     try {
       const pool = new VoiceBakePool();
-      const cores = Number((navigator as any)?.hardwareConcurrency) || 4;
+      const cores = Number((navigator as unknown as { hardwareConcurrency?: number })?.hardwareConcurrency) || 4;
       const count = Math.max(2, Math.min(4, cores - 1));
       for (let i = 0; i < count; i++) {
         const w = pool.spawnWorker();
@@ -99,23 +117,96 @@ export class VoiceBakePool {
       return Promise.reject(new Error('Voice bake pool unavailable'));
     }
     const jobId = this.nextJobId++;
+    const enqueuedAtMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const typedItem = (item || {}) as VoiceJobItemMeta;
+
     return new Promise<BakedVoicePcm>((resolve, reject) => {
       const job: QueuedJob = {
         jobId,
-        item,
+        item: typedItem,
         sampleRate,
         tempoBpm,
         voiceSeed,
+        urgent,
+        enqueuedAtMs,
         resolve,
         reject,
       };
-      if (urgent) {
-        this.queue.unshift(job);
-      } else {
-        this.queue.push(job);
-      }
+      this.queue.push(job);
+      this.sortQueueByUrgencyAndStartSec();
       this.dispatchNext();
     });
+  }
+
+  private sortQueueByUrgencyAndStartSec(): void {
+    if (this.queue.length <= 1) return;
+    this.queue.sort((a, b) => {
+      if (a.urgent !== b.urgent) return a.urgent ? -1 : 1;
+      const aStart = a.item.startSec ?? 0;
+      const bStart = b.item.startSec ?? 0;
+      if (aStart !== bStart) return aStart - bStart;
+      return a.jobId - b.jobId;
+    });
+  }
+
+  /**
+   * Purges any job still waiting in `this.queue` whose note window has already elapsed
+   * (`startSec + durSec <= playheadSec + 0.03`), freeing workers for upcoming notes.
+   */
+  public cancelStaleJobs(playheadSec: number): number {
+    if (this.queue.length === 0) return 0;
+    let cancelledCount = 0;
+    const keep: QueuedJob[] = [];
+    for (let i = 0; i < this.queue.length; i++) {
+      const q = this.queue[i];
+      const startSec = q.item.startSec ?? 0;
+      const durSec = q.item.durSec ?? 0.25;
+      // Drop queued jobs whose entire duration (or >85% of duration) is already behind the playhead
+      if (startSec + durSec * 0.85 <= playheadSec) {
+        cancelledCount++;
+        playbackDiag.recordWorkerEvent({
+          jobId: q.jobId,
+          event: 'cancel_stale',
+          trackId: q.item.event?.trackId || 'synth',
+          patch: q.item.patch || 'synth',
+          noteStartSec: startSec,
+          durSec,
+          activeWorkers: this.activeByJobId.size,
+          queuedJobs: this.queue.length - cancelledCount,
+        });
+        q.reject(new Error('Voice bake stale'));
+      } else {
+        keep.push(q);
+      }
+    }
+    this.queue = keep;
+    return cancelledCount;
+  }
+
+  /**
+   * If the main thread decides to synchronously render an imminent voice because its
+   * start time has arrived while it was still sitting in `this.queue`, remove it from
+   * `this.queue` so a worker doesn't waste time re-rendering it.
+   */
+  public cancelQueuedBySeed(voiceSeed: number): boolean {
+    const idx = this.queue.findIndex((q) => q.voiceSeed === voiceSeed);
+    if (idx < 0) return false;
+    const [removed] = this.queue.splice(idx, 1);
+    removed.reject(new Error('Voice bake superseded by sync render'));
+    return true;
+  }
+
+  /**
+   * Checks whether a specific `voiceSeed` is already actively being rendered by a worker
+   * (as opposed to sitting in the waiting queue).
+   */
+  public isActivelyRenderingSeed(voiceSeed: number): boolean {
+    for (const active of this.activeByJobId.values()) {
+      if (active.voiceSeed === voiceSeed && !active.cancelled) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private dispatchNext(): void {
@@ -128,7 +219,7 @@ export class VoiceBakePool {
       const dispatchedAtMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
       const timer = setTimeout(() => {
         this.handleJobTimeout(next.jobId);
-      }, 2500);
+      }, 3500);
 
       const active: ActiveJob = {
         ...next,
@@ -181,8 +272,13 @@ export class VoiceBakePool {
     this.activeByJobId.delete(jobId);
     this.activeByWorker.set(active.worker, null);
 
-    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    playbackDiag.recordWorkerTimeout(jobId, now - active.dispatchedAtMs);
+    playbackDiag.recordWorkerTimeout(
+      active.item.startSec ?? 0,
+      active.item.event?.measure ?? 1,
+      active.item.event?.beat ?? 1,
+      jobId,
+      active.item.event?.trackId
+    );
 
     // Terminate and respawn the stalled worker so the pool stays healthy
     this.replaceWorker(active.worker);
@@ -220,7 +316,6 @@ export class VoiceBakePool {
   }
 
   private handleWorkerError(w: Worker, err: Error): void {
-    playbackDiag.recordWorkerError(err.message);
     const active = this.activeByWorker.get(w);
     if (active) {
       clearTimeout(active.timer);
@@ -238,7 +333,17 @@ export class VoiceBakePool {
   }
 
   private handleMessage(w: Worker, e: MessageEvent): void {
-    const { jobId, left, right, error } = e.data || {};
+    const {
+      jobId,
+      left,
+      right,
+      peak = 0,
+      rms = 0,
+      nanCount = 0,
+      nonZeroFrames = 0,
+      bakeMs: workerBakeMs,
+      error,
+    } = e.data || {};
     const active = this.activeByJobId.get(jobId);
     if (!active) {
       this.activeByWorker.set(w, null);
@@ -251,14 +356,42 @@ export class VoiceBakePool {
     this.consecutiveTimeouts = 0;
 
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    playbackDiag.recordWorkerJobCompleted(now - active.dispatchedAtMs);
+    const roundTripMs = now - active.dispatchedAtMs;
+    const queueWaitMs = Math.max(0, active.dispatchedAtMs - active.enqueuedAtMs);
+    const bakeMs = typeof workerBakeMs === 'number' ? workerBakeMs : roundTripMs;
+
+    playbackDiag.recordWorkerEvent({
+      jobId,
+      event: 'complete',
+      trackId: active.item.event?.trackId || 'synth',
+      patch: active.item.patch || 'synth',
+      noteStartSec: active.item.startSec ?? 0,
+      durSec: active.item.durSec ?? 0,
+      urgent: active.urgent,
+      queueWaitMs,
+      bakeMs,
+      frames: left ? left.length : 0,
+      pcmPeak: peak,
+      pcmRms: rms,
+      pcmNanCount: nanCount,
+      activeWorkers: this.activeByJobId.size,
+      queuedJobs: this.queue.length,
+    });
 
     if (!active.cancelled) {
       if (error || !left || !right) {
-        playbackDiag.recordWorkerError(error || 'Empty voice bake result');
         active.reject(new Error(error || 'Empty voice bake result'));
       } else {
-        active.resolve({ left, right });
+        active.resolve({
+          left,
+          right,
+          peak,
+          rms,
+          nanCount,
+          nonZeroFrames,
+          bakeMs,
+          queueWaitMs,
+        });
       }
     }
     this.dispatchNext();

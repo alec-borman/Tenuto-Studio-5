@@ -1,44 +1,177 @@
+import { playbackDiag } from './PlaybackDiagnostics';
+
 /**
- * Bounded-Memory Circular Audio Ring Buffer Architecture:
- * 1. `VoicePcmRingBuffer`: Fixed-capacity circular ring buffer of stereo Float32 voice PCM slots
- *    with a strict frame/byte ceiling. As new synth voices are baked ahead of the playhead,
- *    the ring write cursor wraps around in O(1) time and overwrites the oldest slots so RAM
- *    never grows with score length (even across 30-60+ measure stress studies).
- * 2. `evictTimelineWindow`: Maintains a sliding circular active window of WebAudio `AudioBuffer`
- *    handles on the timeline (`[playheadSec - retainBehindSec, playheadSec + retainAheadSec]`),
- *    releasing buffers outside the active window.
- * 3. `StereoDelayRingBuffer`: Power-of-two circular delay line for reverb/echo/delay DSP effects
- *    so FX processors use tiny fixed ring buffers instead of allocating full-note arrays.
+ * Fixed-Capacity Circular Ring Buffer for Prebaked Stereo Voice PCM & Streaming Delay Lines.
+ *
+ * Prevents unbounded heap growth or buffer overruns on long/dense pieces (e.g. 30-measure
+ * polyphonic stress studies) by overwriting the oldest ring slot in O(1) time once the
+ * circular capacity (`maxSlots` or `maxTotalFrames`) is reached.
  */
 
-export interface VoicePcmSlot {
+export interface VoicePcmSlotEntry {
   key: string;
   left: Float32Array;
   right: Float32Array;
   frames: number;
   slotIndex: number;
-  audioBuffer?: AudioBuffer;
-}
-
-export interface TimelineRingItem {
-  startSec: number;
-  durSec: number;
-  prebakedBuffer?: AudioBuffer;
+  peak: number;
+  rms: number;
+  nanCount: number;
 }
 
 export class VoicePcmRingBuffer {
   private readonly maxSlots: number;
   private readonly maxTotalFrames: number;
-  private readonly slots: Array<VoicePcmSlot | null>;
-  private readonly keyToSlot = new Map<string, VoicePcmSlot>();
-  private writeCursor = 0;
-  private evictCursor = 0;
-  private totalFrames = 0;
+  private readonly slots: Array<VoicePcmSlotEntry | null>;
+  private readonly keyToSlot: Map<string, number> = new Map();
+  private writeHead: number = 0;
+  private evictionCursor: number = 0;
+  private currentTotalFrames: number = 0;
+  private totalEvictions: number = 0;
 
-  constructor(maxSlots: number = 96, maxTotalFrames: number = 44100 * 96) {
-    this.maxSlots = Math.max(2, maxSlots | 0);
-    this.maxTotalFrames = Math.max(256, maxTotalFrames | 0);
-    this.slots = new Array<VoicePcmSlot | null>(this.maxSlots).fill(null);
+  constructor(maxSlots: number = 512, maxTotalFrames: number = 48000 * 600) {
+    this.maxSlots = Math.max(4, maxSlots);
+    this.maxTotalFrames = Math.max(256, maxTotalFrames);
+    this.slots = new Array<VoicePcmSlotEntry | null>(this.maxSlots).fill(null);
+  }
+
+  public get(key: string): {
+    left: Float32Array;
+    right: Float32Array;
+    peak: number;
+    rms: number;
+    nanCount: number;
+  } | undefined {
+    const slotIdx = this.keyToSlot.get(key);
+    if (slotIdx === undefined) {
+      playbackDiag.recordRingBufferMiss(key);
+      return undefined;
+    }
+    const entry = this.slots[slotIdx];
+    if (!entry || entry.key !== key) {
+      this.keyToSlot.delete(key);
+      playbackDiag.recordRingBufferMiss(key);
+      return undefined;
+    }
+    playbackDiag.recordRingBufferHit(key, slotIdx, entry.frames);
+    return {
+      left: entry.left,
+      right: entry.right,
+      peak: entry.peak,
+      rms: entry.rms,
+      nanCount: entry.nanCount,
+    };
+  }
+
+  public has(key: string): boolean {
+    const slotIdx = this.keyToSlot.get(key);
+    if (slotIdx === undefined) return false;
+    const entry = this.slots[slotIdx];
+    return Boolean(entry && entry.key === key);
+  }
+
+  public write(
+    key: string,
+    left: Float32Array,
+    right: Float32Array,
+    stats?: { peak?: number; rms?: number; nanCount?: number }
+  ): void {
+    const frames = Math.max(left.length, right.length);
+    if (frames <= 0 || frames > this.maxTotalFrames) return;
+
+    const peak = stats?.peak ?? 0;
+    const rms = stats?.rms ?? 0;
+    const nanCount = stats?.nanCount ?? 0;
+
+    // Update in-place if key already occupies a ring slot
+    const existingSlot = this.keyToSlot.get(key);
+    if (existingSlot !== undefined) {
+      const prev = this.slots[existingSlot];
+      if (prev && prev.key === key) {
+        this.currentTotalFrames = Math.max(0, this.currentTotalFrames - prev.frames) + frames;
+        this.slots[existingSlot] = {
+          key,
+          left,
+          right,
+          frames,
+          slotIndex: existingSlot,
+          peak,
+          rms,
+          nanCount,
+        };
+        return;
+      }
+      this.keyToSlot.delete(key);
+    }
+
+    let evictedCountThisWrite = 0;
+
+    // Evict oldest slots along the circular ring until frame budget fits the new voice
+    let guard = 0;
+    while (
+      this.currentTotalFrames + frames > this.maxTotalFrames &&
+      this.keyToSlot.size > 0 &&
+      guard < this.maxSlots
+    ) {
+      if (this.evictSlot(this.evictionCursor)) {
+        evictedCountThisWrite++;
+      }
+      this.evictionCursor = (this.evictionCursor + 1) % this.maxSlots;
+      guard++;
+    }
+
+    // Overwrite the slot at writeHead (circular ring wrap-around)
+    const targetSlot = this.writeHead;
+    if (this.slots[targetSlot] !== null) {
+      if (this.evictSlot(targetSlot)) {
+        evictedCountThisWrite++;
+      }
+    }
+
+    this.slots[targetSlot] = {
+      key,
+      left,
+      right,
+      frames,
+      slotIndex: targetSlot,
+      peak,
+      rms,
+      nanCount,
+    };
+    this.keyToSlot.set(key, targetSlot);
+    this.currentTotalFrames += frames;
+    this.writeHead = (this.writeHead + 1) % this.maxSlots;
+
+    playbackDiag.recordRingBufferWrite(
+      key,
+      targetSlot,
+      frames,
+      this.keyToSlot.size,
+      this.maxSlots,
+      this.currentTotalFrames,
+      this.maxTotalFrames,
+      evictedCountThisWrite
+    );
+  }
+
+  private evictSlot(slotIndex: number): boolean {
+    const existing = this.slots[slotIndex];
+    if (!existing) return false;
+    if (this.keyToSlot.get(existing.key) === slotIndex) {
+      this.keyToSlot.delete(existing.key);
+    }
+    this.currentTotalFrames = Math.max(0, this.currentTotalFrames - existing.frames);
+    this.slots[slotIndex] = null;
+    this.totalEvictions++;
+    return true;
+  }
+
+  public clear(): void {
+    this.slots.fill(null);
+    this.keyToSlot.clear();
+    this.writeHead = 0;
+    this.evictionCursor = 0;
+    this.currentTotalFrames = 0;
   }
 
   public get size(): number {
@@ -50,160 +183,113 @@ export class VoicePcmRingBuffer {
   }
 
   public get currentFrames(): number {
-    return this.totalFrames;
+    return this.currentTotalFrames;
+  }
+
+  public get totalFrames(): number {
+    return this.currentTotalFrames;
   }
 
   public get maxFrames(): number {
     return this.maxTotalFrames;
   }
 
-  public get writeIndex(): number {
-    return this.writeCursor;
-  }
-
-  public has(key: string): boolean {
-    return this.keyToSlot.has(key);
-  }
-
-  public getSlot(key: string): VoicePcmSlot | undefined {
-    return this.keyToSlot.get(key);
-  }
-
-  public get(key: string): { left: Float32Array; right: Float32Array } | undefined {
-    const slot = this.keyToSlot.get(key);
-    if (!slot) return undefined;
-    return { left: slot.left, right: slot.right };
-  }
-
-  /**
-   * Writes a stereo PCM buffer into the next slot of the circular ring buffer,
-   * automatically overwriting the slot at `writeCursor` and evicting oldest ring
-   * slots if `totalFrames` exceeds `maxTotalFrames`.
-   */
-  public write(key: string, left: Float32Array, right: Float32Array): void {
-    const frames = left.length;
-    const existing = this.keyToSlot.get(key);
-    if (existing) {
-      this.totalFrames += frames - existing.frames;
-      existing.left = left;
-      existing.right = right;
-      existing.frames = frames;
-      existing.audioBuffer = undefined;
-      this.enforceFrameBudget(existing.slotIndex);
-      return;
-    }
-
-    // Evict whatever currently occupies writeCursor in the circular ring
-    const targetIdx = this.writeCursor;
-    this.writeCursor = (this.writeCursor + 1) % this.maxSlots;
-    this.evictSlotAt(targetIdx);
-
-    const slot: VoicePcmSlot = {
-      key,
-      left,
-      right,
-      frames,
-      slotIndex: targetIdx,
+  public get stats(): {
+    slotsUsed: number;
+    maxSlots: number;
+    framesUsed: number;
+    maxFrames: number;
+    evictions: number;
+  } {
+    return {
+      slotsUsed: this.keyToSlot.size,
+      maxSlots: this.maxSlots,
+      framesUsed: this.currentTotalFrames,
+      maxFrames: this.maxTotalFrames,
+      evictions: this.totalEvictions,
     };
-    this.slots[targetIdx] = slot;
-    this.keyToSlot.set(key, slot);
-    this.totalFrames += frames;
-
-    this.enforceFrameBudget(targetIdx);
-  }
-
-  private evictSlotAt(idx: number): void {
-    const prev = this.slots[idx];
-    if (!prev) return;
-    prev.audioBuffer = undefined;
-    this.slots[idx] = null;
-    this.keyToSlot.delete(prev.key);
-    this.totalFrames = Math.max(0, this.totalFrames - prev.frames);
-  }
-
-  private enforceFrameBudget(protectedSlotIdx: number): void {
-    let safety = 0;
-    while (this.totalFrames > this.maxTotalFrames && safety < this.maxSlots) {
-      const idx = this.evictCursor;
-      this.evictCursor = (this.evictCursor + 1) % this.maxSlots;
-      safety++;
-      if (idx === protectedSlotIdx) continue;
-      if (this.slots[idx]) {
-        this.evictSlotAt(idx);
-      }
-    }
   }
 
   /**
-   * Rolling Ring Window Eviction on the scheduled timeline:
-   * Releases `prebakedBuffer` on events that have already finished behind `playheadSec - retainBehindSec`
-   * (or lie far beyond `playheadSec + retainAheadSec`) so WebAudio AudioBuffer memory stays bounded.
+   * Releases `prebakedBuffer` AudioBuffer references on timeline items outside the active
+   * `[playheadSec - retainBehindSec, playheadSec + retainAheadSec]` window, and resets
+   * `item.isBaked = false` so re-entering the window re-attaches or re-bakes cleanly.
    */
-  public evictTimelineWindow(
-    timeline: TimelineRingItem[],
+  public evictTimelineWindow<
+    T extends { startSec: number; durSec: number; prebakedBuffer?: unknown; isBaked?: boolean }
+  >(
+    timeline: T[],
     playheadSec: number,
-    retainBehindSec: number = 0.5,
-    retainAheadSec: number = 14.0,
+    retainBehindSec: number = 1.5,
+    retainAheadSec: number = 60.0,
     isLooping: boolean = false
   ): number {
     if (isLooping) return 0;
+    const minKeepSec = playheadSec - retainBehindSec;
+    const maxKeepSec = playheadSec + retainAheadSec;
+
     let evicted = 0;
-    const minEndSec = playheadSec - retainBehindSec;
-    const maxStartSec = playheadSec + retainAheadSec;
     for (let i = 0; i < timeline.length; i++) {
       const item = timeline[i];
-      if (!item.prebakedBuffer) continue;
-      if (item.startSec + item.durSec < minEndSec || item.startSec > maxStartSec) {
+      if (
+        item.prebakedBuffer &&
+        (item.startSec + item.durSec < minKeepSec || item.startSec > maxKeepSec)
+      ) {
         item.prebakedBuffer = undefined;
+        item.isBaked = false;
         evicted++;
       }
     }
+    if (evicted > 0) {
+      playbackDiag.recordTimelineWindowEviction(evicted, playheadSec);
+    }
     return evicted;
-  }
-
-  public clear(): void {
-    this.slots.fill(null);
-    this.keyToSlot.clear();
-    this.writeCursor = 0;
-    this.evictCursor = 0;
-    this.totalFrames = 0;
   }
 }
 
 /**
- * Power-of-two circular stereo delay ring buffer for zero-allocation feedback delay / reverb DSP.
+ * Power-of-2 Circular Stereo Audio Ring Buffer for Delay/Echo/Comb DSP lines.
  */
 export class StereoDelayRingBuffer {
   public readonly capacity: number;
   public readonly mask: number;
   public readonly left: Float32Array;
   public readonly right: Float32Array;
-  public writePos = 0;
+  public writeIndex: number = 0;
 
-  constructor(minFrames: number) {
+  constructor(minSamples: number) {
     let cap = 64;
-    const target = Math.max(64, (minFrames | 0) + 4);
-    while (cap < target) {
-      cap <<= 1;
-    }
+    const target = Math.max(64, Math.ceil(minSamples));
+    while (cap < target) cap <<= 1;
     this.capacity = cap;
     this.mask = cap - 1;
     this.left = new Float32Array(cap);
     this.right = new Float32Array(cap);
   }
 
-  public writeAndAdvance(sampleL: number, sampleR: number): void {
-    const idx = this.writePos & this.mask;
-    this.left[idx] = sampleL;
-    this.right[idx] = sampleR;
-    this.writePos = (idx + 1) & this.mask;
+  public writeAndAdvance(l: number, r: number): void {
+    this.left[this.writeIndex] = Number.isFinite(l) ? l : 0;
+    this.right[this.writeIndex] = Number.isFinite(r) ? r : 0;
+    this.writeIndex = (this.writeIndex + 1) & this.mask;
   }
 
-  public readLeft(delayFrames: number): number {
-    return this.left[(this.writePos - 1 - delayFrames) & this.mask];
+  public readLeft(delaySamples: number): number {
+    const idx = (this.writeIndex - 1 - (delaySamples | 0)) & this.mask;
+    return this.left[idx];
   }
 
-  public readRight(delayFrames: number): number {
-    return this.right[(this.writePos - 1 - delayFrames) & this.mask];
+  public readRight(delaySamples: number): number {
+    const idx = (this.writeIndex - 1 - (delaySamples | 0)) & this.mask;
+    return this.right[idx];
+  }
+
+  public readDelayedL(delaySamples: number): number {
+    const idx = (this.writeIndex - (delaySamples | 0)) & this.mask;
+    return this.left[idx];
+  }
+
+  public readDelayedR(delaySamples: number): number {
+    const idx = (this.writeIndex - (delaySamples | 0)) & this.mask;
+    return this.right[idx];
   }
 }

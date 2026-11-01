@@ -3,6 +3,7 @@ import { applyTemperamentAndMasterTune, parseKeyRootSemitone } from './PitchEngi
 import { TemporalResult } from './TemporalEngine';
 import { AutomationLane, compileAutomationLanes } from '../audio/AutomationEngine';
 import { ContinuousSynthEngine } from '../audio/synths/ContinuousSynthEngine';
+import { playbackDiag } from '../audio/PlaybackDiagnostics';
 
 export type ScoreEvent = AtomicEvent;
 
@@ -1005,6 +1006,12 @@ export class DocumentParser {
           voiceDuration = this.addFractions(voiceDuration, ev.duration);
         }
       } catch (err) {
+        playbackDiag.recordParserTokenError(
+          measureNumber,
+          trackDef.id,
+          token,
+          err instanceof Error ? err.message : String(err)
+        );
         if (!skipInvalidTokens) {
           throw err;
         }
