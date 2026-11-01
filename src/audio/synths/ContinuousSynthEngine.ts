@@ -640,7 +640,7 @@ export class ContinuousSynthEngine {
     const aliasStepHold = aliasingPct > 0 ? Math.max(2, Math.floor(1 + (aliasingPct / 100) * 14)) : 1;
     const chordAmpAvg =
       chordNotes.reduce((acc, n) => acc + n.amp, 0) / Math.max(1, numNotes);
-    const dspState = new Float64Array(5);
+    const dspState = new Float64Array(7);
 
     // Process in 128-sample Control-Rate (k-rate) blocks
     for (let blockStart = 0; blockStart < len; blockStart += CONTROL_BLOCK_SIZE) {
@@ -996,13 +996,10 @@ export class ContinuousSynthEngine {
 
       const isTriangleCore = isHauntologyPad || isBuchlaKrell || isBuchla200e || isPolyBrute;
       const isFastOscLoop = !hasPwm && fmPhaseInc === 0;
+      const waveWarpKind = hasWaveMirror ? 1 : hasWaveBend ? 2 : 0;
+      const activeFoldDrive = hasBuchlaFold && foldDrive > 1.01 ? foldDrive : 0;
       const isFastSawPath =
         isFastOscLoop &&
-        !isTriangleCore &&
-        !hasWaveMirror &&
-        !hasWaveBend &&
-        !(hasBuchlaFold && foldDrive > 1.01) &&
-        aliasStepHold <= 1 &&
         ringPhaseInc === 0 &&
         activeNoise <= 0.005 &&
         !combBufL;
@@ -1013,10 +1010,13 @@ export class ContinuousSynthEngine {
         dspState[2] = bpL;
         dspState[3] = lpR;
         dspState[4] = bpR;
+        dspState[5] = heldSampleL;
+        dspState[6] = heldSampleR;
         this.renderFastSawBlock(
           trackLeft,
           trackRight,
           startFrame + blockStart,
+          blockStart,
           blockEnd - blockStart,
           totalOscs,
           oscPhases,
@@ -1031,6 +1031,11 @@ export class ContinuousSynthEngine {
           driveScalar,
           hardwareCircuitDrive,
           blockFinalGain,
+          isTriangleCore,
+          waveWarpKind,
+          waveBendScale,
+          activeFoldDrive,
+          aliasStepHold,
           dspState
         );
         subPhase = dspState[0];
@@ -1038,6 +1043,8 @@ export class ContinuousSynthEngine {
         bpL = dspState[2];
         lpR = dspState[3];
         bpR = dspState[4];
+        heldSampleL = dspState[5];
+        heldSampleR = dspState[6];
         continue;
       }
 
@@ -1109,8 +1116,10 @@ export class ContinuousSynthEngine {
         }
 
         if (hasBuchlaFold && foldDrive > 1.01) {
-          const fL = ((sigL * foldDrive * 0.5 + 0.5) % 2 + 2) % 2;
-          const fR = ((sigR * foldDrive * 0.5 + 0.5) % 2 + 2) % 2;
+          const rawFL = sigL * foldDrive * 0.5 + 0.5;
+          const rawFR = sigR * foldDrive * 0.5 + 0.5;
+          const fL = rawFL - Math.floor(rawFL * 0.5) * 2;
+          const fR = rawFR - Math.floor(rawFR * 0.5) * 2;
           sigL = 2 * Math.abs(fL - 1) - 1;
           sigR = 2 * Math.abs(fR - 1) - 1;
         }
@@ -1226,6 +1235,7 @@ export class ContinuousSynthEngine {
     trackLeft: Float32Array,
     trackRight: Float32Array,
     absStart: number,
+    blockStart: number,
     blockLen: number,
     totalOscs: number,
     oscPhases: Float32Array,
@@ -1240,6 +1250,11 @@ export class ContinuousSynthEngine {
     driveScalar: number,
     hardwareCircuitDrive: number,
     blockFinalGain: number,
+    isTriangleCore: boolean,
+    waveWarpKind: number,
+    waveBendScale: number,
+    foldDrive: number,
+    aliasStepHold: number,
     dspState: Float64Array
   ): void {
     let subPhase = dspState[0];
@@ -1247,20 +1262,63 @@ export class ContinuousSynthEngine {
     let bpL = dspState[2];
     let lpR = dspState[3];
     let bpR = dspState[4];
+    let heldSampleL = dspState[5];
+    let heldSampleR = dspState[6];
     const subAmp = subLevel * 0.52;
     const hasDrive = driveScalar > 1.01;
     const hwAsym = 0.08 * hardwareCircuitDrive;
+    const hasFold = foldDrive > 1.01;
+    const halfFoldDrive = foldDrive * 0.5;
 
     for (let k = 0; k < blockLen; k++) {
       let sigL = 0;
       let sigR = 0;
-      for (let o = 0; o < totalOscs; o++) {
-        let ph = oscPhases[o] + oscPhaseIncs[o];
-        if (ph >= 1) ph -= 1;
-        oscPhases[o] = ph;
-        const oscSample = 2 * ph - 1;
-        sigL += oscSample * oscGainL[o];
-        sigR += oscSample * oscGainR[o];
+      if (isTriangleCore) {
+        for (let o = 0; o < totalOscs; o++) {
+          let ph = oscPhases[o] + oscPhaseIncs[o];
+          if (ph >= 1) ph -= 1;
+          oscPhases[o] = ph;
+          const oscSample = 1 - 4 * Math.abs(ph - 0.5);
+          sigL += oscSample * oscGainL[o];
+          sigR += oscSample * oscGainR[o];
+        }
+      } else {
+        for (let o = 0; o < totalOscs; o++) {
+          let ph = oscPhases[o] + oscPhaseIncs[o];
+          if (ph >= 1) ph -= 1;
+          oscPhases[o] = ph;
+          const oscSample = 2 * ph - 1;
+          sigL += oscSample * oscGainL[o];
+          sigR += oscSample * oscGainR[o];
+        }
+      }
+
+      if (waveWarpKind === 1) {
+        sigL = Math.abs(sigL) * 1.6 - 0.5;
+        sigR = Math.abs(sigR) * 1.6 - 0.5;
+      } else if (waveWarpKind === 2) {
+        const xL = sigL * waveBendScale;
+        const xR = sigR * waveBendScale;
+        sigL = xL / (1 + Math.abs(xL));
+        sigR = xR / (1 + Math.abs(xR));
+      }
+
+      if (hasFold) {
+        const rawFL = sigL * halfFoldDrive + 0.5;
+        const rawFR = sigR * halfFoldDrive + 0.5;
+        const fL = rawFL - Math.floor(rawFL * 0.5) * 2;
+        const fR = rawFR - Math.floor(rawFR * 0.5) * 2;
+        sigL = 2 * Math.abs(fL - 1) - 1;
+        sigR = 2 * Math.abs(fR - 1) - 1;
+      }
+
+      if (aliasStepHold > 1) {
+        if ((blockStart + k) % aliasStepHold === 0) {
+          heldSampleL = Math.round(sigL * 16) * 0.0625;
+          heldSampleR = Math.round(sigR * 16) * 0.0625;
+        }
+        sigL = heldSampleL;
+        sigR = heldSampleR;
       }
 
       if (subAmp > 0.005) {
@@ -1315,6 +1373,8 @@ export class ContinuousSynthEngine {
     dspState[2] = bpL;
     dspState[3] = lpR;
     dspState[4] = bpR;
+    dspState[5] = heldSampleL;
+    dspState[6] = heldSampleR;
   }
 
   public static applyTrackBassMonoCrossover(

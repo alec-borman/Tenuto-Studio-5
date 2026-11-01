@@ -1,6 +1,7 @@
 import { FXChainItem, TrackDefinition } from '../../parser/DocumentParser';
 import { AtomicEvent } from '../../parser/ASTSerializer';
 import { PhonemeEngine } from '../PhonemeEngine';
+import { StereoDelayRingBuffer } from '../AudioRingBuffer';
 
 export const ABLETON_AUDIO_FX_NAMES = [
   'eq_eight',
@@ -482,7 +483,7 @@ export class AbletonAudioFxEngine {
         // Deterministic pseudo-noise locked to sample index for reproducible tests
         const pseudoRand = Math.sin(i * 12.9898 + 78.233) * 43758.5453;
         const white = (pseudoRand - Math.floor(pseudoRand)) * 2 - 1;
-        const nf = clamp(2 * Math.sin((Math.PI * clamp(noiseCenterHz, 300, 8500)) / sampleRate), 0.05, 0.9);
+        const nf = clamp((2 * Math.PI * clamp(noiseCenterHz, 300, 8500)) / sampleRate, 0.05, 0.9);
         const nhp = 0.25 * white - noiseLpState - 0.25 * noiseBpState;
         noiseBpState += nf * nhp;
         noiseLpState += nf * noiseBpState;
@@ -506,8 +507,8 @@ export class AbletonAudioFxEngine {
       tractLpL += tractAlpha * (rawVocL - tractLpL);
       tractLpR += tractAlpha * (rawVocR - tractLpR);
 
-      const wetL = dryL * 0.28 + Math.tanh(tractLpL * 0.95) * 0.58;
-      const wetR = dryR * 0.28 + Math.tanh(tractLpR * 0.95) * 0.58;
+      const wetL = dryL * 0.28 + fastTanh(tractLpL * 0.95) * 0.58;
+      const wetR = dryR * 0.28 + fastTanh(tractLpR * 0.95) * 0.58;
       left[idx] = dryL * (1 - mix) + wetL * mix;
       right[idx] = dryR * (1 - mix) + wetR * mix;
     }
@@ -783,23 +784,26 @@ export class AbletonAudioFxEngine {
         const tap3 = preFrames + Math.floor(0.047 * sampleRate);
         const fbGain = clamp(Math.pow(0.001, 0.031 / decaySec), 0.25, 0.88);
 
-        const bufL = new Float32Array(len + tap3 + 4);
-        const bufR = new Float32Array(len + tap3 + 4);
+        const ring = new StereoDelayRingBuffer(tap3 + 4);
+        const rL = ring.left;
+        const rR = ring.right;
+        const mask = ring.mask;
 
         for (let i = 0; i < len; i++) {
           const dryL = left[startFrame + i];
           const dryR = right[startFrame + i];
+          const wPos = i & mask;
           const revL =
-            (i >= tap1 ? bufL[i - tap1] * 0.40 : 0) +
-            (i >= tap2 ? bufR[i - tap2] * 0.30 : 0) +
-            (i >= tap3 ? bufL[i - tap3] * 0.20 : 0);
+            (i >= tap1 ? rL[(wPos - tap1) & mask] * 0.40 : 0) +
+            (i >= tap2 ? rR[(wPos - tap2) & mask] * 0.30 : 0) +
+            (i >= tap3 ? rL[(wPos - tap3) & mask] * 0.20 : 0);
           const revR =
-            (i >= tap1 ? bufR[i - tap1] * 0.40 : 0) +
-            (i >= tap2 ? bufL[i - tap2] * 0.30 : 0) +
-            (i >= tap3 ? bufR[i - tap3] * 0.20 : 0);
+            (i >= tap1 ? rR[(wPos - tap1) & mask] * 0.40 : 0) +
+            (i >= tap2 ? rL[(wPos - tap2) & mask] * 0.30 : 0) +
+            (i >= tap3 ? rR[(wPos - tap3) & mask] * 0.20 : 0);
 
-          bufL[i] = fastTanh(dryL + revL * fbGain);
-          bufR[i] = fastTanh(dryR + revR * fbGain);
+          rL[wPos] = fastTanh(dryL + revL * fbGain);
+          rR[wPos] = fastTanh(dryR + revR * fbGain);
 
           left[startFrame + i] = dryL * (1 - mix) + (dryL * 0.5 + revL * 0.85) * mix;
           right[startFrame + i] = dryR * (1 - mix) + (dryR * 0.5 + revR * 0.85) * mix;
@@ -821,8 +825,10 @@ export class AbletonAudioFxEngine {
         const tap3 = Math.max(3, Math.floor(0.043 * sampleRate));
         const fbGain = clamp(Math.pow(0.001, 0.029 / decaySec), 0.35, 0.86);
 
-        const bufL = new Float32Array(len + tap3 + 4);
-        const bufR = new Float32Array(len + tap3 + 4);
+        const ring = new StereoDelayRingBuffer(tap3 + 4);
+        const rL = ring.left;
+        const rR = ring.right;
+        const mask = ring.mask;
         let framesSinceTrigger = 0;
 
         for (let i = 0; i < len; i++) {
@@ -841,17 +847,18 @@ export class AbletonAudioFxEngine {
             gateEnv = Math.max(0, 1 - rel);
           }
 
+          const wPos = i & mask;
           const revL =
-            (i >= tap1 ? bufL[i - tap1] * 0.42 : 0) +
-            (i >= tap2 ? bufR[i - tap2] * 0.31 : 0) +
-            (i >= tap3 ? bufL[i - tap3] * 0.21 : 0);
+            (i >= tap1 ? rL[(wPos - tap1) & mask] * 0.42 : 0) +
+            (i >= tap2 ? rR[(wPos - tap2) & mask] * 0.31 : 0) +
+            (i >= tap3 ? rL[(wPos - tap3) & mask] * 0.21 : 0);
           const revR =
-            (i >= tap1 ? bufR[i - tap1] * 0.42 : 0) +
-            (i >= tap2 ? bufL[i - tap2] * 0.31 : 0) +
-            (i >= tap3 ? bufR[i - tap3] * 0.21 : 0);
+            (i >= tap1 ? rR[(wPos - tap1) & mask] * 0.42 : 0) +
+            (i >= tap2 ? rL[(wPos - tap2) & mask] * 0.31 : 0) +
+            (i >= tap3 ? rR[(wPos - tap3) & mask] * 0.21 : 0);
 
-          bufL[i] = fastTanh(dryL + revL * fbGain);
-          bufR[i] = fastTanh(dryR + revR * fbGain);
+          rL[wPos] = fastTanh(dryL + revL * fbGain);
+          rR[wPos] = fastTanh(dryR + revR * fbGain);
 
           const gatedRevL = revL * gateEnv;
           const gatedRevR = revR * gateEnv;
@@ -1088,34 +1095,70 @@ export class AbletonAudioFxEngine {
         const rate1 = Math.pow(2, shift1St / 12);
         const rate2 = Math.pow(2, shift2St / 12);
         const grainLen = Math.max(512, Math.floor(0.048 * sampleRate));
+        const invGrainLen = 1.0 / grainLen;
         const halfGrain = grainLen * 0.5;
-
-        const sampleGrain = (buf: Float32Array, centerIdx: number, rate: number): number => {
-          const drift = (rate - 1.0) * centerIdx;
-          const phaseA = ((drift % grainLen) + grainLen) % grainLen;
-          const phaseB = (((drift + halfGrain) % grainLen) + grainLen) % grainLen;
-          const wA = Math.sin((Math.PI * phaseA) / grainLen);
-          const weightA = wA * wA;
-          const weightB = 1.0 - weightA;
-
-          const readA = clamp(centerIdx - phaseA, 0, len - 2);
-          const iA = Math.floor(readA);
-          const fA = readA - iA;
-          const sA = buf[iA] + (buf[iA + 1] - buf[iA]) * fA;
-
-          const readB = clamp(centerIdx - phaseB, 0, len - 2);
-          const iB = Math.floor(readB);
-          const fB = readB - iB;
-          const sB = buf[iB] + (buf[iB + 1] - buf[iB]) * fB;
-
-          return sA * weightA + sB * weightB;
-        };
+        const maxReadIdx = Math.max(0, len - 2);
+        const dryMix = 1 - mix;
+        const dRate1 = rate1 - 1.0;
+        const dRate2 = rate2 - 1.0;
 
         for (let i = 0; i < len; i++) {
-          const harmL = sampleGrain(copyL, i, rate1) * 0.5 + sampleGrain(copyR, i, rate2) * 0.4;
-          const harmR = sampleGrain(copyR, i, rate1) * 0.5 + sampleGrain(copyL, i, rate2) * 0.4;
-          left[startFrame + i] = copyL[i] * (1 - mix) + harmL * mix;
-          right[startFrame + i] = copyR[i] * (1 - mix) + harmR * mix;
+          // Voice 1 (rate1): compute grain indices & parabolic Hann window once for both L & R
+          const drift1 = dRate1 * i;
+          const phase1A = drift1 - Math.floor(drift1 * invGrainLen) * grainLen;
+          const phase1B = phase1A >= halfGrain ? phase1A - halfGrain : phase1A + halfGrain;
+          const u1 = phase1A * invGrainLen;
+          const w1 = 4 * u1 * (1 - u1);
+          const weight1A = w1 * w1;
+          const weight1B = 1.0 - weight1A;
+
+          const r1A = i - phase1A;
+          const c1A = r1A < 0 ? 0 : r1A > maxReadIdx ? maxReadIdx : r1A;
+          const i1A = c1A | 0;
+          const f1A = c1A - i1A;
+
+          const r1B = i - phase1B;
+          const c1B = r1B < 0 ? 0 : r1B > maxReadIdx ? maxReadIdx : r1B;
+          const i1B = c1B | 0;
+          const f1B = c1B - i1B;
+
+          const g1L =
+            (copyL[i1A] + (copyL[i1A + 1] - copyL[i1A]) * f1A) * weight1A +
+            (copyL[i1B] + (copyL[i1B + 1] - copyL[i1B]) * f1B) * weight1B;
+          const g1R =
+            (copyR[i1A] + (copyR[i1A + 1] - copyR[i1A]) * f1A) * weight1A +
+            (copyR[i1B] + (copyR[i1B + 1] - copyR[i1B]) * f1B) * weight1B;
+
+          // Voice 2 (rate2): compute grain indices & parabolic Hann window once for both R & L
+          const drift2 = dRate2 * i;
+          const phase2A = drift2 - Math.floor(drift2 * invGrainLen) * grainLen;
+          const phase2B = phase2A >= halfGrain ? phase2A - halfGrain : phase2A + halfGrain;
+          const u2 = phase2A * invGrainLen;
+          const w2 = 4 * u2 * (1 - u2);
+          const weight2A = w2 * w2;
+          const weight2B = 1.0 - weight2A;
+
+          const r2A = i - phase2A;
+          const c2A = r2A < 0 ? 0 : r2A > maxReadIdx ? maxReadIdx : r2A;
+          const i2A = c2A | 0;
+          const f2A = c2A - i2A;
+
+          const r2B = i - phase2B;
+          const c2B = r2B < 0 ? 0 : r2B > maxReadIdx ? maxReadIdx : r2B;
+          const i2B = c2B | 0;
+          const f2B = c2B - i2B;
+
+          const g2R =
+            (copyR[i2A] + (copyR[i2A + 1] - copyR[i2A]) * f2A) * weight2A +
+            (copyR[i2B] + (copyR[i2B + 1] - copyR[i2B]) * f2B) * weight2B;
+          const g2L =
+            (copyL[i2A] + (copyL[i2A + 1] - copyL[i2A]) * f2A) * weight2A +
+            (copyL[i2B] + (copyL[i2B + 1] - copyL[i2B]) * f2B) * weight2B;
+
+          const harmL = g1L * 0.5 + g2R * 0.4;
+          const harmR = g1R * 0.5 + g2L * 0.4;
+          left[startFrame + i] = copyL[i] * dryMix + harmL * mix;
+          right[startFrame + i] = copyR[i] * dryMix + harmR * mix;
         }
         break;
       }
@@ -1135,30 +1178,33 @@ export class AbletonAudioFxEngine {
         const fb = clamp(Math.pow(0.001, 0.035 / decaySec), 0.3, 0.88);
         const dampAlpha = clamp((2 * Math.PI * rolloffHz) / sampleRate, 0.08, 0.88);
 
-        const bufL = new Float32Array(len + t4 + 4);
-        const bufR = new Float32Array(len + t4 + 4);
+        const ring = new StereoDelayRingBuffer(t4 + 4);
+        const rL = ring.left;
+        const rR = ring.right;
+        const mask = ring.mask;
         let lpL = 0;
         let lpR = 0;
 
         for (let i = 0; i < len; i++) {
           const dryL = left[startFrame + i];
           const dryR = right[startFrame + i];
+          const wPos = i & mask;
           // True-stereo cross-coupled early + late reflection network (unity-bounded tap sum = 0.94)
           const rawRevL =
-            (i >= t1 ? bufL[i - t1] * 0.34 : 0) +
-            (i >= t2 ? bufR[i - t2] * 0.27 : 0) +
-            (i >= t3 ? bufL[i - t3] * 0.20 : 0) +
-            (i >= t4 ? bufR[i - t4] * 0.13 : 0);
+            (i >= t1 ? rL[(wPos - t1) & mask] * 0.34 : 0) +
+            (i >= t2 ? rR[(wPos - t2) & mask] * 0.27 : 0) +
+            (i >= t3 ? rL[(wPos - t3) & mask] * 0.20 : 0) +
+            (i >= t4 ? rR[(wPos - t4) & mask] * 0.13 : 0);
           const rawRevR =
-            (i >= t1 ? bufR[i - t1] * 0.34 : 0) +
-            (i >= t2 ? bufL[i - t2] * 0.27 : 0) +
-            (i >= t3 ? bufR[i - t3] * 0.20 : 0) +
-            (i >= t4 ? bufL[i - t4] * 0.13 : 0);
+            (i >= t1 ? rR[(wPos - t1) & mask] * 0.34 : 0) +
+            (i >= t2 ? rL[(wPos - t2) & mask] * 0.27 : 0) +
+            (i >= t3 ? rR[(wPos - t3) & mask] * 0.20 : 0) +
+            (i >= t4 ? rL[(wPos - t4) & mask] * 0.13 : 0);
 
           lpL += dampAlpha * (rawRevL - lpL);
           lpR += dampAlpha * (rawRevR - lpR);
-          bufL[i] = fastTanh(dryL + lpL * fb);
-          bufR[i] = fastTanh(dryR + lpR * fb);
+          rL[wPos] = fastTanh(dryL + lpL * fb);
+          rR[wPos] = fastTanh(dryR + lpR * fb);
 
           left[startFrame + i] = dryL * (1 - mix) + (dryL * 0.45 + lpL * 0.92) * mix;
           right[startFrame + i] = dryR * (1 - mix) + (dryR * 0.45 + lpR * 0.92) * mix;
@@ -1173,18 +1219,21 @@ export class AbletonAudioFxEngine {
         const mix = clamp(Number(p.mix ?? 0.32), 0, 1);
         const delayFrames = Math.max(1, Math.min(Math.floor(len * 0.65), Math.floor(delaySec * sampleRate)));
 
-        const delayBufL = new Float32Array(len);
-        const delayBufR = new Float32Array(len);
+        const ring = new StereoDelayRingBuffer(delayFrames + 4);
+        const rL = ring.left;
+        const rR = ring.right;
+        const mask = ring.mask;
 
         for (let i = 0; i < len; i++) {
           const dryL = left[startFrame + i];
           const dryR = right[startFrame + i];
-          const delL = i >= delayFrames ? delayBufL[i - delayFrames] : 0;
-          const delR = i >= delayFrames ? delayBufR[i - delayFrames] : 0;
+          const wPos = i & mask;
+          const delL = i >= delayFrames ? rL[(wPos - delayFrames) & mask] : 0;
+          const delR = i >= delayFrames ? rR[(wPos - delayFrames) & mask] : 0;
 
           // Ping-pong cross-feedback for stereo width
-          delayBufL[i] = dryL + delR * feedback;
-          delayBufR[i] = dryR + delL * feedback;
+          rL[wPos] = dryL + delR * feedback;
+          rR[wPos] = dryR + delL * feedback;
 
           left[startFrame + i] = dryL * (1 - mix) + (dryL + delL * 0.85) * mix;
           right[startFrame + i] = dryR * (1 - mix) + (dryR + delR * 0.85) * mix;

@@ -26,6 +26,7 @@ import { ContinuousSynthEngine } from './synths/ContinuousSynthEngine';
 import { renderContinuousVoicePcm } from './synths/renderContinuousVoicePcm';
 import { AbletonAudioFxEngine } from './fx/AbletonAudioFxEngine';
 import { VoiceBakePool } from './VoiceBakePool';
+import { VoicePcmRingBuffer } from './AudioRingBuffer';
 
 export interface PlaybackProgress {
   isPlaying: boolean;
@@ -123,9 +124,8 @@ export class StudioAudioEngine {
   private pendingBakes: Set<ScheduledNoteEvent> = new Set();
   private pendingBakeKeys: Map<string, Promise<void>> = new Map();
   private voicesAwaitingBake: Set<ScheduledNoteEvent> = new Set();
-  private voicePcmCache: Map<string, { left: Float32Array; right: Float32Array }> = new Map();
-  private static readonly MAX_BAKES_IN_FLIGHT = 32;
-  private static readonly MAX_CACHED_VOICE_PCM = 256;
+  public readonly voiceRingBuffer = new VoicePcmRingBuffer(96, 44100 * 96);
+  private static readonly MAX_BAKES_IN_FLIGHT = 16;
 
   public routingMatrix = new SpatialAudioMatrix();
   public soundfontLoader = new SoundfontBankLoader();
@@ -1188,15 +1188,7 @@ export class StudioAudioEngine {
   }
 
   private storeVoicePcmInCache(key: string, left: Float32Array, right: Float32Array): void {
-    if (this.voicePcmCache.has(key)) {
-      this.voicePcmCache.delete(key);
-    } else if (this.voicePcmCache.size >= StudioAudioEngine.MAX_CACHED_VOICE_PCM) {
-      const oldestKey = this.voicePcmCache.keys().next().value;
-      if (oldestKey !== undefined) {
-        this.voicePcmCache.delete(oldestKey);
-      }
-    }
-    this.voicePcmCache.set(key, { left, right });
+    this.voiceRingBuffer.write(key, left, right);
   }
 
   private createAudioBufferFromPcm(
@@ -1212,9 +1204,10 @@ export class StudioAudioEngine {
   }
 
   /**
-   * Rolling Lookahead JIT Prebaker: pre-renders only ContinuousSynthEngine voices within
-   * `[fromSec, toSec]` (capped at `maxVoicesToBake` per slice) and evicts finished `prebakedBuffer`
-   * instances behind `fromSec` when not looping so pressing Play starts in <12ms and RAM stays flat.
+   * Rolling Lookahead JIT Prebaker backed by `VoicePcmRingBuffer`:
+   * Pre-renders ContinuousSynthEngine voices within `[fromSec, toSec]` (capped at `maxVoicesToBake`
+   * and `timeBudgetMs`) and evicts finished `prebakedBuffer` instances outside the active ring window
+   * so pressing Play starts immediately and RAM stays strictly bounded across 60+ measure scores.
    */
   public prebakeContinuousSynthTimeline(
     ctx: BaseAudioContext,
@@ -1230,16 +1223,16 @@ export class StudioAudioEngine {
     let bakedCount = 0;
     const budgetStart = typeof performance !== 'undefined' ? performance.now() : 0;
 
+    this.voiceRingBuffer.evictTimelineWindow(
+      timeline,
+      fromSec,
+      0.6,
+      Math.max(14.0, toSec - fromSec + 4.0),
+      this.isLooping
+    );
+
     for (let idx = 0; idx < timeline.length; idx++) {
       const item = timeline[idx];
-      if (
-        !this.isLooping &&
-        item.prebakedBuffer &&
-        item.startSec + item.durSec + 0.6 < fromSec
-      ) {
-        item.prebakedBuffer = undefined;
-        continue;
-      }
       if (item.startSec + item.durSec < fromSec) continue;
       if (item.startSec > toSec) break;
       if (item.prebakedBuffer) continue;
@@ -1248,10 +1241,19 @@ export class StudioAudioEngine {
       }
 
       const cacheKey = this.getVoiceCacheKey(item, sr, tempoBpm);
-      const cachedPcm = this.voicePcmCache.get(cacheKey);
+      const cachedPcm = this.voiceRingBuffer.get(cacheKey);
       if (cachedPcm) {
         item.prebakedBuffer = this.createAudioBufferFromPcm(ctx, cachedPcm.left, cachedPcm.right, sr);
         continue;
+      }
+
+      if (
+        timeBudgetMs !== Infinity &&
+        bakedCount > 0 &&
+        typeof performance !== 'undefined' &&
+        performance.now() - budgetStart >= timeBudgetMs
+      ) {
+        break;
       }
 
       const { left, right } = renderContinuousVoicePcm(item, sr, tempoBpm, idx + 1);
@@ -1270,11 +1272,11 @@ export class StudioAudioEngine {
   }
 
   private getBakePool(): VoiceBakePool | null {
+    if (this.bakePool && this.bakePool.broken) {
+      this.bakePool = undefined;
+    }
     if (this.bakePool === undefined) {
       this.bakePool = this.soundfontLoader.isTestEnvironment() ? null : VoiceBakePool.create();
-    }
-    if (this.bakePool && this.bakePool.broken) {
-      this.bakePool = null;
     }
     return this.bakePool;
   }
@@ -1284,8 +1286,8 @@ export class StudioAudioEngine {
   }
 
   /**
-   * Queues upcoming synth voices for rendering on the worker pool so the scheduler thread never
-   * runs DSP. Returns one promise per newly queued voice (they never reject).
+   * Queues upcoming synth voices in `[fromSec, toSec]` for rendering on the worker pool into
+   * `voiceRingBuffer` so the 25ms main-thread scheduler never stalls on heavy DSP.
    */
   private requestWorkerBakes(
     ctx: AudioContext,
@@ -1305,7 +1307,7 @@ export class StudioAudioEngine {
       if (!this.isContinuousSynthItem(item)) continue;
 
       const cacheKey = this.getVoiceCacheKey(item, sr, tempoBpm);
-      const cachedPcm = this.voicePcmCache.get(cacheKey);
+      const cachedPcm = this.voiceRingBuffer.get(cacheKey);
       if (cachedPcm) {
         item.prebakedBuffer = this.createAudioBufferFromPcm(ctx, cachedPcm.left, cachedPcm.right, sr);
         continue;
@@ -1318,9 +1320,13 @@ export class StudioAudioEngine {
         queued.push(
           existingKeyPromise.then(() => {
             this.pendingBakes.delete(item);
-            const pcm = this.voicePcmCache.get(cacheKey);
+            const pcm = this.voiceRingBuffer.get(cacheKey);
             if (pcm && !item.prebakedBuffer && this.ctx === ctx && (ctx.state as string) !== 'closed') {
               item.prebakedBuffer = this.createAudioBufferFromPcm(ctx, pcm.left, pcm.right, sr);
+            }
+            if (this.voicesAwaitingBake.has(item)) {
+              this.voicesAwaitingBake.delete(item);
+              this.triggerDeferredVoice(item);
             }
           })
         );
@@ -1741,9 +1747,16 @@ export class StudioAudioEngine {
           const sr = ctx.sampleRate || 44100;
           const tempo = this.tempoBpm || 120;
           const cacheKey = this.getVoiceCacheKey(item, sr, tempo);
-          const cachedPcm = this.voicePcmCache.get(cacheKey);
+          const cachedPcm = this.voiceRingBuffer.get(cacheKey);
           if (cachedPcm) {
             buf = this.createAudioBufferFromPcm(ctx, cachedPcm.left, cachedPcm.right, sr);
+            item.prebakedBuffer = buf;
+          } else if (this.pendingBakes.has(item)) {
+            // A worker is currently rendering this voice off-thread; let triggerDeferredVoice
+            // schedule it as soon as the worker finishes so the main thread never stalls!
+            this.voicesAwaitingBake.add(item);
+            pannerNode?.disconnect();
+            return;
           } else {
             const { left: chL, right: chR } = renderContinuousVoicePcm(
               item,
@@ -1753,8 +1766,8 @@ export class StudioAudioEngine {
             );
             this.storeVoicePcmInCache(cacheKey, chL, chR);
             buf = this.createAudioBufferFromPcm(ctx, chL, chR, sr);
+            item.prebakedBuffer = buf;
           }
-          item.prebakedBuffer = buf;
         }
         const src = ctx.createBufferSource();
         src.buffer = buf;
@@ -3420,12 +3433,11 @@ export class StudioAudioEngine {
       return;
     }
 
-    // Synchronously guarantee the opening 3.2s of synth voices are ready before starting the clock
-    // (0ms on replay/cache hit; ~25-40ms on cold start with fast DSP), and simultaneously dispatch
-    // background worker bakes for the upcoming 12s window so the playhead never starves.
-    this.prebakeContinuousSynthTimeline(ctx, this.scheduledTimeline, this.tempoBpm, 0, 3.2, 20, 95);
+    // Synchronously pre-bake the opening 1.6s window (capped at 45ms) before starting the clock,
+    // and dispatch the rolling 9.0s ring window to the off-thread worker pool.
+    this.prebakeContinuousSynthTimeline(ctx, this.scheduledTimeline, this.tempoBpm, 0, 1.6, 8, 45);
     if (this.getBakePool()) {
-      this.requestWorkerBakes(ctx, this.scheduledTimeline, this.tempoBpm, 0, 12.0);
+      this.requestWorkerBakes(ctx, this.scheduledTimeline, this.tempoBpm, 0, 9.0);
     }
 
     const baseStart = ctx.currentTime + 0.05;
@@ -3441,26 +3453,35 @@ export class StudioAudioEngine {
       const lookaheadSec =
         typeof document !== 'undefined' && document.hidden ? 1.6 : DEFAULT_LOOKAHEAD_SEC;
 
+      // Advance the active timeline ring window and evict finished AudioBuffers behind the playhead
+      this.voiceRingBuffer.evictTimelineWindow(
+        this.scheduledTimeline,
+        elapsed,
+        0.5,
+        10.0,
+        this.isLooping
+      );
+
       if (this.getBakePool()) {
         this.requestWorkerBakes(
           this.ctx,
           this.scheduledTimeline,
           this.tempoBpm,
           elapsed,
-          elapsed + 10.0
+          elapsed + 8.5
+        );
+      } else {
+        // Fallback when Web Workers are unavailable (e.g. unit test environments)
+        this.prebakeContinuousSynthTimeline(
+          this.ctx,
+          this.scheduledTimeline,
+          this.tempoBpm,
+          elapsed,
+          elapsed + 2.5,
+          2,
+          6
         );
       }
-      // Guarantee immediate [elapsed, elapsed + 3.0s] window is populated from voicePcmCache (0.01ms)
-      // or fast main-thread synthesis (capped at 6ms) if a worker is still busy or unavailable.
-      this.prebakeContinuousSynthTimeline(
-        this.ctx,
-        this.scheduledTimeline,
-        this.tempoBpm,
-        elapsed,
-        elapsed + 3.0,
-        3,
-        6
-      );
       if (this.activeVoices.size > 32) {
         this.pruneFinishedVoices(now);
       }
