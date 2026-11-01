@@ -77,6 +77,11 @@ export default function SplitWorkspace() {
   });
   const isAudioInitialized = useRef<boolean>(false);
   const { isTopBarHidden, revealTopBar } = usePlaybackAutoHideTopBar(isPlaying);
+  const [predownloadState, setPredownloadState] = useState<{
+    status: 'idle' | 'downloading' | 'ready' | 'error';
+    percent?: number;
+    label?: string;
+  }>({ status: 'idle' });
 
   const isImmersiveStage = isIphonePortrait || isAppFullscreen || isFullscreen;
 
@@ -231,6 +236,7 @@ export default function SplitWorkspace() {
       return;
     }
     setMemoryStatus('saving');
+    setPredownloadState((prev) => (prev.status === 'ready' ? { status: 'idle' } : prev));
     codeMemory.scheduleSave(sourceCode, () => {
       setMemoryStatus('saved');
     });
@@ -435,6 +441,27 @@ export default function SplitWorkspace() {
         execute: () => setSourceCode(nextCode),
         undo: () => setSourceCode(prevCode),
       });
+    }
+  };
+
+  const handlePredownloadScore = async () => {
+    try {
+      studioAudio.unlockAudioContext();
+      setPredownloadState({ status: 'downloading', percent: 0, label: 'Starting...' });
+      const compiledScore =
+        compiledScoreState ||
+        incrementalCompiler.getLastCompiledScore() ||
+        incrementalCompiler.compileDocument(sourceCode);
+      await studioAudio.predownloadAndCacheScore(compiledScore, (prog) => {
+        setPredownloadState({
+          status: prog.done ? 'ready' : 'downloading',
+          percent: prog.percent,
+          label: prog.label,
+        });
+      });
+      setPredownloadState({ status: 'ready', percent: 100, label: 'Cached Offline' });
+    } catch {
+      setPredownloadState({ status: 'error', label: 'Retry Cache' });
     }
   };
 
@@ -1046,6 +1073,21 @@ export default function SplitWorkspace() {
               📋 Paste .ten
             </button>
 
+            <button
+              type="button"
+              data-testid="stage-predownload-btn"
+              aria-label="Pre-Download Score Offline"
+              onClick={handlePredownloadScore}
+              className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-sky-500 text-black hover:bg-sky-400 cursor-pointer shadow-xs shrink-0 whitespace-nowrap"
+              title="Pre-download SoundFont banks and pre-bake synth voices for offline playback"
+            >
+              {predownloadState.status === 'ready'
+                ? '✓ Cached'
+                : predownloadState.status === 'downloading'
+                  ? `⏳ ${predownloadState.percent ?? 0}%`
+                  : '⬇ Cache'}
+            </button>
+
             {isIphonePortrait && (
               <button
                 type="button"
@@ -1107,6 +1149,8 @@ export default function SplitWorkspace() {
               scaleName={scoreMeta.scale}
               onKeyScaleChange={handleKeyScaleChange}
               onSelectPreset={(presetCode) => handleCodeEdit(presetCode)}
+              onPredownloadScore={handlePredownloadScore}
+              predownloadState={predownloadState}
               onExportWav={handleExportWav}
               masterVolume={masterVolume}
               onMasterVolumeChange={handleMasterVolumeChange}

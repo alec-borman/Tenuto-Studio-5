@@ -700,14 +700,16 @@ export class ContinuousSynthEngine {
         ampEnv *= gateTarget * (1 - smoothEdge) + nextTarget * smoothEdge;
       }
 
-      if (phys?.flutterRateHz || isFlutterPatch) {
-        let rateHz = phys?.flutterRateHz ?? 12.0;
+      if (phys?.flutterRateHz !== undefined || isFlutterPatch) {
+        const hasExplicitFlutter =
+          phys?.flutterRateHz !== undefined || Boolean(phys?.flutterCurve);
+        let rateHz = phys?.flutterRateHz ?? (hasExplicitFlutter ? 12.0 : 3.2);
         if (phys?.flutterCurve && phys.flutterCurve.length >= 2) {
           const c0 = phys.flutterCurve[0];
           const c1 = phys.flutterCurve[phys.flutterCurve.length - 1];
           rateHz = c0 + (c1 - c0) * normU;
         }
-        const depth = phys?.flutterDepth ?? 0.65;
+        const depth = phys?.flutterDepth ?? (hasExplicitFlutter ? 0.55 : 0.10);
         const lfo = 0.5 + 0.5 * Math.sin(2 * Math.PI * rateHz * songTimeSec);
         ampEnv *= 1 - depth * (1 - lfo);
       }

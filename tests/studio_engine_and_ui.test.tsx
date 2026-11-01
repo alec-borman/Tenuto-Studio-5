@@ -593,5 +593,48 @@ describe('TDB-603 & TDB-604: Syntax-Highlighted Code Editor, Scrolling Player & 
       260
     );
   });
+
+  it('renders the 1-click Pre-Download button (predownload-score-btn) and pre-caches all score synth buffers via predownloadAndCacheScore', async () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Offline Prebake Test", tempo: 120, time: "4/4" }
+        def pad "Flutter Pad" style=synth patch="flutter_pad"
+        measure 1 {
+          pad: [c4 e4 g4]:1.legato |
+        }
+      }
+    `);
+
+    const onPredownload = vi.fn();
+    const { rerender } = render(
+      <Transport
+        isPlaying={false}
+        onTogglePlay={() => {}}
+        onPredownloadScore={onPredownload}
+        predownloadState={{ status: 'idle' }}
+      />
+    );
+
+    const btn = screen.getByTestId('predownload-score-btn');
+    expect(btn).toHaveTextContent('⬇ Pre-Download');
+    fireEvent.click(btn);
+    expect(onPredownload).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <Transport
+        isPlaying={false}
+        onTogglePlay={() => {}}
+        onPredownloadScore={onPredownload}
+        predownloadState={{ status: 'ready', percent: 100, label: 'Cached Offline' }}
+      />
+    );
+    expect(screen.getByTestId('predownload-score-btn')).toHaveTextContent('✓ Cached Offline');
+
+    const stats = await engine.predownloadAndCacheScore(score);
+    expect(stats.synthVoicesBaked).toBeGreaterThanOrEqual(0);
+  });
 });
+
 

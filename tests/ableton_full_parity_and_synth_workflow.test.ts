@@ -213,9 +213,8 @@ describe('TDB-727 & TDB-728: Fix Windows Electron Piano Fallback, Prioritize Nat
     await expect(orchestrator.compileAndPlay(score.events)).resolves.toBeUndefined();
 
     // 5. Verify vox track with .fx(vocoder) and .lyric(...) is routed to ContinuousSynthEngine and baked with Vocoder FX
-    const voxEvents = (engine as any)
-      .buildScheduledTimeline(score)
-      .filter((t: any) => t.event.trackId === 'vox');
+    const timeline = (engine as any).buildScheduledTimeline(score);
+    const voxEvents = timeline.filter((t: any) => t.event.trackId === 'vox');
     expect(voxEvents.length).toBeGreaterThan(0);
     expect(
       ContinuousSynthEngine.isContinuousSynthPatch(
@@ -224,6 +223,17 @@ describe('TDB-727 & TDB-728: Fix Windows Electron Piano Fallback, Prioritize Nat
         voxEvents[0].event.physics
       )
     ).toBe(true);
+
+    // 6. Verify whole-note .legato / .glide() synth voices do NOT overrun the 4/4 barline by 1.08x
+    const m1Lead = timeline.find(
+      (t: any) => t.event.trackId === 'lead' && t.event.measureNumber === 1
+    );
+    const m2Lead = timeline.find(
+      (t: any) => t.event.trackId === 'lead' && t.event.measureNumber === 2
+    );
+    expect(m1Lead).toBeDefined();
+    expect(m2Lead).toBeDefined();
+    expect(m1Lead.startSec + m1Lead.durSec).toBeLessThanOrEqual(m2Lead.startSec + 0.02);
   });
 });
 

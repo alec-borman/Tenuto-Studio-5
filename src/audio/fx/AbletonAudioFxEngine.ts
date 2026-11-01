@@ -615,13 +615,14 @@ export class AbletonAudioFxEngine {
         const ratio = clamp(Number(p.ratio ?? 4), 1.1, 20);
         const attackMs = clamp(Number(p.attack ?? 10), 0.2, 200);
         const releaseMs = clamp(Number(p.release ?? 120), 10, 1500);
-        const makeupLin = dbToLinear(clamp(Number(p.makeup ?? (type === 'glue_compressor' ? 3 : 2)), -12, 18));
+        const makeupLin = dbToLinear(clamp(Number(p.makeup ?? (type === 'glue_compressor' ? 1.5 : 1.0)), -12, 18));
         const mix = clamp(Number(p.mix ?? (type === 'glue_compressor' ? 0.85 : 1.0)), 0, 1);
 
         const threshLin = dbToLinear(threshDb);
         const attCoeff = Math.exp(-1 / (Math.max(0.0005, attackMs / 1000) * sampleRate));
         const relCoeff = Math.exp(-1 / (Math.max(0.005, releaseMs / 1000) * sampleRate));
         let env = 0;
+        let gain = 1.0;
 
         for (let i = startFrame; i < endFrame; i++) {
           const dryL = left[i];
@@ -629,12 +630,14 @@ export class AbletonAudioFxEngine {
           const peak = Math.max(Math.abs(dryL), Math.abs(dryR));
           env = peak > env ? attCoeff * env + (1 - attCoeff) * peak : relCoeff * env + (1 - relCoeff) * peak;
 
-          let gain = 1.0;
-          if (env > threshLin && env > 1e-6) {
-            const overDb = 20 * Math.log10(env / threshLin);
-            const compressedOverDb = overDb / ratio;
-            const grDb = compressedOverDb - overDb;
-            gain = dbToLinear(grDb);
+          if (((i - startFrame) & 31) === 0) {
+            if (env > threshLin && env > 1e-6) {
+              const overDb = 20 * Math.log10(env / threshLin);
+              const compressedOverDb = overDb / ratio;
+              gain = dbToLinear(compressedOverDb - overDb);
+            } else {
+              gain = 1.0;
+            }
           }
 
           const wetL = dryL * gain * makeupLin;

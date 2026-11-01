@@ -38,6 +38,12 @@ interface TransportProps {
   onToggleFullscreen?: () => void;
   isIphonePortrait?: boolean;
   onToggleIphonePortrait?: () => void;
+  onPredownloadScore?: () => void;
+  predownloadState?: {
+    status: 'idle' | 'downloading' | 'ready' | 'error';
+    percent?: number;
+    label?: string;
+  };
 }
 
 export default function Transport({
@@ -73,6 +79,8 @@ export default function Transport({
   onToggleFullscreen,
   isIphonePortrait = false,
   onToggleIphonePortrait,
+  onPredownloadScore,
+  predownloadState,
 }: TransportProps) {
   const measureNum = Math.floor(currentBeat / 4) + 1;
   const beatInMeasure = Math.floor(currentBeat % 4) + 1;
@@ -256,6 +264,30 @@ export default function Transport({
                 {masterVolume}%
               </span>
             </div>
+          )}
+
+          {onPredownloadScore && (
+            <button
+              type="button"
+              data-testid="predownload-score-btn"
+              aria-label="Pre-Download Score Audio and Samples"
+              disabled={predownloadState?.status === 'downloading'}
+              onClick={onPredownloadScore}
+              className={`border text-xs font-semibold py-1 px-2.5 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                predownloadState?.status === 'ready'
+                  ? 'bg-teal-500/25 border-teal-400/60 text-teal-200'
+                  : predownloadState?.status === 'downloading'
+                    ? 'bg-amber-500/20 border-amber-400/50 text-amber-200 cursor-wait'
+                    : 'bg-sky-600/20 hover:bg-sky-600/30 border-sky-500/50 text-sky-200'
+              }`}
+              title="Pre-download all SoundFont samples and pre-bake all synth voices for offline / bad-internet playback"
+            >
+              {predownloadState?.status === 'downloading'
+                ? `⏳ ${predownloadState.label || `Caching ${predownloadState.percent ?? 0}%...`}`
+                : predownloadState?.status === 'ready'
+                  ? '✓ Cached Offline'
+                  : '⬇ Pre-Download'}
+            </button>
           )}
 
           {onExportWav && (

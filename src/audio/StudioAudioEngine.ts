@@ -105,6 +105,7 @@ export class StudioAudioEngine {
   private masterVolumeScalar: number = 1.25;
 
   private scheduledTimeline: ScheduledNoteEvent[] = [];
+  private prebakedScoreSignature: string | null = null;
   private nextScheduleIndex: number = 0;
   private activeClipIdsByTrack: Map<string, string> = new Map();
   private queuedClipIdsByTrack: Map<string, string> = new Map();
@@ -122,7 +123,7 @@ export class StudioAudioEngine {
   public setMasterVolume(scalar: number): void {
     this.masterVolumeScalar = Math.max(0, Math.min(2.5, scalar));
     if (this.masterGain && this.ctx) {
-      this.masterGain.gain.setValueAtTime(1.35 * this.masterVolumeScalar, this.ctx.currentTime || 0);
+      this.masterGain.gain.setValueAtTime(0.92 * this.masterVolumeScalar, this.ctx.currentTime || 0);
     }
   }
 
@@ -139,7 +140,7 @@ export class StudioAudioEngine {
       this.rebuildMasterChain(this.ctx);
     } else {
       this.masterGain.gain.setValueAtTime(
-        1.35 * this.masterVolumeScalar,
+        0.92 * this.masterVolumeScalar,
         this.ctx.currentTime || 0
       );
     }
@@ -196,16 +197,16 @@ export class StudioAudioEngine {
     }
 
     this.masterGain = ctx.createGain();
-    this.masterGain.gain.value = 1.35 * this.masterVolumeScalar;
+    this.masterGain.gain.value = 0.92 * this.masterVolumeScalar;
 
     if (typeof (ctx as any).createDynamicsCompressor === 'function') {
       const comp = ctx.createDynamicsCompressor();
       const now = ctx.currentTime || 0;
-      comp.threshold?.setValueAtTime?.(-3, now);
-      comp.knee?.setValueAtTime?.(8, now);
-      comp.ratio?.setValueAtTime?.(10, now);
-      comp.attack?.setValueAtTime?.(0.005, now);
-      comp.release?.setValueAtTime?.(0.16, now);
+      comp.threshold?.setValueAtTime?.(-1.2, now);
+      comp.knee?.setValueAtTime?.(10, now);
+      comp.ratio?.setValueAtTime?.(3.0, now);
+      comp.attack?.setValueAtTime?.(0.012, now);
+      comp.release?.setValueAtTime?.(0.22, now);
       comp.connect(ctx.destination);
       this.masterGain.connect(comp);
       this.compressorNode = comp;
@@ -223,12 +224,12 @@ export class StudioAudioEngine {
     this.drumBus.connect(this.masterGain);
 
     this.reverbSendBus = ctx.createGain();
-    this.reverbSendBus.gain.value = 0.16;
+    this.reverbSendBus.gain.value = 0.14;
 
     if (typeof (ctx as any).createConvolver === 'function') {
-      this.reverbNode = this.createImpulseReverb(ctx, 2.1, 3.4);
+      this.reverbNode = this.createImpulseReverb(ctx, 0.95, 3.2);
       this.reverbWetGain = ctx.createGain();
-      this.reverbWetGain.gain.value = 0.22;
+      this.reverbWetGain.gain.value = 0.18;
 
       this.dryBus.connect(this.reverbSendBus);
       const drumRoom = ctx.createGain();
@@ -935,12 +936,17 @@ export class StudioAudioEngine {
       if (ev.physics?.pushMs) startSec = Math.max(0, startSec - ev.physics.pushMs / 1000);
 
       let durSec = isGrace ? 0.045 : Math.max(0.05, rawEndSec - rawStartSec);
+      const isContSynthVoice = ContinuousSynthEngine.isContinuousSynthPatch(
+        patch,
+        style,
+        ev.physics
+      );
       if (ev.physics?.pizz) {
         durSec = Math.min(0.16, Math.max(0.045, durSec * 0.35));
       } else if (ev.physics?.articulation === 'stacc' || ev.physics?.articulation === 'staccato') {
         durSec = Math.max(0.045, durSec * 0.48);
-      } else if (ev.physics?.legato) {
-        durSec = durSec * 1.08;
+      } else if (ev.physics?.legato && !isContSynthVoice) {
+        durSec = durSec + Math.min(0.035, durSec * 0.06);
       }
 
       if (ev.physics?.pedal) {
@@ -1269,11 +1275,19 @@ export class StudioAudioEngine {
         const prevEnd = prev.startSec + prev.durSec;
         const gap = curr.startSec - prevEnd;
 
+        const prevIsContSynth = ContinuousSynthEngine.isContinuousSynthPatch(
+          prev.patch,
+          prev.style,
+          prev.event.physics
+        );
+
         if ((Math.abs(gap) <= 0.08 || (gap >= -0.15 && gap <= 0.08)) && !prevStacc && curr.startSec > prev.startSec + 0.02) {
           curr.isPhraseContinuation = true;
           prev.hasNextConnectedNote = true;
-          prev.durSec = Math.max(prev.durSec, curr.startSec - prev.startSec + 0.085);
-        } else if (gap > 0.08 && gap <= 1.2 && !prevStacc) {
+          if (!prevIsContSynth) {
+            prev.durSec = Math.max(prev.durSec, curr.startSec - prev.startSec + 0.085);
+          }
+        } else if (gap > 0.08 && gap <= 1.2 && !prevStacc && !prevIsContSynth) {
           // Bridge up to 50% of short rests/breaths so notes taper smoothly rather than slamming shut
           prev.durSec += Math.min(gap * 0.5, 0.38);
         }
@@ -2877,6 +2891,147 @@ export class StudioAudioEngine {
     }
   }
 
+  private computeScoreSignature(score: CompiledScore): string {
+    const firstEv = score.events[0];
+    const lastEv = score.events[score.events.length - 1];
+    return JSON.stringify({
+      title: score.meta?.title || '',
+      tempo: score.meta?.tempo || 120,
+      defsLen: score.defs.length,
+      eventsLen: score.events.length,
+      firstToken: firstEv?.rawToken || '',
+      lastToken: lastEv?.rawToken || '',
+    });
+  }
+
+  /**
+   * 1-Click Score Pre-Downloader & Offline Synth Prebaker (`⬇ Pre-Download`):
+   * 1. Pre-downloads and decodes all required SoundFont banks for `score` (2 banks at a time, 25s timeout).
+   * 2. Pre-renders 100% of the score's `ContinuousSynthEngine` voices and `.fx(...)` chains into memory
+   *    in non-blocking 10-voice batches so subsequent `playScore(score)` runs with zero runtime synthesis!
+   */
+  public async predownloadAndCacheScore(
+    score: CompiledScore,
+    onProgress?: (progress: { percent: number; label: string; done: boolean }) => void
+  ): Promise<{ banksCached: number; notesDecoded: number; synthVoicesBaked: number }> {
+    this.unlockAudioContext();
+    let ctx: AudioContext | null = null;
+    try {
+      ctx = this.ensureContext();
+    } catch {
+      ctx = null;
+    }
+
+    onProgress?.({ percent: 5, label: 'Downloading SoundFont banks...', done: false });
+
+    const sfStats = await this.soundfontLoader.predownloadScoreAssets(ctx, score, (sfProg) => {
+      const bankRatio =
+        sfProg.totalBanks > 0 ? sfProg.loadedBanks / sfProg.totalBanks : 1;
+      const noteRatio =
+        sfProg.totalNotes > 0 ? sfProg.decodedNotes / sfProg.totalNotes : 1;
+      const pct = Math.min(45, Math.round((bankRatio * 0.5 + noteRatio * 0.5) * 45));
+      onProgress?.({
+        percent: pct,
+        label: `Caching Samples (${sfProg.loadedBanks}/${sfProg.totalBanks} banks)...`,
+        done: false,
+      });
+    });
+
+    const timeline = this.buildScheduledTimeline(score);
+    const tempoBpm = Number(score.meta?.tempo) || 120;
+    let synthVoicesBaked = 0;
+
+    if (ctx && typeof ctx.createBuffer === 'function') {
+      const synthIndices: number[] = [];
+      for (let i = 0; i < timeline.length; i++) {
+        const it = timeline[i];
+        if (
+          ContinuousSynthEngine.isContinuousSynthPatch(
+            it.patch,
+            it.style,
+            it.event.physics
+          )
+        ) {
+          synthIndices.push(i);
+        }
+      }
+
+      const totalSynth = synthIndices.length;
+      const BATCH_SIZE = 10;
+      for (let b = 0; b < totalSynth; b += BATCH_SIZE) {
+        const slice = synthIndices.slice(b, b + BATCH_SIZE);
+        for (const idx of slice) {
+          const item = timeline[idx];
+          if (!item.prebakedBuffer) {
+            const sr = ctx.sampleRate || 44100;
+            const isStacc =
+              item.event.physics?.articulation === 'stacc' ||
+              item.event.physics?.articulation === 'staccato';
+            const relSec = isStacc ? 0.14 : 0.28;
+            const totalSec = Math.max(0.06, item.durSec + relSec);
+            const frames = Math.max(128, Math.floor(totalSec * sr));
+            const buf = ctx.createBuffer(2, frames, sr);
+            const left = buf.getChannelData(0);
+            const right = buf.getChannelData(1);
+
+            ContinuousSynthEngine.renderVoiceIntoTrackStem(
+              left,
+              right,
+              0,
+              frames,
+              sr,
+              tempoBpm,
+              idx + 1,
+              item
+            );
+            const activeFxChain = AbletonAudioFxEngine.resolveActiveFxChain(
+              item.def,
+              item.event
+            );
+            if (activeFxChain.length > 0) {
+              AbletonAudioFxEngine.applyFxChainToSlice(
+                left,
+                right,
+                0,
+                frames,
+                sr,
+                activeFxChain,
+                {
+                  lyric: item.event.physics?.lyric,
+                  carrierFreqHz: item.freq,
+                }
+              );
+            }
+            item.prebakedBuffer = buf;
+          }
+          synthVoicesBaked++;
+        }
+
+        const pct =
+          45 +
+          Math.round(
+            (Math.min(totalSynth, b + BATCH_SIZE) / Math.max(1, totalSynth)) * 55
+          );
+        onProgress?.({
+          percent: Math.min(99, pct),
+          label: `Pre-baking Synth Voices (${synthVoicesBaked}/${totalSynth})...`,
+          done: false,
+        });
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+
+    this.scheduledTimeline = timeline;
+    this.prebakedScoreSignature = this.computeScoreSignature(score);
+    onProgress?.({ percent: 100, label: 'Cached Offline', done: true });
+
+    return {
+      banksCached: sfStats.banksCached,
+      notesDecoded: sfStats.notesDecoded,
+      synthVoicesBaked,
+    };
+  }
+
   public async playScore(score: CompiledScore): Promise<void> {
     this.stop(false);
 
@@ -2889,7 +3044,18 @@ export class StudioAudioEngine {
     this.totalQuarterBeats = totalQuarterBeats;
     this.scoreDurationSec = totalSeconds;
     this.tempoBpm = Number(score.meta?.tempo) || 120;
-    this.scheduledTimeline = this.buildScheduledTimeline(score);
+
+    const currentSig = this.computeScoreSignature(score);
+    const hasPrebakedTimeline =
+      this.prebakedScoreSignature === currentSig &&
+      this.scheduledTimeline.length > 0 &&
+      this.countInBars === 0;
+
+    if (!hasPrebakedTimeline) {
+      this.scheduledTimeline = this.buildScheduledTimeline(score);
+      this.prebakedScoreSignature = null;
+    }
+
     const [beatsStr] = (score.meta?.time || '4/4').split('/');
     const beatsPerBar = Math.max(1, parseInt(beatsStr, 10) || 4);
     const countInSec = this.countInBars > 0 ? this.countInBars * beatsPerBar * (60 / this.tempoBpm) : 0;

@@ -490,7 +490,7 @@ export class SoundfontBankLoader {
 
           if (!jsText) {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000);
+            const timeoutId = setTimeout(() => controller.abort(), 25000);
             const resp = await fetch(url, { signal: controller.signal, mode: 'cors' });
             clearTimeout(timeoutId);
 
@@ -722,14 +722,9 @@ export class SoundfontBankLoader {
   }
 
   /**
-   * Preloads and decodes all unique (instrument, MIDI pitch) pairs required by the score
-   * so playback starts with zero network stutter.
+   * Extracts all unique (SoundFont instrument, MIDI note) pairs required by `score`.
    */
-  public async prewarmScoreSamples(ctx: BaseAudioContext, score: CompiledScore): Promise<void> {
-    if (this.isTestEnvironment() || typeof ctx.decodeAudioData !== 'function') {
-      return;
-    }
-
+  public extractRequiredScoreAssets(score: CompiledScore): Map<string, Set<number>> {
     const defsById = new Map<string, TrackDefinition>();
     for (const d of score.defs) {
       defsById.set(d.id, d);
@@ -760,25 +755,110 @@ export class SoundfontBankLoader {
       }
       const clampedMidi = Math.max(21, Math.min(108, Math.round(ev.pitch.midi || 60)));
       noteSet.add(clampedMidi);
-      // Prewarm an adjacent neighbor sample for ensemble sections so Desk 2 uses an independent recording
       if (isEnsembleSectionTrack(ev.trackId, def?.name, sfInstrument)) {
         noteSet.add(clampedMidi < 96 ? clampedMidi + 2 : clampedMidi - 2);
       }
     }
 
-    // 1. Fetch all required instrument banks in parallel
-    const instruments = Array.from(requiredNotesByInstrument.keys());
-    await Promise.all(instruments.map((inst) => this.fetchInstrumentBank(inst)));
+    return requiredNotesByInstrument;
+  }
 
-    // 2. Decode the specific MIDI notes used in the score in parallel batches
-    const decodePromises: Promise<any>[] = [];
-    for (const [inst, midiSet] of requiredNotesByInstrument.entries()) {
-      for (const midi of midiSet) {
-        decodePromises.push(this.decodeNoteBuffer(ctx, inst, midi));
-      }
+  /**
+   * Explicitly downloads, caches in `CacheStorage`, and decodes all SoundFont banks and MIDI notes
+   * required by `score` with concurrency throttling (2 banks at a time) for slow/unstable networks.
+   */
+  public async predownloadScoreAssets(
+    ctx: BaseAudioContext | null,
+    score: CompiledScore,
+    onProgress?: (progress: {
+      loadedBanks: number;
+      totalBanks: number;
+      decodedNotes: number;
+      totalNotes: number;
+      done: boolean;
+    }) => void
+  ): Promise<{ banksCached: number; notesDecoded: number }> {
+    const requiredNotesByInstrument = this.extractRequiredScoreAssets(score);
+    const instruments = Array.from(requiredNotesByInstrument.keys());
+    let totalNotes = 0;
+    for (const set of requiredNotesByInstrument.values()) {
+      totalNotes += set.size;
     }
 
-    await Promise.all(decodePromises);
+    let loadedBanks = 0;
+    let decodedNotes = 0;
+    onProgress?.({
+      loadedBanks: 0,
+      totalBanks: instruments.length,
+      decodedNotes: 0,
+      totalNotes,
+      done: instruments.length === 0 && totalNotes === 0,
+    });
+
+    if (!this.isTestEnvironment()) {
+      for (let i = 0; i < instruments.length; i += 2) {
+        const batch = instruments.slice(i, i + 2);
+        await Promise.all(
+          batch.map(async (inst) => {
+            await this.fetchInstrumentBank(inst);
+            loadedBanks++;
+            onProgress?.({
+              loadedBanks,
+              totalBanks: instruments.length,
+              decodedNotes,
+              totalNotes,
+              done: false,
+            });
+          })
+        );
+      }
+    } else {
+      loadedBanks = instruments.length;
+    }
+
+    if (ctx && typeof ctx.decodeAudioData === 'function' && !this.isTestEnvironment()) {
+      const decodeTasks: Array<() => Promise<void>> = [];
+      for (const [inst, midiSet] of requiredNotesByInstrument.entries()) {
+        for (const midi of midiSet) {
+          decodeTasks.push(async () => {
+            await this.decodeNoteBuffer(ctx, inst, midi);
+            decodedNotes++;
+            onProgress?.({
+              loadedBanks,
+              totalBanks: instruments.length,
+              decodedNotes,
+              totalNotes,
+              done: false,
+            });
+          });
+        }
+      }
+      for (let i = 0; i < decodeTasks.length; i += 6) {
+        await Promise.all(decodeTasks.slice(i, i + 6).map((fn) => fn()));
+      }
+    } else {
+      decodedNotes = totalNotes;
+    }
+
+    onProgress?.({
+      loadedBanks,
+      totalBanks: instruments.length,
+      decodedNotes,
+      totalNotes,
+      done: true,
+    });
+    return { banksCached: loadedBanks, notesDecoded: decodedNotes };
+  }
+
+  /**
+   * Preloads and decodes all unique (instrument, MIDI pitch) pairs required by the score
+   * so playback starts with zero network stutter.
+   */
+  public async prewarmScoreSamples(ctx: BaseAudioContext, score: CompiledScore): Promise<void> {
+    if (this.isTestEnvironment() || typeof ctx.decodeAudioData !== 'function') {
+      return;
+    }
+    await this.predownloadScoreAssets(ctx, score);
   }
 
   /**
