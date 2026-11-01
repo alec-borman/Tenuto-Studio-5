@@ -185,28 +185,34 @@ export function evaluateAutomationLaneAt(
   }
 
   const segs = lane.segments;
-  if (timeWhole <= segs[0].startWhole) {
-    return segs[0].startValue;
+  if (timeWhole < segs[0].startWhole - 1e-6) {
+    return undefined;
+  }
+  if (timeWhole > segs[segs.length - 1].endWhole + 1e-6) {
+    return undefined;
   }
 
   for (let i = 0; i < segs.length; i++) {
     const seg = segs[i];
     const isLast = i === segs.length - 1;
-    const withinEnd = isLast ? timeWhole <= seg.endWhole : timeWhole < seg.endWhole;
+    const withinEnd = isLast ? timeWhole <= seg.endWhole + 1e-6 : timeWhole < seg.endWhole + 1e-6;
 
-    if (timeWhole >= seg.startWhole && withinEnd) {
+    if (timeWhole >= seg.startWhole - 1e-6 && withinEnd) {
       const span = seg.endWhole - seg.startWhole;
       if (span <= 1e-9) return seg.endValue;
-      const tNorm = (timeWhole - seg.startWhole) / span;
+      const tNorm = Math.max(0, Math.min(1, (timeWhole - seg.startWhole) / span));
       return interpolateCurveValue(seg.startValue, seg.endValue, tNorm, seg.curve);
     }
 
     if (!isLast && timeWhole >= seg.endWhole && timeWhole < segs[i + 1].startWhole) {
-      return seg.endValue;
+      if (segs[i + 1].startWhole - seg.endWhole <= 1e-6) {
+        return seg.endValue;
+      }
+      return undefined;
     }
   }
 
-  return segs[segs.length - 1].endValue;
+  return undefined;
 }
 
 /**

@@ -705,9 +705,17 @@ export class ContinuousSynthEngine {
       let vactrolEnv = 1.0;
       if (lpgSpec) {
         const tau = Math.max(0.03, lpgSpec.decayMs / 1000);
-        const vAtt = t < 0.004 ? t / 0.004 : 1.0;
-        // Asymmetrical vactrol photoresistor decay tail
-        vactrolEnv = vAtt * (0.7 * Math.exp(-t / tau) + 0.3 * Math.exp(-t / (tau * 2.4)));
+        const cycleHz =
+          phys?.eocCycleHz && phys.eocCycleHz > 0
+            ? phys.eocCycleHz
+            : isBuchlaKrell
+              ? 1.8
+              : 0;
+        const vT = cycleHz > 0 ? t % (1.0 / cycleHz) : t;
+        const vAtt = vT < 0.004 ? vT / 0.004 : 1.0;
+        // Asymmetrical vactrol photoresistor decay tail with warm photoresistor floor
+        vactrolEnv =
+          vAtt * (0.12 + 0.62 * Math.exp(-vT / tau) + 0.26 * Math.exp(-vT / (tau * 2.4)));
         if (lpgSpec.mode === 'vca' || lpgSpec.mode === 'both') {
           ampEnv *= vactrolEnv;
         }

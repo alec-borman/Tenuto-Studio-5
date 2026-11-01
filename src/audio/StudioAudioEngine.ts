@@ -2893,16 +2893,39 @@ export class StudioAudioEngine {
     }
   }
 
+  private playbackSessionId = 0;
+
   private computeScoreSignature(score: CompiledScore): string {
-    const firstEv = score.events[0];
-    const lastEv = score.events[score.events.length - 1];
+    let hash = 2166136261;
+    const mixHash = (str: string) => {
+      for (let i = 0; i < str.length; i++) {
+        hash ^= str.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+      }
+    };
+    for (const d of score.defs) {
+      mixHash(
+        `${d.id}:${d.patch}:${d.style}:${d.volume ?? ''}:${d.pan ?? ''}:${d.group ?? ''}:${JSON.stringify(d.fxChain ?? d.fx ?? '')}:${JSON.stringify(d.sends ?? '')}|`
+      );
+    }
+    for (const ev of score.events) {
+      const st = ev.startTime ? `${ev.startTime.numerator}/${ev.startTime.denominator}` : '0';
+      const dur = ev.duration ? `${ev.duration.numerator}/${ev.duration.denominator}` : '0';
+      mixHash(`${ev.trackId}:${ev.voiceId}:${st}:${dur}:${ev.pitch?.midi ?? -1}:${ev.rawToken ?? ''}|`);
+    }
     return JSON.stringify({
       title: score.meta?.title || '',
       tempo: score.meta?.tempo || 120,
+      time: score.meta?.time || '4/4',
       defsLen: score.defs.length,
       eventsLen: score.events.length,
-      firstToken: firstEv?.rawToken || '',
-      lastToken: lastEv?.rawToken || '',
+      contentHash: hash >>> 0,
+      muted: Array.from(this.mutedTracks).sort().join(','),
+      soloed: Array.from(this.soloedTracks).sort().join(','),
+      vols: Array.from(this.trackVolumes.entries()),
+      pans: Array.from(this.trackPans.entries()),
+      masterVol: Math.round(this.masterVolumeScalar * 1000),
+      sfBanks: this.soundfontLoader.getCachedBankCount(),
     });
   }
 
@@ -3063,6 +3086,7 @@ export class StudioAudioEngine {
 
   public async playScore(score: CompiledScore): Promise<void> {
     this.stop(false);
+    const sessionId = ++this.playbackSessionId;
 
     const ctx = this.ensureContext();
     if (ctx.state === 'suspended' || (ctx.state as string) === 'interrupted') {
@@ -3108,14 +3132,14 @@ export class StudioAudioEngine {
     this.isPlaying = true;
 
     await this.soundfontLoader.prewarmScoreSamples(ctx, score);
-    if (!this.isPlaying) return;
+    if (!this.isPlaying || this.playbackSessionId !== sessionId) return;
 
     const baseTempo = this.tempoBpm;
     const tempoMap = score.meta?.tempoMap;
     let lastVisualUpdateSec = -1;
 
     const tickVisualProgress = () => {
-      if (!this.isPlaying || !this.ctx) return;
+      if (!this.isPlaying || this.playbackSessionId !== sessionId || !this.ctx) return;
       const now = this.ctx.currentTime;
       // Throttle React playhead state updates to ~30fps (32ms) so 1,000+ node SVG/Canvas views
       // never starve the 25ms WebAudio scheduler on the main thread.
@@ -3144,6 +3168,9 @@ export class StudioAudioEngine {
       this.rafId = requestAnimationFrame(tickVisualProgress);
     };
 
+    // Recompute signature after prewarmScoreSamples in case new SoundFont banks were decoded
+    const postWarmSig = this.computeScoreSignature(score);
+
     // Single-Buffer Master Stream Path (Browser / Electron Runtime):
     // When running in a real browser/Electron environment (not mock unit tests),
     // stream the unified stereo master mix buffer through a single AudioBufferSourceNode
@@ -3155,10 +3182,10 @@ export class StudioAudioEngine {
     ) {
       if (
         !this.cachedMasterMixBuffer ||
-        this.cachedMasterMixSignature !== currentSig
+        this.cachedMasterMixSignature !== postWarmSig
       ) {
         const rendered = await this.renderScoreToStereoPcm(score);
-        if (!this.isPlaying) return;
+        if (!this.isPlaying || this.playbackSessionId !== sessionId) return;
         const mixBuf = ctx.createBuffer(
           2,
           rendered.left.length,
@@ -3167,7 +3194,7 @@ export class StudioAudioEngine {
         mixBuf.getChannelData(0).set(rendered.left);
         mixBuf.getChannelData(1).set(rendered.right);
         this.cachedMasterMixBuffer = mixBuf;
-        this.cachedMasterMixSignature = currentSig;
+        this.cachedMasterMixSignature = postWarmSig;
       }
 
       const baseStart = ctx.currentTime + 0.04;
@@ -3317,6 +3344,7 @@ export class StudioAudioEngine {
 
   public stop(notify: boolean = true): void {
     this.isPlaying = false;
+    this.playbackSessionId++;
     if (this.schedulerIntervalId !== null) {
       window.clearInterval(this.schedulerIntervalId);
       this.schedulerIntervalId = null;
@@ -3483,20 +3511,56 @@ export class StudioAudioEngine {
       const gainL = Math.cos(panAngle);
       const gainR = Math.sin(panAngle);
 
-      const activeFxChain = AbletonAudioFxEngine.resolveActiveFxChain(item.def, item.event);
-      const fxSliceFrames = Math.min(totalFrames - startFrame, Math.max(noteFrames, Math.floor(0.85 * sampleRate)));
-      const preFxL = activeFxChain.length > 0 ? left.slice(startFrame, startFrame + fxSliceFrames) : null;
-      const preFxR = activeFxChain.length > 0 ? right.slice(startFrame, startFrame + fxSliceFrames) : null;
+      const trackId = item.event.trackId || 'pno';
+      const hasTrackFxOrRouting =
+        Boolean(item.def?.fxChain && item.def.fxChain.length > 0) ||
+        Boolean(item.def?.fx && Object.keys(item.def.fx).length > 0) ||
+        Boolean(item.def?.sends && Object.keys(item.def.sends).length > 0) ||
+        Boolean(item.def?.group);
+
+      let targetL = left;
+      let targetR = right;
+      if (hasTrackFxOrRouting) {
+        let stem = trackStems.get(trackId);
+        if (!stem) {
+          stem = {
+            left: new Float32Array(totalFrames),
+            right: new Float32Array(totalFrames),
+            def: item.def,
+            vocodedPerNote: false,
+          };
+          trackStems.set(trackId, stem);
+        }
+        targetL = stem.left;
+        targetR = stem.right;
+      }
+
+      // Only run per-note FX if the note itself carries note-level `.fx(...)` modifiers;
+      // track-level `def.fxChain` is applied once to the unified track stem!
+      const noteOnlyFxChain = hasTrackFxOrRouting
+        ? item.event.physics?.fx && item.event.physics.fx.length > 0
+          ? item.event.physics.fx
+          : []
+        : AbletonAudioFxEngine.resolveActiveFxChain(item.def, item.event);
+
+      const fxSliceFrames =
+        noteOnlyFxChain.length > 0
+          ? Math.min(totalFrames - startFrame, Math.max(noteFrames, Math.floor(0.85 * sampleRate)))
+          : 0;
+      const preFxL =
+        noteOnlyFxChain.length > 0 ? targetL.slice(startFrame, startFrame + fxSliceFrames) : null;
+      const preFxR =
+        noteOnlyFxChain.length > 0 ? targetR.slice(startFrame, startFrame + fxSliceFrames) : null;
 
       const applyItemFx = (framesToProcess: number) => {
-        if (!preFxL || !preFxR || activeFxChain.length === 0) return;
+        if (!preFxL || !preFxR || noteOnlyFxChain.length === 0) return;
         const count = Math.min(framesToProcess, preFxL.length);
         if (count <= 0) return;
         const deltaL = new Float32Array(count);
         const deltaR = new Float32Array(count);
         for (let k = 0; k < count; k++) {
-          deltaL[k] = left[startFrame + k] - preFxL[k];
-          deltaR[k] = right[startFrame + k] - preFxR[k];
+          deltaL[k] = targetL[startFrame + k] - preFxL[k];
+          deltaR[k] = targetR[startFrame + k] - preFxR[k];
         }
         AbletonAudioFxEngine.applyFxChainToSlice(
           deltaL,
@@ -3504,15 +3568,15 @@ export class StudioAudioEngine {
           0,
           count,
           sampleRate,
-          activeFxChain,
+          noteOnlyFxChain,
           {
             lyric: item.event.physics?.lyric,
             carrierFreqHz: item.freq,
           }
         );
         for (let k = 0; k < count; k++) {
-          left[startFrame + k] = preFxL[k] + deltaL[k];
-          right[startFrame + k] = preFxR[k] + deltaR[k];
+          targetL[startFrame + k] = preFxL[k] + deltaL[k];
+          targetR[startFrame + k] = preFxR[k] + deltaR[k];
         }
       };
 
@@ -3543,8 +3607,8 @@ export class StudioAudioEngine {
             const rawNoise = (Math.random() * 2 - 1) * Math.exp(-t * 65);
             lpWood += 0.095 * (rawNoise - lpWood);
             const sample = Math.tanh((sub + box + lpWood * 0.75) * 1.55) * item.amp * 1.15;
-            left[startFrame + i] += sample * gainL;
-            right[startFrame + i] += sample * gainR;
+            targetL[startFrame + i] += sample * gainL;
+            targetR[startFrame + i] += sample * gainR;
           }
           applyItemFx(hammerFrames);
           continue;
@@ -3571,8 +3635,8 @@ export class StudioAudioEngine {
               const s0 = ch0[idx0] + (ch0[idx0 + 1] - ch0[idx0]) * frac;
               const s1 = ch1[idx0] + (ch1[idx0 + 1] - ch1[idx0]) * frac;
               const env = Math.exp(-(i / sampleRate) * 3.5);
-              left[startFrame + i] += s0 * env * item.amp * 2.2 * gainL;
-              right[startFrame + i] += s1 * env * item.amp * 2.2 * gainR;
+              targetL[startFrame + i] += s0 * env * item.amp * 2.2 * gainL;
+              targetR[startFrame + i] += s1 * env * item.amp * 2.2 * gainR;
               rPos += rateRatio;
             }
             applyItemFx(maxFrames);
@@ -3662,8 +3726,8 @@ export class StudioAudioEngine {
             sample = hpState * env * item.amp * (isOpenHat ? 0.48 : 0.38);
           }
 
-          left[startFrame + i] += sample * gainL;
-          right[startFrame + i] += sample * gainR;
+          targetL[startFrame + i] += sample * gainL;
+          targetR[startFrame + i] += sample * gainR;
         }
         applyItemFx(drumFrames);
         continue;
@@ -3709,53 +3773,100 @@ export class StudioAudioEngine {
         const phys = item.event.physics;
         const isSustainingSample = isSustainingOrchestralInstrument(item.sfInstrument, item.patch);
 
+        // Energy-gated loop bounds prevent reading into trailing MP3 silence
+        const loopInfo1 = this.soundfontLoader.getSustainedLoopInfo(buf, isSustainingSample);
+        const loopStart1 = loopInfo1.loopStart;
+        const loopEnd1 = loopInfo1.loopEnd;
+        const loopSpan1 = Math.max(256, loopEnd1 - loopStart1);
+        const halfSpan1 = Math.floor(loopSpan1 * 0.5);
+
+        const loopInfo2 = desk2Buf
+          ? this.soundfontLoader.getSustainedLoopInfo(desk2Buf, isSustainingSample)
+          : null;
+        const loopStart2 = loopInfo2 ? loopInfo2.loopStart : 0;
+        const loopEnd2 = loopInfo2 ? loopInfo2.loopEnd : 1;
+        const loopSpan2 = Math.max(256, loopEnd2 - loopStart2);
+        const halfSpan2 = Math.floor(loopSpan2 * 0.5);
+
         const offsetSamples = Math.min(
-          Math.max(0, bufLen - 2),
+          Math.max(0, loopEnd1 - 2),
           Math.floor(profile.sampleOffsetSec * (buf.sampleRate || sampleRate))
         );
         let readPos1 = offsetSamples;
         let readPos2 = desk2Buf
           ? Math.min(
-              Math.max(0, desk2Len - 2),
+              Math.max(0, loopEnd2 - 2),
               Math.floor(Math.max(0.09, profile.sampleOffsetSec) * (desk2Buf.sampleRate || sampleRate))
             )
           : 0;
         let lpState0 = 0;
         let lpState1 = 0;
 
-        const safeLoopStart1 = Math.min(bufLen - 1024, Math.floor(0.6 * (buf.sampleRate || sampleRate)));
-        const safeLoopSpan1 = Math.max(1024, bufLen - 256 - safeLoopStart1);
-        const safeLoopStart2 = desk2Buf ? Math.min(desk2Len - 1024, Math.floor(0.6 * (desk2Buf.sampleRate || sampleRate))) : 0;
-        const safeLoopSpan2 = desk2Buf ? Math.max(1024, desk2Len - 256 - safeLoopStart2) : 1;
+        const readCrossfadeSample = (
+          channel: Float32Array,
+          pos: number,
+          lStart: number,
+          lEnd: number,
+          lSpan: number,
+          hSpan: number
+        ): number => {
+          const maxIdx = channel.length - 2;
+          if (pos < lEnd || !isSustainingSample) {
+            const idx = Math.min(maxIdx, Math.max(0, Math.floor(pos)));
+            const frac = pos - Math.floor(pos);
+            return channel[idx] + (channel[idx + 1] - channel[idx]) * frac;
+          }
+          const rel = pos - lStart;
+          const posA = lStart + (((rel % lSpan) + lSpan) % lSpan);
+          const posB = lStart + ((((rel + hSpan) % lSpan) + lSpan) % lSpan);
+          const phaseA = (Math.PI * (posA - lStart)) / lSpan;
+          const wA = Math.sin(phaseA) * Math.sin(phaseA);
+          const wB = 1.0 - wA;
+
+          const idxA = Math.min(maxIdx, Math.max(0, Math.floor(posA)));
+          const fracA = posA - Math.floor(posA);
+          const valA = channel[idxA] + (channel[idxA + 1] - channel[idxA]) * fracA;
+
+          const idxB = Math.min(maxIdx, Math.max(0, Math.floor(posB)));
+          const fracB = posB - Math.floor(posB);
+          const valB = channel[idxB] + (channel[idxB + 1] - channel[idxB]) * fracB;
+
+          return valA * wA + valB * wB;
+        };
 
         for (let i = 0; i < noteFrames; i++) {
-          if (readPos1 >= bufLen - 2) {
-            if (isSustainingSample && bufLen > 4096) {
-              readPos1 = safeLoopStart1 + ((readPos1 - safeLoopStart1) % safeLoopSpan1);
-            } else {
-              break;
-            }
-          }
-          const idx1 = Math.floor(readPos1);
-          const frac1 = readPos1 - idx1;
-
-          let s0 = ch0[idx1] + (ch0[idx1 + 1] - ch0[idx1]) * frac1;
-          let s1 = ch1[idx1] + (ch1[idx1 + 1] - ch1[idx1]) * frac1;
-
           const t = i / sampleRate;
-          if (desk2Ch0 && desk2Ch1 && t >= 0.018) {
-            if (readPos2 >= desk2Len - 2 && isSustainingSample && desk2Len > 4096) {
-              readPos2 = safeLoopStart2 + ((readPos2 - safeLoopStart2) % safeLoopSpan2);
-            }
-            const idx2 = Math.floor(readPos2);
-            if (idx2 < desk2Len - 1) {
-              const frac2 = readPos2 - idx2;
-              const d0 = desk2Ch0[idx2] + (desk2Ch0[idx2 + 1] - desk2Ch0[idx2]) * frac2;
-              const d1 = desk2Ch1[idx2] + (desk2Ch1[idx2 + 1] - desk2Ch1[idx2]) * frac2;
-              const desk2Fade = Math.min(1, (t - 0.018) / 0.045);
-              s0 = s0 * 0.72 + d0 * 0.45 * desk2Fade;
-              s1 = s1 * 0.68 + d1 * 0.48 * desk2Fade;
-            }
+          let s0 = 0;
+          let s1 = 0;
+
+          if (!isSustainingSample && readPos1 >= loopInfo1.activeEnd) {
+            // Warm acoustic soundboard resonance tail when a percussive/plucked sample reaches its end before noteFrames
+            const tailSec = Math.max(0, (readPos1 - loopInfo1.activeEnd) / (buf.sampleRate || sampleRate));
+            const resDecay = Math.exp(-tailSec * 2.5) * 0.14;
+            const resWave =
+              0.7 * Math.sin(2 * Math.PI * item.freq * t) +
+              0.3 * Math.sin(4 * Math.PI * item.freq * t);
+            s0 = resWave * resDecay;
+            s1 = resWave * resDecay;
+          } else {
+            s0 =
+              readCrossfadeSample(ch0, readPos1, loopStart1, loopEnd1, loopSpan1, halfSpan1) *
+              loopInfo1.normGain;
+            s1 =
+              readCrossfadeSample(ch1, readPos1, loopStart1, loopEnd1, loopSpan1, halfSpan1) *
+              loopInfo1.normGain;
+          }
+
+          if (desk2Ch0 && desk2Ch1 && loopInfo2 && t >= 0.018 && (isSustainingSample || readPos2 < loopInfo2.activeEnd)) {
+            const d0 =
+              readCrossfadeSample(desk2Ch0, readPos2, loopStart2, loopEnd2, loopSpan2, halfSpan2) *
+              loopInfo2.normGain;
+            const d1 =
+              readCrossfadeSample(desk2Ch1, readPos2, loopStart2, loopEnd2, loopSpan2, halfSpan2) *
+              loopInfo2.normGain;
+            const desk2Fade = Math.min(1, (t - 0.018) / 0.045);
+            s0 = s0 * 0.72 + d0 * 0.45 * desk2Fade;
+            s1 = s1 * 0.68 + d1 * 0.48 * desk2Fade;
           }
 
           let env = 1.0;
@@ -3815,8 +3926,8 @@ export class StudioAudioEngine {
           }
 
           const gain = env * baseAmpScalar * 2.1;
-          left[startFrame + i] += lpState0 * gain * gainL;
-          right[startFrame + i] += lpState1 * gain * gainR;
+          targetL[startFrame + i] += lpState0 * gain * gainL;
+          targetR[startFrame + i] += lpState1 * gain * gainR;
         }
         applyItemFx(noteFrames);
         continue;
@@ -3833,8 +3944,8 @@ export class StudioAudioEngine {
           item.cutoffHzOverride
         );
         WavetableEngine.renderNoteToStereoBuffer(
-          left,
-          right,
+          targetL,
+          targetR,
           startFrame,
           noteFrames,
           sampleRate,
@@ -3860,8 +3971,8 @@ export class StudioAudioEngine {
           item.cutoffHzOverride
         );
         AbletonSynthSuite.renderNoteToStereoBuffer(
-          left,
-          right,
+          targetL,
+          targetR,
           startFrame,
           noteFrames,
           sampleRate,
@@ -3884,8 +3995,8 @@ export class StudioAudioEngine {
         SamplerAndDrumRackEngine.isSimplerTrack(item.style, item.patch, item.def)
       ) {
         SamplerAndDrumRackEngine.renderGranularOrSimplerNoteToStereo(
-          left,
-          right,
+          targetL,
+          targetR,
           startFrame,
           noteFrames,
           sampleRate,
@@ -3949,7 +4060,8 @@ export class StudioAudioEngine {
 
       const hAmps = new Float32Array(9);
       let maxHarmonic = 0;
-      if (!isSub && isSustaining) {
+      const harmTable = !isSub && isSustaining ? new Float32Array(2048) : null;
+      if (!isSub && isSustaining && harmTable) {
         for (let h = 1; h <= 8; h++) {
           const hFreq = item.freq * h;
           if (hFreq > 12000) break;
@@ -3959,7 +4071,17 @@ export class StudioAudioEngine {
           hAmps[h] = (1 / Math.pow(h, 1.15)) * formantGain * oddBoost;
           maxHarmonic = h;
         }
+        const twoPiOver2048 = (2 * Math.PI) / 2048;
+        for (let ti = 0; ti < 2048; ti++) {
+          const theta = ti * twoPiOver2048;
+          let sumH = 0;
+          for (let h = 1; h <= maxHarmonic; h++) {
+            sumH += hAmps[h] * Math.sin(theta * h);
+          }
+          harmTable[ti] = sumH * 0.48;
+        }
       }
+      const radToTableIdx = 2048 / (2 * Math.PI);
 
       for (let i = 0; i < noteFrames; i++) {
         const t = i / sampleRate;
@@ -4032,15 +4154,15 @@ export class StudioAudioEngine {
         let wave = 0;
         if (isSub) {
           wave = Math.sin(ph1) * 0.8 + Math.sin(ph1 * 2) * 0.2;
-        } else if (isSustaining) {
-          for (let h = 1; h <= maxHarmonic; h++) {
-            const ensemblePhase =
-              item.isEnsembleSection && h <= 4
-                ? 0.45 * Math.sin(ph1 * h) + 0.3 * Math.sin(ph2 * h) + 0.25 * Math.sin(ph3 * h)
-                : 0.65 * Math.sin(ph1 * h) + 0.35 * Math.sin(ph2 * h);
-            wave += hAmps[h] * ensemblePhase;
+        } else if (isSustaining && harmTable) {
+          const idx1 = ((ph1 * radToTableIdx) | 0) & 2047;
+          const idx2 = ((ph2 * radToTableIdx) | 0) & 2047;
+          if (item.isEnsembleSection) {
+            const idx3 = ((ph3 * radToTableIdx) | 0) & 2047;
+            wave = 0.45 * harmTable[idx1] + 0.3 * harmTable[idx2] + 0.25 * harmTable[idx3];
+          } else {
+            wave = 0.65 * harmTable[idx1] + 0.35 * harmTable[idx2];
           }
-          wave *= 0.48;
         } else {
           wave =
             0.58 * Math.sin(ph1) +
@@ -4056,15 +4178,23 @@ export class StudioAudioEngine {
         lpState += lpAlpha * (wave - lpState);
 
         const sample = lpState * env * baseAmpScalar * 0.88;
-        left[startFrame + i] += sample * gainL;
-        right[startFrame + i] += sample * gainR;
+        targetL[startFrame + i] += sample * gainL;
+        targetR[startFrame + i] += sample * gainR;
       }
       applyItemFx(noteFrames);
     }
 
+    const returnDefsById = new Map<string, TrackDefinition>();
+    for (const d of score.defs) {
+      if (d.style === 'return') {
+        returnDefsById.set(d.id, d);
+      }
+    }
+    const returnStems = new Map<string, { left: Float32Array; right: Float32Array; def: TrackDefinition }>();
+
     for (const [, stem] of trackStems.entries()) {
       ContinuousSynthEngine.applyTrackBassMonoCrossover(stem.left, stem.right, sampleRate, 120);
-      const rawTrackFx = stem.def?.fxChain || [];
+      const rawTrackFx = AbletonAudioFxEngine.resolveActiveFxChain(stem.def, undefined);
       const trackFxChain = stem.vocodedPerNote
         ? rawTrackFx.filter((f) => f.type.toLowerCase() !== 'vocoder')
         : rawTrackFx;
@@ -4078,9 +4208,51 @@ export class StudioAudioEngine {
           trackFxChain
         );
       }
+
+      if (stem.def?.sends) {
+        for (const [retId, sendLvl] of Object.entries(stem.def.sends)) {
+          const retDef = returnDefsById.get(retId);
+          const lvl = Math.max(0, Math.min(1.5, Number(sendLvl) || 0));
+          if (retDef && lvl > 0.001 && !this.mutedTracks.has(retId)) {
+            let retStem = returnStems.get(retId);
+            if (!retStem) {
+              retStem = {
+                left: new Float32Array(totalFrames),
+                right: new Float32Array(totalFrames),
+                def: retDef,
+              };
+              returnStems.set(retId, retStem);
+            }
+            for (let i = 0; i < totalFrames; i++) {
+              retStem.left[i] += stem.left[i] * lvl;
+              retStem.right[i] += stem.right[i] * lvl;
+            }
+          }
+        }
+      }
+
       for (let i = 0; i < totalFrames; i++) {
         left[i] += stem.left[i];
         right[i] += stem.right[i];
+      }
+    }
+
+    for (const [, retStem] of returnStems.entries()) {
+      const retFxChain = AbletonAudioFxEngine.resolveActiveFxChain(retStem.def, undefined);
+      if (retFxChain.length > 0) {
+        AbletonAudioFxEngine.applyFxChainToSlice(
+          retStem.left,
+          retStem.right,
+          0,
+          totalFrames,
+          sampleRate,
+          retFxChain
+        );
+      }
+      const retVol = this.trackVolumes.get(retStem.def.id) ?? retStem.def.volume ?? 0.85;
+      for (let i = 0; i < totalFrames; i++) {
+        left[i] += retStem.left[i] * retVol;
+        right[i] += retStem.right[i] * retVol;
       }
     }
 
@@ -4174,22 +4346,42 @@ export class StudioAudioEngine {
       right[i] = inR + earlyR + outAp2R * 0.34;
     }
 
-    // Peak-normalize the rendered stereo mix to 0.90 (-0.9 dBFS) so WAV exports are always full studio volume
+    // Peak-normalize the rendered stereo mix to 0.90 (-0.9 dBFS) with transient spike protection
     let maxPeak = 0;
-    for (let i = 0; i < totalFrames; i++) {
-      const absL = Number.isFinite(left[i]) ? Math.abs(left[i]) : 0;
-      const absR = Number.isFinite(right[i]) ? Math.abs(right[i]) : 0;
-      if (absL > maxPeak) maxPeak = absL;
-      if (absR > maxPeak) maxPeak = absR;
+    const winStep = Math.max(1024, Math.floor(0.05 * sampleRate));
+    const winPeaks: number[] = [];
+    for (let i = 0; i < totalFrames; i += winStep) {
+      const end = Math.min(totalFrames, i + winStep);
+      let wPeak = 0;
+      for (let j = i; j < end; j++) {
+        const l = Number.isFinite(left[j]) ? left[j] : 0;
+        const r = Number.isFinite(right[j]) ? right[j] : 0;
+        left[j] = l;
+        right[j] = r;
+        const m = Math.max(Math.abs(l), Math.abs(r));
+        if (m > wPeak) wPeak = m;
+        if (m > maxPeak) maxPeak = m;
+      }
+      if (wPeak > 0.001) winPeaks.push(wPeak);
     }
 
-    const normGain = maxPeak > 0.0001 ? (0.90 / maxPeak) * Math.min(1.5, Math.max(0.5, this.masterVolumeScalar)) : 1.0;
+    let refPeak = maxPeak;
+    if (winPeaks.length >= 8) {
+      winPeaks.sort((a, b) => a - b);
+      const p98 = winPeaks[Math.min(winPeaks.length - 1, Math.floor(winPeaks.length * 0.98))];
+      if (p98 > 0.001 && maxPeak > p98 * 2.5) {
+        refPeak = p98 * 1.35;
+      }
+    }
+
+    const normGain =
+      refPeak > 0.0001
+        ? (0.90 / refPeak) * Math.min(1.5, Math.max(0.5, this.masterVolumeScalar))
+        : 1.0;
 
     for (let i = 0; i < totalFrames; i++) {
-      const l = Number.isFinite(left[i]) ? Math.tanh(left[i] * normGain) : 0;
-      const r = Number.isFinite(right[i]) ? Math.tanh(right[i] * normGain) : 0;
-      left[i] = l;
-      right[i] = r;
+      left[i] = Math.tanh(left[i] * normGain);
+      right[i] = Math.tanh(right[i] * normGain);
     }
 
     return {

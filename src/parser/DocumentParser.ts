@@ -504,6 +504,13 @@ export class DocumentParser {
       expandedTokens.push(tok);
     }
 
+    if (expandedTokens.length >= 2 && !expandedTokens[0].includes(':')) {
+      const lastDur = serializer.temporalEngine.lastDuration;
+      if (lastDur && lastDur.numerator / Math.max(1, lastDur.denominator) >= 0.75) {
+        serializer.temporalEngine.lastDuration = { numerator: 1, denominator: 4 };
+      }
+    }
+
     for (const token of expandedTokens) {
       try {
         // 1. Euclidean syntax: (c2):3/8 or (k):3/8:16 or k(3,8):16
@@ -1528,14 +1535,47 @@ export class DocumentParser {
         }
       }
 
+      // Join wrapped multi-line note continuations inside measureBody (outside <[...]> and {...})
+      const rawBodyLines = measureBody.split(/\r?\n/);
+      const normalizedBodyLines: string[] = [];
+      let bracketBalance = 0;
+      for (const rawLine of rawBodyLines) {
+        const trimmed = rawLine.trim();
+        if (!trimmed) {
+          normalizedBodyLines.push(rawLine);
+          continue;
+        }
+        const isDirectiveOrTrack =
+          /^(?:meta\b|locator\b|[a-zA-Z0-9_]+[ \t]*:)/i.test(trimmed);
+        if (
+          bracketBalance === 0 &&
+          !isDirectiveOrTrack &&
+          normalizedBodyLines.length > 0 &&
+          /^[ \t]*[a-zA-Z0-9_]+[ \t]*:/.test(normalizedBodyLines[normalizedBodyLines.length - 1])
+        ) {
+          normalizedBodyLines[normalizedBodyLines.length - 1] += ' ' + trimmed;
+        } else {
+          normalizedBodyLines.push(rawLine);
+        }
+        for (let ci = 0; ci < trimmed.length; ci++) {
+          const ch = trimmed[ci];
+          if (ch === '{' || (ch === '<' && trimmed[ci + 1] === '[')) bracketBalance++;
+          else if (ch === '}' || (ch === ']' && trimmed[ci + 1] === '>')) {
+            bracketBalance = Math.max(0, bracketBalance - 1);
+          }
+        }
+      }
+      const normalizedMeasureBody = normalizedBodyLines.join('\n');
+
       for (let mNum = startNum; mNum <= endNum; mNum++) {
         const measureStartTime = { ...currentScoreTime };
         let maxVoiceDurationInMeasure = { ...measureCapacity };
+        let hasCanonicalCapacityTrack = false;
 
         const assignmentRegex = /^[ \t]*([a-zA-Z0-9_]+)[ \t]*:[ \t]*(<\[[\s\S]*?\]>|\{[\s\S]*?\}|[^\r\n]*)$/gm;
         let assignMatch: RegExpExecArray | null;
 
-        while ((assignMatch = assignmentRegex.exec(measureBody)) !== null) {
+        while ((assignMatch = assignmentRegex.exec(normalizedMeasureBody)) !== null) {
           const trackId = assignMatch[1].trim();
           if (trackId.toLowerCase() === 'meta') continue;
           const rhs = assignMatch[2].trim();
@@ -1570,6 +1610,12 @@ export class DocumentParser {
               );
               allEvents.push(...events);
               if (
+                totalDuration.numerator * measureCapacity.denominator ===
+                measureCapacity.numerator * totalDuration.denominator
+              ) {
+                hasCanonicalCapacityTrack = true;
+              }
+              if (
                 totalDuration.numerator * maxVoiceDurationInMeasure.denominator >
                 maxVoiceDurationInMeasure.numerator * totalDuration.denominator
               ) {
@@ -1592,6 +1638,12 @@ export class DocumentParser {
             );
             allEvents.push(...events);
             if (
+              totalDuration.numerator * measureCapacity.denominator ===
+              measureCapacity.numerator * totalDuration.denominator
+            ) {
+              hasCanonicalCapacityTrack = true;
+            }
+            if (
               totalDuration.numerator * maxVoiceDurationInMeasure.denominator >
               maxVoiceDurationInMeasure.numerator * totalDuration.denominator
             ) {
@@ -1600,7 +1652,10 @@ export class DocumentParser {
           }
         }
 
-        currentScoreTime = this.addFractions(measureStartTime, maxVoiceDurationInMeasure);
+        const effectiveMeasureAdvance = hasCanonicalCapacityTrack
+          ? measureCapacity
+          : maxVoiceDurationInMeasure;
+        currentScoreTime = this.addFractions(measureStartTime, effectiveMeasureAdvance);
       }
     }
 

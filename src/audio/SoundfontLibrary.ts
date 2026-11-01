@@ -527,6 +527,121 @@ export class SoundfontBankLoader {
     return res;
   }
 
+  private loopInfoCache = new WeakMap<
+    AudioBuffer,
+    { loopStart: number; loopEnd: number; activeEnd: number; normGain: number }
+  >();
+
+  public getCachedBankCount(): number {
+    let count = 0;
+    for (const map of this.decodedBufferCache.values()) {
+      count += map.size;
+    }
+    return count;
+  }
+
+  /**
+   * Computes and caches the true non-silent region `[0..activeEnd]` and high-energy sustain
+   * loop window `[loopStart..loopEnd]` for any decoded AudioBuffer (preventing MP3 tail silence dropouts).
+   */
+  public getSustainedLoopInfo(
+    srcBuf: AudioBuffer,
+    isSustaining: boolean
+  ): { loopStart: number; loopEnd: number; activeEnd: number; normGain: number } {
+    const cached = this.loopInfoCache.get(srcBuf);
+    if (cached) return cached;
+
+    const sr = srcBuf.sampleRate || 44100;
+    const refData = srcBuf.getChannelData(0);
+    const totalSamples = refData.length;
+    const winSize = Math.max(128, Math.floor(sr * 0.015));
+    const numWins = Math.floor(totalSamples / winSize);
+
+    let maxAbs = 0;
+    for (let i = 0; i < totalSamples; i++) {
+      const a = Math.abs(refData[i]);
+      if (a > maxAbs) maxAbs = a;
+    }
+    const normGain = maxAbs > 0.005 ? Math.min(2.6, Math.max(0.75, 0.55 / maxAbs)) : 1.0;
+
+    if (numWins < 6) {
+      const fallback = {
+        loopStart: Math.floor(totalSamples * 0.2),
+        loopEnd: Math.max(Math.floor(totalSamples * 0.2) + 1, totalSamples - 2),
+        activeEnd: Math.max(1, totalSamples - 2),
+        normGain,
+      };
+      this.loopInfoCache.set(srcBuf, fallback);
+      return fallback;
+    }
+
+    const winRms = new Float32Array(numWins);
+    let peakRms = 0;
+    let peakWinIdx = 1;
+    const minAttackWins = Math.min(numWins - 3, Math.max(1, Math.floor(0.035 / 0.015)));
+
+    for (let w = 0; w < numWins; w++) {
+      let sum = 0;
+      const offset = w * winSize;
+      for (let i = 0; i < winSize; i++) {
+        const s = refData[offset + i];
+        sum += s * s;
+      }
+      const r = Math.sqrt(sum / winSize);
+      winRms[w] = r;
+      if (w >= minAttackWins && r > peakRms) {
+        peakRms = r;
+        peakWinIdx = w;
+      }
+    }
+
+    // Find last window with audible energy above 2% of peakRms (strips MP3 trailing silence)
+    let lastActiveWin = numWins - 1;
+    while (lastActiveWin > peakWinIdx && winRms[lastActiveWin] < peakRms * 0.025) {
+      lastActiveWin--;
+    }
+    const activeEnd = Math.min(totalSamples - 2, (lastActiveWin + 1) * winSize);
+
+    let startWin = peakWinIdx;
+    while (startWin > minAttackWins && winRms[startWin - 1] >= peakRms * 0.45) {
+      startWin--;
+    }
+    let endWin = peakWinIdx;
+    while (endWin + 1 <= lastActiveWin && winRms[endWin + 1] >= peakRms * 0.42) {
+      endWin++;
+    }
+
+    // If plateau is narrow, widen slightly ONLY across windows that still have >= 25% of peakRms
+    while (endWin - startWin < 10) {
+      let expanded = false;
+      if (endWin + 1 <= lastActiveWin && winRms[endWin + 1] >= peakRms * 0.25) {
+        endWin++;
+        expanded = true;
+      }
+      if (startWin > minAttackWins && winRms[startWin - 1] >= peakRms * 0.25) {
+        startWin--;
+        expanded = true;
+      }
+      if (!expanded) break;
+    }
+
+    let loopStart = startWin * winSize;
+    let loopEnd = Math.min(activeEnd, (endWin + 1) * winSize);
+    if (loopEnd - loopStart < 512) {
+      loopStart = Math.max(0, Math.floor(activeEnd * 0.15));
+      loopEnd = Math.max(loopStart + 512, Math.min(activeEnd, Math.floor(activeEnd * 0.75)));
+    }
+
+    const info = {
+      loopStart,
+      loopEnd: isSustaining ? loopEnd : activeEnd,
+      activeEnd,
+      normGain,
+    };
+    this.loopInfoCache.set(srcBuf, info);
+    return info;
+  }
+
   /**
    * Energy-Gated Plateau Looper:
    * Scans the decoded sample in 15ms RMS windows to find the true high-energy tonal plateau
@@ -573,20 +688,28 @@ export class SoundfontBankLoader {
 
     if (peakRms < 0.0005) return srcBuf;
 
-    // 2. Expand outward from peakWinIdx while window RMS stays >= 52% of peakRms
+    // 2. Expand outward from peakWinIdx while window RMS stays >= 48% of peakRms (never into MP3 tail silence)
     let startWin = peakWinIdx;
-    while (startWin > minAttackWins && winRms[startWin - 1] >= peakRms * 0.55) {
+    while (startWin > minAttackWins && winRms[startWin - 1] >= peakRms * 0.48) {
       startWin--;
     }
     let endWin = peakWinIdx;
-    while (endWin + 1 < numWins - 1 && winRms[endWin + 1] >= peakRms * 0.52) {
+    while (endWin + 1 < numWins - 1 && winRms[endWin + 1] >= peakRms * 0.45) {
       endWin++;
     }
 
-    // Ensure at least ~180ms of sustain grain material
-    if (endWin - startWin < 12) {
-      startWin = Math.max(minAttackWins, peakWinIdx - 3);
-      endWin = Math.min(numWins - 2, startWin + 16);
+    // Widen only across windows that actually contain >= 25% of peakRms (never into silent tail windows!)
+    while (endWin - startWin < 12) {
+      let expanded = false;
+      if (endWin + 1 < numWins - 1 && winRms[endWin + 1] >= peakRms * 0.25) {
+        endWin++;
+        expanded = true;
+      }
+      if (startWin > minAttackWins && winRms[startWin - 1] >= peakRms * 0.25) {
+        startWin--;
+        expanded = true;
+      }
+      if (!expanded) break;
     }
 
     let loopStartIdx = startWin * winSize;
@@ -607,7 +730,7 @@ export class SoundfontBankLoader {
     }
 
     const grainLen = loopEndIdx - loopStartIdx;
-    if (grainLen < 1536) return srcBuf;
+    if (grainLen < 1024) return srcBuf;
 
     const targetDuration = 6.5;
     const targetLen = Math.floor(sr * targetDuration);

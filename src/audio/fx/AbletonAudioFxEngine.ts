@@ -767,7 +767,7 @@ export class AbletonAudioFxEngine {
         const tap1 = preFrames + Math.floor(0.017 * sampleRate);
         const tap2 = preFrames + Math.floor(0.031 * sampleRate);
         const tap3 = preFrames + Math.floor(0.047 * sampleRate);
-        const fbGain = clamp(Math.pow(0.001, 0.031 / decaySec), 0.25, 0.92);
+        const fbGain = clamp(Math.pow(0.001, 0.031 / decaySec), 0.25, 0.88);
 
         const bufL = new Float32Array(len + tap3 + 4);
         const bufR = new Float32Array(len + tap3 + 4);
@@ -776,16 +776,16 @@ export class AbletonAudioFxEngine {
           const dryL = left[startFrame + i];
           const dryR = right[startFrame + i];
           const revL =
-            (i >= tap1 ? bufL[i - tap1] * 0.45 : 0) +
-            (i >= tap2 ? bufR[i - tap2] * 0.35 : 0) +
-            (i >= tap3 ? bufL[i - tap3] * 0.25 : 0);
+            (i >= tap1 ? bufL[i - tap1] * 0.40 : 0) +
+            (i >= tap2 ? bufR[i - tap2] * 0.30 : 0) +
+            (i >= tap3 ? bufL[i - tap3] * 0.20 : 0);
           const revR =
-            (i >= tap1 ? bufR[i - tap1] * 0.45 : 0) +
-            (i >= tap2 ? bufL[i - tap2] * 0.35 : 0) +
-            (i >= tap3 ? bufR[i - tap3] * 0.25 : 0);
+            (i >= tap1 ? bufR[i - tap1] * 0.40 : 0) +
+            (i >= tap2 ? bufL[i - tap2] * 0.30 : 0) +
+            (i >= tap3 ? bufR[i - tap3] * 0.20 : 0);
 
-          bufL[i] = dryL + revL * fbGain;
-          bufR[i] = dryR + revR * fbGain;
+          bufL[i] = Math.tanh(dryL + revL * fbGain);
+          bufR[i] = Math.tanh(dryR + revR * fbGain);
 
           left[startFrame + i] = dryL * (1 - mix) + (dryL * 0.5 + revL * 0.85) * mix;
           right[startFrame + i] = dryR * (1 - mix) + (dryR * 0.5 + revR * 0.85) * mix;
@@ -805,7 +805,7 @@ export class AbletonAudioFxEngine {
         const tap1 = Math.max(1, Math.floor(0.013 * sampleRate));
         const tap2 = Math.max(2, Math.floor(0.029 * sampleRate));
         const tap3 = Math.max(3, Math.floor(0.043 * sampleRate));
-        const fbGain = clamp(Math.pow(0.001, 0.029 / decaySec), 0.35, 0.94);
+        const fbGain = clamp(Math.pow(0.001, 0.029 / decaySec), 0.35, 0.86);
 
         const bufL = new Float32Array(len + tap3 + 4);
         const bufR = new Float32Array(len + tap3 + 4);
@@ -828,16 +828,16 @@ export class AbletonAudioFxEngine {
           }
 
           const revL =
-            (i >= tap1 ? bufL[i - tap1] * 0.5 : 0) +
-            (i >= tap2 ? bufR[i - tap2] * 0.38 : 0) +
-            (i >= tap3 ? bufL[i - tap3] * 0.28 : 0);
+            (i >= tap1 ? bufL[i - tap1] * 0.42 : 0) +
+            (i >= tap2 ? bufR[i - tap2] * 0.31 : 0) +
+            (i >= tap3 ? bufL[i - tap3] * 0.21 : 0);
           const revR =
-            (i >= tap1 ? bufR[i - tap1] * 0.5 : 0) +
-            (i >= tap2 ? bufL[i - tap2] * 0.38 : 0) +
-            (i >= tap3 ? bufR[i - tap3] * 0.28 : 0);
+            (i >= tap1 ? bufR[i - tap1] * 0.42 : 0) +
+            (i >= tap2 ? bufL[i - tap2] * 0.31 : 0) +
+            (i >= tap3 ? bufR[i - tap3] * 0.21 : 0);
 
-          bufL[i] = dryL + revL * fbGain;
-          bufR[i] = dryR + revR * fbGain;
+          bufL[i] = Math.tanh(dryL + revL * fbGain);
+          bufR[i] = Math.tanh(dryR + revR * fbGain);
 
           const gatedRevL = revL * gateEnv;
           const gatedRevR = revR * gateEnv;
@@ -1114,7 +1114,7 @@ export class AbletonAudioFxEngine {
         const t2 = preFrames + Math.floor(0.031 * sampleRate);
         const t3 = preFrames + Math.floor(0.047 * sampleRate);
         const t4 = preFrames + Math.floor(0.067 * sampleRate);
-        const fb = clamp(Math.pow(0.001, 0.035 / decaySec), 0.3, 0.93);
+        const fb = clamp(Math.pow(0.001, 0.035 / decaySec), 0.3, 0.88);
         const dampAlpha = clamp((2 * Math.PI * rolloffHz) / sampleRate, 0.08, 0.88);
 
         const bufL = new Float32Array(len + t4 + 4);
@@ -1125,22 +1125,22 @@ export class AbletonAudioFxEngine {
         for (let i = 0; i < len; i++) {
           const dryL = left[startFrame + i];
           const dryR = right[startFrame + i];
-          // True-stereo cross-coupled early + late reflection network
+          // True-stereo cross-coupled early + late reflection network (unity-bounded tap sum = 0.94)
           const rawRevL =
-            (i >= t1 ? bufL[i - t1] * 0.42 : 0) +
-            (i >= t2 ? bufR[i - t2] * 0.34 : 0) +
-            (i >= t3 ? bufL[i - t3] * 0.26 : 0) +
-            (i >= t4 ? bufR[i - t4] * 0.18 : 0);
+            (i >= t1 ? bufL[i - t1] * 0.34 : 0) +
+            (i >= t2 ? bufR[i - t2] * 0.27 : 0) +
+            (i >= t3 ? bufL[i - t3] * 0.20 : 0) +
+            (i >= t4 ? bufR[i - t4] * 0.13 : 0);
           const rawRevR =
-            (i >= t1 ? bufR[i - t1] * 0.42 : 0) +
-            (i >= t2 ? bufL[i - t2] * 0.34 : 0) +
-            (i >= t3 ? bufR[i - t3] * 0.26 : 0) +
-            (i >= t4 ? bufL[i - t4] * 0.18 : 0);
+            (i >= t1 ? bufR[i - t1] * 0.34 : 0) +
+            (i >= t2 ? bufL[i - t2] * 0.27 : 0) +
+            (i >= t3 ? bufR[i - t3] * 0.20 : 0) +
+            (i >= t4 ? bufL[i - t4] * 0.13 : 0);
 
           lpL += dampAlpha * (rawRevL - lpL);
           lpR += dampAlpha * (rawRevR - lpR);
-          bufL[i] = dryL + lpL * fb;
-          bufR[i] = dryR + lpR * fb;
+          bufL[i] = Math.tanh(dryL + lpL * fb);
+          bufR[i] = Math.tanh(dryR + lpR * fb);
 
           left[startFrame + i] = dryL * (1 - mix) + (dryL * 0.45 + lpL * 0.92) * mix;
           right[startFrame + i] = dryR * (1 - mix) + (dryR * 0.45 + lpR * 0.92) * mix;
@@ -1301,6 +1301,13 @@ export class AbletonAudioFxEngine {
     if (!fxChain || fxChain.length === 0) return;
     for (const fx of fxChain) {
       this.applyDeviceToSlice(left, right, startFrame, frameCount, sampleRate, fx, context);
+    }
+    const endFrame = Math.min(left.length, right.length, startFrame + frameCount);
+    for (let i = Math.max(0, startFrame); i < endFrame; i++) {
+      const l = left[i];
+      const r = right[i];
+      left[i] = !Number.isFinite(l) ? 0 : Math.abs(l) > 4.0 ? Math.tanh(l * 0.25) * 4.0 : l;
+      right[i] = !Number.isFinite(r) ? 0 : Math.abs(r) > 4.0 ? Math.tanh(r * 0.25) * 4.0 : r;
     }
   }
 }
