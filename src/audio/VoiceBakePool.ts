@@ -7,6 +7,7 @@ interface PendingJob {
   resolve: (pcm: BakedVoicePcm) => void;
   reject: (err: Error) => void;
   worker: Worker;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 /**
@@ -20,6 +21,7 @@ export class VoiceBakePool {
   private inFlight = new Map<Worker, number>();
   private pending = new Map<number, PendingJob>();
   private nextJobId = 1;
+  private consecutiveTimeouts = 0;
   public broken = false;
 
   static create(): VoiceBakePool | null {
@@ -67,7 +69,17 @@ export class VoiceBakePool {
     }
     const jobId = this.nextJobId++;
     return new Promise<BakedVoicePcm>((resolve, reject) => {
-      this.pending.set(jobId, { resolve, reject, worker: target });
+      const timer = setTimeout(() => {
+        const timedOutJob = this.settle(jobId);
+        if (!timedOutJob) return;
+        this.consecutiveTimeouts++;
+        if (this.consecutiveTimeouts >= 4) {
+          this.fail(new Error('Voice bake worker pool timed out repeatedly'));
+        } else {
+          timedOutJob.reject(new Error('Voice bake worker job timed out'));
+        }
+      }, 1200);
+      this.pending.set(jobId, { resolve, reject, worker: target, timer });
       this.inFlight.set(target, (this.inFlight.get(target) || 0) + 1);
       try {
         target.postMessage({ jobId, item, sampleRate, tempoBpm, voiceSeed });
@@ -78,9 +90,25 @@ export class VoiceBakePool {
     });
   }
 
+  /**
+   * Cancels all queued/in-flight jobs for the current playback session so pressing Stop -> Play
+   * immediately frees the worker queue for the new session.
+   */
+  cancelPending(): void {
+    for (const [jobId, job] of Array.from(this.pending.entries())) {
+      clearTimeout(job.timer);
+      this.pending.delete(jobId);
+      job.reject(new Error('Voice bake cancelled'));
+    }
+    for (const w of this.workers) {
+      this.inFlight.set(w, 0);
+    }
+  }
+
   private settle(jobId: number): PendingJob | undefined {
     const job = this.pending.get(jobId);
     if (!job) return undefined;
+    clearTimeout(job.timer);
     this.pending.delete(jobId);
     this.inFlight.set(job.worker, Math.max(0, (this.inFlight.get(job.worker) || 1) - 1));
     return job;
@@ -90,6 +118,7 @@ export class VoiceBakePool {
     const { jobId, left, right, error } = e.data || {};
     const job = this.settle(jobId);
     if (!job) return;
+    this.consecutiveTimeouts = 0;
     if (error || !left || !right) {
       job.reject(new Error(error || 'Empty voice bake result'));
     } else {
@@ -100,6 +129,7 @@ export class VoiceBakePool {
   private fail(err: Error): void {
     this.broken = true;
     for (const [jobId, job] of Array.from(this.pending.entries())) {
+      clearTimeout(job.timer);
       this.pending.delete(jobId);
       job.reject(err);
     }

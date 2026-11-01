@@ -121,8 +121,11 @@ export class StudioAudioEngine {
   /** Off-main-thread synth renderer. `undefined` = not created yet, `null` = unavailable (falls back to main thread). */
   private bakePool: VoiceBakePool | null | undefined = undefined;
   private pendingBakes: Set<ScheduledNoteEvent> = new Set();
+  private pendingBakeKeys: Map<string, Promise<void>> = new Map();
   private voicesAwaitingBake: Set<ScheduledNoteEvent> = new Set();
+  private voicePcmCache: Map<string, { left: Float32Array; right: Float32Array }> = new Map();
   private static readonly MAX_BAKES_IN_FLIGHT = 32;
+  private static readonly MAX_CACHED_VOICE_PCM = 256;
 
   public routingMatrix = new SpatialAudioMatrix();
   public soundfontLoader = new SoundfontBankLoader();
@@ -1168,6 +1171,46 @@ export class StudioAudioEngine {
     return coalescedList;
   }
 
+  private getVoiceCacheKey(item: ScheduledNoteEvent, sampleRate: number, tempoBpm: number): string {
+    const chordSig =
+      item.chordVoices && item.chordVoices.length > 0
+        ? item.chordVoices
+            .map(
+              (v) =>
+                `${v.midi}:${Math.round(v.freq * 10)}:${Math.round(v.amp * 20)}:${v.mpeBend ? v.mpeBend.join(',') : ''}`
+            )
+            .join('|')
+        : `${item.midi}:${Math.round(item.freq * 10)}`;
+    const macrosSig = item.def?.macros ? JSON.stringify(item.def.macros) : '';
+    const fxSig = item.def?.fxChain ? JSON.stringify(item.def.fxChain) : '';
+    const physSig = item.event?.physics ? JSON.stringify(item.event.physics) : '';
+    return `${sampleRate}:${Math.round(tempoBpm * 10)}:${item.patch}:${item.style}:${chordSig}:${Math.round(item.durSec * 100)}:${Math.round(item.amp * 20)}:${Math.round((item.startAmp ?? item.amp) * 20)}:${Math.round((item.endAmp ?? item.amp) * 20)}:${Math.round(item.pan * 20)}:${item.swell || ''}:${item.cutoffHzOverride ?? ''}:${macrosSig}:${fxSig}:${physSig}`;
+  }
+
+  private storeVoicePcmInCache(key: string, left: Float32Array, right: Float32Array): void {
+    if (this.voicePcmCache.has(key)) {
+      this.voicePcmCache.delete(key);
+    } else if (this.voicePcmCache.size >= StudioAudioEngine.MAX_CACHED_VOICE_PCM) {
+      const oldestKey = this.voicePcmCache.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.voicePcmCache.delete(oldestKey);
+      }
+    }
+    this.voicePcmCache.set(key, { left, right });
+  }
+
+  private createAudioBufferFromPcm(
+    ctx: BaseAudioContext,
+    left: Float32Array,
+    right: Float32Array,
+    sampleRate: number
+  ): AudioBuffer {
+    const buf = ctx.createBuffer(2, left.length, sampleRate);
+    buf.getChannelData(0).set(left);
+    buf.getChannelData(1).set(right);
+    return buf;
+  }
+
   /**
    * Rolling Lookahead JIT Prebaker: pre-renders only ContinuousSynthEngine voices within
    * `[fromSec, toSec]` (capped at `maxVoicesToBake` per slice) and evicts finished `prebakedBuffer`
@@ -1204,11 +1247,16 @@ export class StudioAudioEngine {
         continue;
       }
 
+      const cacheKey = this.getVoiceCacheKey(item, sr, tempoBpm);
+      const cachedPcm = this.voicePcmCache.get(cacheKey);
+      if (cachedPcm) {
+        item.prebakedBuffer = this.createAudioBufferFromPcm(ctx, cachedPcm.left, cachedPcm.right, sr);
+        continue;
+      }
+
       const { left, right } = renderContinuousVoicePcm(item, sr, tempoBpm, idx + 1);
-      const buf = ctx.createBuffer(2, left.length, sr);
-      buf.getChannelData(0).set(left);
-      buf.getChannelData(1).set(right);
-      item.prebakedBuffer = buf;
+      this.storeVoicePcmInCache(cacheKey, left, right);
+      item.prebakedBuffer = this.createAudioBufferFromPcm(ctx, left, right, sr);
       bakedCount++;
       if (bakedCount >= maxVoicesToBake) break;
       if (
@@ -1246,25 +1294,41 @@ export class StudioAudioEngine {
     fromSec: number,
     toSec: number
   ): Promise<void>[] {
+    const sr = ctx.sampleRate || 44100;
     const pool = this.getBakePool();
-    if (!pool) return [];
     const queued: Promise<void>[] = [];
     for (let idx = 0; idx < timeline.length; idx++) {
       const item = timeline[idx];
-      if (
-        !this.isLooping &&
-        item.prebakedBuffer &&
-        item.startSec + item.durSec + 0.6 < fromSec
-      ) {
-        item.prebakedBuffer = undefined;
-        continue;
-      }
       if (item.startSec + item.durSec < fromSec) continue;
       if (item.startSec > toSec) break;
       if (item.prebakedBuffer || this.pendingBakes.has(item)) continue;
       if (!this.isContinuousSynthItem(item)) continue;
+
+      const cacheKey = this.getVoiceCacheKey(item, sr, tempoBpm);
+      const cachedPcm = this.voicePcmCache.get(cacheKey);
+      if (cachedPcm) {
+        item.prebakedBuffer = this.createAudioBufferFromPcm(ctx, cachedPcm.left, cachedPcm.right, sr);
+        continue;
+      }
+
+      if (!pool) continue;
+      const existingKeyPromise = this.pendingBakeKeys.get(cacheKey);
+      if (existingKeyPromise) {
+        this.pendingBakes.add(item);
+        queued.push(
+          existingKeyPromise.then(() => {
+            this.pendingBakes.delete(item);
+            const pcm = this.voicePcmCache.get(cacheKey);
+            if (pcm && !item.prebakedBuffer && this.ctx === ctx && (ctx.state as string) !== 'closed') {
+              item.prebakedBuffer = this.createAudioBufferFromPcm(ctx, pcm.left, pcm.right, sr);
+            }
+          })
+        );
+        continue;
+      }
+
       if (pool.pendingCount >= StudioAudioEngine.MAX_BAKES_IN_FLIGHT) break;
-      queued.push(this.bakeItemInWorker(ctx, pool, item, tempoBpm, idx + 1));
+      queued.push(this.bakeItemInWorker(ctx, pool, item, tempoBpm, idx + 1, cacheKey));
     }
     return queued;
   }
@@ -1274,30 +1338,34 @@ export class StudioAudioEngine {
     pool: VoiceBakePool,
     item: ScheduledNoteEvent,
     tempoBpm: number,
-    voiceSeed: number
+    voiceSeed: number,
+    cacheKey?: string
   ): Promise<void> {
+    const sr = ctx.sampleRate || 44100;
+    const key = cacheKey ?? this.getVoiceCacheKey(item, sr, tempoBpm);
     this.pendingBakes.add(item);
     const { prebakedBuffer: _omit, ...payload } = item;
     const finish = () => {
       this.pendingBakes.delete(item);
+      this.pendingBakeKeys.delete(key);
       if (this.voicesAwaitingBake.has(item)) {
         this.voicesAwaitingBake.delete(item);
         this.triggerDeferredVoice(item);
       }
     };
-    return pool.bake(payload, ctx.sampleRate || 44100, tempoBpm, voiceSeed).then(
+    const promise = pool.bake(payload, sr, tempoBpm, voiceSeed).then(
       ({ left, right }) => {
+        this.storeVoicePcmInCache(key, left, right);
         if (!item.prebakedBuffer && this.ctx === ctx && (ctx.state as string) !== 'closed') {
-          const buf = ctx.createBuffer(2, left.length, ctx.sampleRate || 44100);
-          buf.getChannelData(0).set(left);
-          buf.getChannelData(1).set(right);
-          item.prebakedBuffer = buf;
+          item.prebakedBuffer = this.createAudioBufferFromPcm(ctx, left, right, sr);
         }
         finish();
       },
-      // On worker failure the deferred voice is rendered on the main thread instead of being lost.
+      // On worker failure or cancellation, clean up pending state cleanly.
       () => finish()
     );
+    this.pendingBakeKeys.set(key, promise);
+    return promise;
   }
 
   /** Plays a voice whose worker bake finished after its scheduled start, joining it mid-note. */
@@ -1671,15 +1739,21 @@ export class StudioAudioEngine {
         let buf = item.prebakedBuffer;
         if (!buf) {
           const sr = ctx.sampleRate || 44100;
-          const { left: chL, right: chR } = renderContinuousVoicePcm(
-            item,
-            sr,
-            this.tempoBpm || 120,
-            (item.noteIndexInTrack ?? 0) + 1
-          );
-          buf = ctx.createBuffer(2, chL.length, sr);
-          buf.getChannelData(0).set(chL);
-          buf.getChannelData(1).set(chR);
+          const tempo = this.tempoBpm || 120;
+          const cacheKey = this.getVoiceCacheKey(item, sr, tempo);
+          const cachedPcm = this.voicePcmCache.get(cacheKey);
+          if (cachedPcm) {
+            buf = this.createAudioBufferFromPcm(ctx, cachedPcm.left, cachedPcm.right, sr);
+          } else {
+            const { left: chL, right: chR } = renderContinuousVoicePcm(
+              item,
+              sr,
+              tempo,
+              (item.noteIndexInTrack ?? 0) + 1
+            );
+            this.storeVoicePcmInCache(cacheKey, chL, chR);
+            buf = this.createAudioBufferFromPcm(ctx, chL, chR, sr);
+          }
           item.prebakedBuffer = buf;
         }
         const src = ctx.createBufferSource();
@@ -3185,6 +3259,7 @@ export class StudioAudioEngine {
     const sessionId = ++this.playbackSessionId;
 
     const ctx = this.ensureContext();
+    this.rebuildMasterChain(ctx);
     if (ctx.state === 'suspended' || (ctx.state as string) === 'interrupted') {
       await ctx.resume();
     }
@@ -3202,7 +3277,7 @@ export class StudioAudioEngine {
 
     if (!hasPrebakedTimeline) {
       this.scheduledTimeline = this.buildScheduledTimeline(score);
-      this.prebakedScoreSignature = null;
+      this.prebakedScoreSignature = this.countInBars === 0 ? currentSig : null;
     }
 
     const [beatsStr] = (score.meta?.time || '4/4').split('/');
@@ -3345,24 +3420,15 @@ export class StudioAudioEngine {
       return;
     }
 
+    // Synchronously guarantee the opening 3.2s of synth voices are ready before starting the clock
+    // (0ms on replay/cache hit; ~25-40ms on cold start with fast DSP), and simultaneously dispatch
+    // background worker bakes for the upcoming 12s window so the playhead never starves.
+    this.prebakeContinuousSynthTimeline(ctx, this.scheduledTimeline, this.tempoBpm, 0, 3.2, 20, 95);
     if (this.getBakePool()) {
-      // Render the opening 3s of synth voices on the worker pool (capped wait) before starting the
-      // clock, then keep the workers 8s ahead of the playhead. No DSP runs on the main thread.
-      const opening = this.requestWorkerBakes(ctx, this.scheduledTimeline, this.tempoBpm, 0, 3.0);
-      if (opening.length > 0) {
-        await Promise.race([
-          Promise.all(opening),
-          new Promise<void>((resolve) => setTimeout(resolve, 1500)),
-        ]);
-        if (!this.isPlaying || this.playbackSessionId !== sessionId) return;
-      }
-      this.requestWorkerBakes(ctx, this.scheduledTimeline, this.tempoBpm, 0, 8.0);
-    } else {
-      // Fallback (no Worker support): pre-render a compact 2.5s window on the main thread.
-      this.prebakeTimelineWindow(ctx, this.scheduledTimeline, this.tempoBpm, 0, 2.5, 10);
+      this.requestWorkerBakes(ctx, this.scheduledTimeline, this.tempoBpm, 0, 12.0);
     }
 
-    const baseStart = ctx.currentTime + 0.06;
+    const baseStart = ctx.currentTime + 0.05;
     this.startContextTime = baseStart;
 
     const DEFAULT_LOOKAHEAD_SEC = 0.6;
@@ -3381,21 +3447,20 @@ export class StudioAudioEngine {
           this.scheduledTimeline,
           this.tempoBpm,
           elapsed,
-          elapsed + 8.0
-        );
-      } else {
-        // Main-thread fallback: bake ahead under a 6ms budget per tick (at least one voice) so a
-        // burst of heavy voices cannot stall this timer past the lookahead window.
-        this.prebakeContinuousSynthTimeline(
-          this.ctx,
-          this.scheduledTimeline,
-          this.tempoBpm,
-          elapsed,
-          elapsed + 4.0,
-          3,
-          6
+          elapsed + 10.0
         );
       }
+      // Guarantee immediate [elapsed, elapsed + 3.0s] window is populated from voicePcmCache (0.01ms)
+      // or fast main-thread synthesis (capped at 6ms) if a worker is still busy or unavailable.
+      this.prebakeContinuousSynthTimeline(
+        this.ctx,
+        this.scheduledTimeline,
+        this.tempoBpm,
+        elapsed,
+        elapsed + 3.0,
+        3,
+        6
+      );
       if (this.activeVoices.size > 32) {
         this.pruneFinishedVoices(now);
       }
@@ -3424,27 +3489,6 @@ export class StudioAudioEngine {
         this.scheduledTimeline[this.nextScheduleIndex].startSec <= elapsed + lookaheadSec
       ) {
         const item = this.scheduledTimeline[this.nextScheduleIndex];
-        if (
-          !item.prebakedBuffer &&
-          this.bakePool &&
-          !this.bakePool.broken &&
-          this.isContinuousSynthItem(item)
-        ) {
-          // Never render synth DSP inside the scheduler: wait for the worker and join the note
-          // when its buffer arrives (normally it is baked seconds before it is due).
-          if (!this.pendingBakes.has(item)) {
-            this.bakeItemInWorker(
-              this.ctx,
-              this.bakePool,
-              item,
-              this.tempoBpm,
-              this.nextScheduleIndex + 1
-            );
-          }
-          this.voicesAwaitingBake.add(item);
-          this.nextScheduleIndex++;
-          continue;
-        }
         const latenessSec = elapsed - item.startSec;
         if (latenessSec <= 0.04) {
           this.triggerRealtimeVoice(this.ctx, item, this.startContextTime + item.startSec, 0);
@@ -3485,7 +3529,10 @@ export class StudioAudioEngine {
   public stop(notify: boolean = true): void {
     this.isPlaying = false;
     this.playbackSessionId++;
+    this.pendingBakes.clear();
+    this.pendingBakeKeys.clear();
     this.voicesAwaitingBake.clear();
+    this.bakePool?.cancelPending();
     if (this.schedulerIntervalId !== null) {
       window.clearInterval(this.schedulerIntervalId);
       this.schedulerIntervalId = null;

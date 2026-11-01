@@ -1005,8 +1005,7 @@ export class ContinuousSynthEngine {
         aliasStepHold <= 1 &&
         ringPhaseInc === 0 &&
         activeNoise <= 0.005 &&
-        !combBufL &&
-        driveScalar <= 1.01;
+        !combBufL;
 
       if (isFastSawPath) {
         dspState[0] = subPhase;
@@ -1029,6 +1028,8 @@ export class ContinuousSynthEngine {
           qDamp,
           svfHalfF,
           airPct * 0.42,
+          driveScalar,
+          hardwareCircuitDrive,
           blockFinalGain,
           dspState
         );
@@ -1236,6 +1237,8 @@ export class ContinuousSynthEngine {
     qDamp: number,
     svfHalfF: number,
     airScale: number,
+    driveScalar: number,
+    hardwareCircuitDrive: number,
     blockFinalGain: number,
     dspState: Float64Array
   ): void {
@@ -1245,6 +1248,8 @@ export class ContinuousSynthEngine {
     let lpR = dspState[3];
     let bpR = dspState[4];
     const subAmp = subLevel * 0.52;
+    const hasDrive = driveScalar > 1.01;
+    const hwAsym = 0.08 * hardwareCircuitDrive;
 
     for (let k = 0; k < blockLen; k++) {
       let sigL = 0;
@@ -1287,6 +1292,12 @@ export class ContinuousSynthEngine {
 
       let outL = lpL;
       let outR = lpR;
+      if (hasDrive) {
+        const dL = (outL + hwAsym * outL * outL) * driveScalar;
+        const dR = (outR + hwAsym * outR * outR) * driveScalar;
+        outL = dL / (1 + Math.abs(dL));
+        outR = dR / (1 + Math.abs(dR));
+      }
       if (airScale > 0.004) {
         const aL = hpL * 2.2;
         const aR = hpR * 2.2;

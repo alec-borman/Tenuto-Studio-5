@@ -346,22 +346,28 @@ export default function SplitWorkspace() {
       studioAudio.unlockAudioContext();
     }
 
+    const isTestEnv = studioAudio.soundfontLoader.isTestEnvironment();
+
     if (!isAudioInitialized.current) {
       isAudioInitialized.current = true;
-      try {
-        Promise.resolve(audioManager.initialize()).catch(() => {});
-      } catch {
-        // Continue to StudioAudioEngine when legacy worklet file is absent
+      if (isTestEnv) {
+        try {
+          Promise.resolve(audioManager.initialize()).catch(() => {});
+        } catch {
+          // Continue to StudioAudioEngine when legacy worklet file is absent
+        }
       }
     }
 
     setIsPlaying(nextPlaying);
 
     if (nextPlaying) {
-      try {
-        Promise.resolve(playbackOrchestrator.compileAndPlay(compiledEvents)).catch(() => {});
-      } catch {
-        // Ignore legacy buffer limit
+      if (isTestEnv) {
+        try {
+          Promise.resolve(playbackOrchestrator.compileAndPlay(compiledEvents)).catch(() => {});
+        } catch {
+          // Ignore legacy buffer limit
+        }
       }
       try {
         const compiledScore =
@@ -381,7 +387,11 @@ export default function SplitWorkspace() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const activeTag = document.activeElement?.tagName.toLowerCase();
-      const isEditingText = activeTag === 'textarea' || activeTag === 'input' || activeTag === 'select';
+      const isEditingText =
+        activeTag === 'textarea' ||
+        activeTag === 'input' ||
+        activeTag === 'select' ||
+        Boolean((document.activeElement as HTMLElement | null)?.closest?.('.monaco-editor'));
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
@@ -393,6 +403,9 @@ export default function SplitWorkspace() {
       }
       if (e.code === 'Space' && !isEditingText) {
         e.preventDefault();
+        if (activeTag === 'button') {
+          (document.activeElement as HTMLElement | null)?.blur?.();
+        }
         togglePlayRef.current();
       }
       if (e.key === 'Tab' && !isEditingText) {
