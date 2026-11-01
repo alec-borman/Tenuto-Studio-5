@@ -27,6 +27,7 @@ import { renderContinuousVoicePcm } from './synths/renderContinuousVoicePcm';
 import { AbletonAudioFxEngine } from './fx/AbletonAudioFxEngine';
 import { VoiceBakePool } from './VoiceBakePool';
 import { VoicePcmRingBuffer } from './AudioRingBuffer';
+import { playbackDiag } from './PlaybackDiagnostics';
 
 export interface PlaybackProgress {
   isPlaying: boolean;
@@ -67,6 +68,7 @@ interface ScheduledNoteEvent {
     mpeBend?: number[];
   }>;
   prebakedBuffer?: AudioBuffer;
+  cacheKey?: string;
 }
 
 interface ActiveVoiceCleanup {
@@ -124,8 +126,9 @@ export class StudioAudioEngine {
   private pendingBakes: Set<ScheduledNoteEvent> = new Set();
   private pendingBakeKeys: Map<string, Promise<void>> = new Map();
   private voicesAwaitingBake: Set<ScheduledNoteEvent> = new Set();
+  private drumBufferCache: Map<string, AudioBuffer> = new Map();
   public readonly voiceRingBuffer = new VoicePcmRingBuffer(96, 44100 * 96);
-  private static readonly MAX_BAKES_IN_FLIGHT = 16;
+  private static readonly MAX_BAKES_IN_FLIGHT = 64;
 
   public routingMatrix = new SpatialAudioMatrix();
   public soundfontLoader = new SoundfontBankLoader();
@@ -449,6 +452,21 @@ export class StudioAudioEngine {
 
     const currentWhole = Math.max(0, currentQuarterBeat / 4);
 
+    // Single pass over score.events instead of O(defs * events) nested loops
+    const activeEnergyByTrack = new Map<string, number>();
+    for (const ev of score.events) {
+      if (!ev || ev.pitch?.isRest || ev.pitch?.isSpacer) continue;
+      const st = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
+      const dur = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
+      if (currentWhole >= st - 0.02 && currentWhole <= st + dur + 0.08) {
+        const vel = (ev.physics?.velocity ?? 90) / 127;
+        const progress = Math.max(0, Math.min(1, (currentWhole - st) / Math.max(0.05, dur)));
+        const decay = Math.exp(-progress * 1.4);
+        const tId = ev.trackId || 'pno';
+        activeEnergyByTrack.set(tId, (activeEnergyByTrack.get(tId) || 0) + vel * decay);
+      }
+    }
+
     for (const def of score.defs) {
       const isMuted =
         this.mutedTracks.has(def.id) ||
@@ -461,19 +479,7 @@ export class StudioAudioEngine {
 
       const volMidi = this.trackVolumes.get(def.id) ?? def.volume ?? 100;
       const faderScalar = (volMidi / 100) * this.masterVolumeScalar;
-
-      let activeEnergy = 0;
-      for (const ev of score.events) {
-        if ((ev.trackId || 'pno') !== def.id || ev.pitch?.isRest || ev.pitch?.isSpacer) continue;
-        const st = ev.startTime ? ev.startTime.numerator / ev.startTime.denominator : 0;
-        const dur = ev.duration ? ev.duration.numerator / ev.duration.denominator : 0.25;
-        if (currentWhole >= st - 0.02 && currentWhole <= st + dur + 0.08) {
-          const vel = (ev.physics?.velocity ?? 90) / 127;
-          const progress = Math.max(0, Math.min(1, (currentWhole - st) / Math.max(0.05, dur)));
-          const decay = Math.exp(-progress * 1.4);
-          activeEnergy += vel * decay;
-        }
-      }
+      const activeEnergy = activeEnergyByTrack.get(def.id) || 0;
 
       if (!this.isPlaying && activeEnergy === 0) {
         // Static preview level based on track fader volume when idle
@@ -1172,6 +1178,10 @@ export class StudioAudioEngine {
   }
 
   private getVoiceCacheKey(item: ScheduledNoteEvent, sampleRate: number, tempoBpm: number): string {
+    const prefix = `${sampleRate}:${Math.round(tempoBpm * 10)}:`;
+    if (item.cacheKey && item.cacheKey.startsWith(prefix)) {
+      return item.cacheKey;
+    }
     const chordSig =
       item.chordVoices && item.chordVoices.length > 0
         ? item.chordVoices
@@ -1184,7 +1194,9 @@ export class StudioAudioEngine {
     const macrosSig = item.def?.macros ? JSON.stringify(item.def.macros) : '';
     const fxSig = item.def?.fxChain ? JSON.stringify(item.def.fxChain) : '';
     const physSig = item.event?.physics ? JSON.stringify(item.event.physics) : '';
-    return `${sampleRate}:${Math.round(tempoBpm * 10)}:${item.patch}:${item.style}:${chordSig}:${Math.round(item.durSec * 100)}:${Math.round(item.amp * 20)}:${Math.round((item.startAmp ?? item.amp) * 20)}:${Math.round((item.endAmp ?? item.amp) * 20)}:${Math.round(item.pan * 20)}:${item.swell || ''}:${item.cutoffHzOverride ?? ''}:${macrosSig}:${fxSig}:${physSig}`;
+    const computed = `${prefix}${item.patch}:${item.style}:${chordSig}:${Math.round(item.durSec * 100)}:${Math.round(item.amp * 20)}:${Math.round((item.startAmp ?? item.amp) * 20)}:${Math.round((item.endAmp ?? item.amp) * 20)}:${Math.round(item.pan * 20)}:${item.swell || ''}:${item.cutoffHzOverride ?? ''}:${macrosSig}:${fxSig}:${physSig}`;
+    item.cacheKey = computed;
+    return computed;
   }
 
   private storeVoicePcmInCache(key: string, left: Float32Array, right: Float32Array): void {
@@ -1201,6 +1213,19 @@ export class StudioAudioEngine {
     buf.getChannelData(0).set(left);
     buf.getChannelData(1).set(right);
     return buf;
+  }
+
+  private getOrCreateSlotAudioBuffer(
+    ctx: BaseAudioContext,
+    cacheKey: string,
+    sampleRate: number
+  ): AudioBuffer | undefined {
+    const slot = this.voiceRingBuffer.getSlot(cacheKey);
+    if (!slot) return undefined;
+    if (!slot.audioBuffer) {
+      slot.audioBuffer = this.createAudioBufferFromPcm(ctx, slot.left, slot.right, sampleRate);
+    }
+    return slot.audioBuffer;
   }
 
   /**
@@ -1307,9 +1332,7 @@ export class StudioAudioEngine {
       if (!this.isContinuousSynthItem(item)) continue;
 
       const cacheKey = this.getVoiceCacheKey(item, sr, tempoBpm);
-      const cachedPcm = this.voiceRingBuffer.get(cacheKey);
-      if (cachedPcm) {
-        item.prebakedBuffer = this.createAudioBufferFromPcm(ctx, cachedPcm.left, cachedPcm.right, sr);
+      if (this.voiceRingBuffer.has(cacheKey)) {
         continue;
       }
 
@@ -1320,10 +1343,6 @@ export class StudioAudioEngine {
         queued.push(
           existingKeyPromise.then(() => {
             this.pendingBakes.delete(item);
-            const pcm = this.voiceRingBuffer.get(cacheKey);
-            if (pcm && !item.prebakedBuffer && this.ctx === ctx && (ctx.state as string) !== 'closed') {
-              item.prebakedBuffer = this.createAudioBufferFromPcm(ctx, pcm.left, pcm.right, sr);
-            }
             if (this.voicesAwaitingBake.has(item)) {
               this.voicesAwaitingBake.delete(item);
               this.triggerDeferredVoice(item);
@@ -1345,12 +1364,13 @@ export class StudioAudioEngine {
     item: ScheduledNoteEvent,
     tempoBpm: number,
     voiceSeed: number,
-    cacheKey?: string
+    cacheKey?: string,
+    urgent: boolean = false
   ): Promise<void> {
     const sr = ctx.sampleRate || 44100;
     const key = cacheKey ?? this.getVoiceCacheKey(item, sr, tempoBpm);
     this.pendingBakes.add(item);
-    const { prebakedBuffer: _omit, ...payload } = item;
+    const { prebakedBuffer: _omit, cacheKey: _omitKey, ...payload } = item;
     const finish = () => {
       this.pendingBakes.delete(item);
       this.pendingBakeKeys.delete(key);
@@ -1359,12 +1379,9 @@ export class StudioAudioEngine {
         this.triggerDeferredVoice(item);
       }
     };
-    const promise = pool.bake(payload, sr, tempoBpm, voiceSeed).then(
+    const promise = pool.bake(payload, sr, tempoBpm, voiceSeed, urgent).then(
       ({ left, right }) => {
         this.storeVoicePcmInCache(key, left, right);
-        if (!item.prebakedBuffer && this.ctx === ctx && (ctx.state as string) !== 'closed') {
-          item.prebakedBuffer = this.createAudioBufferFromPcm(ctx, left, right, sr);
-        }
         finish();
       },
       // On worker failure or cancellation, clean up pending state cleanly.
@@ -1382,6 +1399,7 @@ export class StudioAudioEngine {
     const absStart = this.startContextTime + item.startSec;
     const offset = Math.max(0, now + 0.01 - absStart);
     if (item.durSec - offset < 0.02) return;
+    playbackDiag.recordDeferredTriggered();
     this.triggerRealtimeVoice(ctx, item, Math.max(absStart, now + 0.01), offset);
   }
 
@@ -1747,28 +1765,74 @@ export class StudioAudioEngine {
           const sr = ctx.sampleRate || 44100;
           const tempo = this.tempoBpm || 120;
           const cacheKey = this.getVoiceCacheKey(item, sr, tempo);
-          const cachedPcm = this.voiceRingBuffer.get(cacheKey);
-          if (cachedPcm) {
-            buf = this.createAudioBufferFromPcm(ctx, cachedPcm.left, cachedPcm.right, sr);
+          const slotBuf = this.getOrCreateSlotAudioBuffer(ctx, cacheKey, sr);
+          if (slotBuf) {
+            buf = slotBuf;
             item.prebakedBuffer = buf;
           } else if (this.pendingBakes.has(item)) {
             // A worker is currently rendering this voice off-thread; let triggerDeferredVoice
             // schedule it as soon as the worker finishes so the main thread never stalls!
             this.voicesAwaitingBake.add(item);
+            playbackDiag.recordDeferredAwait();
             pannerNode?.disconnect();
             return;
           } else {
+            const activePool = this.getBakePool();
+            if (activePool && this.isPlaying) {
+              // Never block the main thread on heavy continuous synth DSP when the worker pool is active!
+              // Enqueue at the front of the worker pool (`urgent = true`) and join via triggerDeferredVoice.
+              this.voicesAwaitingBake.add(item);
+              playbackDiag.recordDeferredAwait();
+              const existingKeyPromise = this.pendingBakeKeys.get(cacheKey);
+              if (existingKeyPromise) {
+                this.pendingBakes.add(item);
+                existingKeyPromise.then(() => {
+                  this.pendingBakes.delete(item);
+                  if (this.voicesAwaitingBake.has(item)) {
+                    this.voicesAwaitingBake.delete(item);
+                    this.triggerDeferredVoice(item);
+                  }
+                });
+              } else {
+                this.bakeItemInWorker(
+                  ctx as AudioContext,
+                  activePool,
+                  item,
+                  tempo,
+                  (item.noteIndexInTrack ?? 0) + 1,
+                  cacheKey,
+                  true
+                );
+              }
+              pannerNode?.disconnect();
+              return;
+            }
+            const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
             const { left: chL, right: chR } = renderContinuousVoicePcm(
               item,
               sr,
               tempo,
               (item.noteIndexInTrack ?? 0) + 1
             );
+            const bakeMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
+            playbackDiag.recordSyncBakeFallback({
+              elapsedSec: Math.max(0, ctx.currentTime - this.startContextTime),
+              trackId: item.event.trackId || 'pno',
+              patch: item.patch,
+              noteStartSec: item.startSec,
+              noteDurSec: item.durSec,
+              chordVoices: item.chordVoices ? item.chordVoices.length : 1,
+              bakeMs,
+              reason: 'worker_pool_unavailable',
+              poolPending: 0,
+              pendingBakesSize: this.pendingBakes.size,
+            });
             this.storeVoicePcmInCache(cacheKey, chL, chR);
             buf = this.createAudioBufferFromPcm(ctx, chL, chR, sr);
             item.prebakedBuffer = buf;
           }
         }
+        playbackDiag.recordVoiceTriggered();
         const src = ctx.createBufferSource();
         src.buffer = buf;
         const envGain = ctx.createGain();
@@ -2669,19 +2733,24 @@ export class StudioAudioEngine {
     // 2. STUDIO HAND CLAP (cp / clap / 39): 4-Burst Human Flam Envelope + Warm 1.35kHz Bandpass
     if (key === 'cp' || key === 'clap' || midi === 39) {
       const dur = 0.24;
-      const len = Math.floor(sr * dur);
-      const buf = ctx.createBuffer(1, len, sr);
-      const data = buf.getChannelData(0);
+      const cacheKey = `clap:${sr}`;
+      let buf = this.drumBufferCache.get(cacheKey);
+      if (!buf) {
+        const len = Math.floor(sr * dur);
+        buf = ctx.createBuffer(1, len, sr);
+        const data = buf.getChannelData(0);
 
-      // 4 staggered micro-clap transients at 0ms, 11ms, 21ms, and 32ms + diffused tail
-      for (let i = 0; i < len; i++) {
-        const t = i / sr;
-        let env = 0;
-        if (t < 0.011) env = Math.exp(-(t / 0.0035));
-        else if (t < 0.021) env = Math.exp(-((t - 0.011) / 0.0035));
-        else if (t < 0.032) env = Math.exp(-((t - 0.021) / 0.004));
-        else env = Math.exp(-((t - 0.032) / 0.055)) * 0.75;
-        data[i] = (Math.random() * 2 - 1) * env;
+        // 4 staggered micro-clap transients at 0ms, 11ms, 21ms, and 32ms + diffused tail
+        for (let i = 0; i < len; i++) {
+          const t = i / sr;
+          let env = 0;
+          if (t < 0.011) env = Math.exp(-(t / 0.0035));
+          else if (t < 0.021) env = Math.exp(-((t - 0.011) / 0.0035));
+          else if (t < 0.032) env = Math.exp(-((t - 0.021) / 0.004));
+          else env = Math.exp(-((t - 0.032) / 0.055)) * 0.75;
+          data[i] = (Math.random() * 2 - 1) * env;
+        }
+        this.drumBufferCache.set(cacheKey, buf);
       }
 
       const src = ctx.createBufferSource();
@@ -2759,13 +2828,18 @@ export class StudioAudioEngine {
 
       // Snare wires: bandpass-filtered shell rattle + crisp stick snap
       const dur = 0.21;
-      const len = Math.floor(sr * dur);
-      const buf = ctx.createBuffer(1, len, sr);
-      const data = buf.getChannelData(0);
-      for (let i = 0; i < len; i++) {
-        const t = i / sr;
-        const snap = t < 0.006 ? 1.0 : 0.65 * Math.exp(-(t - 0.006) * 16);
-        data[i] = (Math.random() * 2 - 1) * snap;
+      const cacheKey = `snare_wires:${sr}`;
+      let buf = this.drumBufferCache.get(cacheKey);
+      if (!buf) {
+        const len = Math.floor(sr * dur);
+        buf = ctx.createBuffer(1, len, sr);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) {
+          const t = i / sr;
+          const snap = t < 0.006 ? 1.0 : 0.65 * Math.exp(-(t - 0.006) * 16);
+          data[i] = (Math.random() * 2 - 1) * snap;
+        }
+        this.drumBufferCache.set(cacheKey, buf);
       }
 
       const noiseSrc = ctx.createBufferSource();
@@ -2874,31 +2948,36 @@ export class StudioAudioEngine {
     const isCrashOrRide = key === 'cr' || key === 'rd' || midi === 49 || midi === 51;
     const isOpenHat = key === 'oh' || midi === 46 || isCrashOrRide;
     const dur = isCrashOrRide ? 0.65 : isOpenHat ? 0.28 : 0.058;
-    const len = Math.floor(sr * dur);
-    const buf = ctx.createBuffer(1, len, sr);
-    const data = buf.getChannelData(0);
+    const cymCacheKey = `cymbal:${sr}:${isCrashOrRide ? 'cr' : isOpenHat ? 'oh' : 'ch'}`;
+    let buf = this.drumBufferCache.get(cymCacheKey);
+    if (!buf) {
+      const len = Math.floor(sr * dur);
+      buf = ctx.createBuffer(1, len, sr);
+      const data = buf.getChannelData(0);
 
-    // Synthesize 6 inharmonic metallic cymbal modes + crisp air shimmer (eliminating flat white-noise hiss)
-    const w1 = (2 * Math.PI * 3171) / sr;
-    const w2 = (2 * Math.PI * 4483) / sr;
-    const w3 = (2 * Math.PI * 5869) / sr;
-    const w4 = (2 * Math.PI * 7331) / sr;
-    const w5 = (2 * Math.PI * 8923) / sr;
-    const w6 = (2 * Math.PI * 10459) / sr;
+      // Synthesize 6 inharmonic metallic cymbal modes + crisp air shimmer (eliminating flat white-noise hiss)
+      const w1 = (2 * Math.PI * 3171) / sr;
+      const w2 = (2 * Math.PI * 4483) / sr;
+      const w3 = (2 * Math.PI * 5869) / sr;
+      const w4 = (2 * Math.PI * 7331) / sr;
+      const w5 = (2 * Math.PI * 8923) / sr;
+      const w6 = (2 * Math.PI * 10459) / sr;
 
-    for (let i = 0; i < len; i++) {
-      const t = i / sr;
-      const env = Math.exp(-t / (isCrashOrRide ? 0.22 : isOpenHat ? 0.095 : 0.015));
-      const metallic =
-        (Math.sin(i * w1) +
-          Math.sin(i * w2) +
-          Math.sin(i * w3) +
-          Math.sin(i * w4) +
-          Math.sin(i * w5) +
-          Math.sin(i * w6)) *
-        0.11;
-      const air = (Math.random() * 2 - 1) * 0.34;
-      data[i] = (metallic + air) * env;
+      for (let i = 0; i < len; i++) {
+        const t = i / sr;
+        const env = Math.exp(-t / (isCrashOrRide ? 0.22 : isOpenHat ? 0.095 : 0.015));
+        const metallic =
+          (Math.sin(i * w1) +
+            Math.sin(i * w2) +
+            Math.sin(i * w3) +
+            Math.sin(i * w4) +
+            Math.sin(i * w5) +
+            Math.sin(i * w6)) *
+          0.11;
+        const air = (Math.random() * 2 - 1) * 0.34;
+        data[i] = (metallic + air) * env;
+      }
+      this.drumBufferCache.set(cymCacheKey, buf);
     }
 
     const src = ctx.createBufferSource();
@@ -3325,9 +3404,10 @@ export class StudioAudioEngine {
     const tickVisualProgress = () => {
       if (!this.isPlaying || this.playbackSessionId !== sessionId || !this.ctx) return;
       const now = this.ctx.currentTime;
-      // Throttle React playhead state updates to ~30fps (32ms) so 1,000+ node SVG/Canvas views
+      let progressCbMs = 0;
+      // Throttle React playhead state updates to ~20fps (48ms) so 1,000+ node SVG/Monaco views
       // never starve the 25ms WebAudio scheduler on the main thread.
-      if (now - lastVisualUpdateSec >= 0.032) {
+      if (now - lastVisualUpdateSec >= 0.048) {
         lastVisualUpdateSec = now;
         const hwLatencySec =
           Number((this.ctx as any).outputLatency) ||
@@ -3339,6 +3419,7 @@ export class StudioAudioEngine {
         const currentBeat = Math.min(this.totalQuarterBeats, currentWhole * 4);
         const activeTempo = this.getTempoAtWholeNote(currentWhole, baseTempo, tempoMap);
 
+        const cbStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
         this.onProgress?.({
           isPlaying: true,
           currentQuarterBeat: currentBeat,
@@ -3347,7 +3428,9 @@ export class StudioAudioEngine {
           totalDurationSec: this.scoreDurationSec,
           currentTempoBpm: activeTempo,
         });
+        progressCbMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - cbStart;
       }
+      playbackDiag.recordRafTick(progressCbMs);
 
       this.rafId = requestAnimationFrame(tickVisualProgress);
     };
@@ -3433,56 +3516,98 @@ export class StudioAudioEngine {
       return;
     }
 
+    const pool = this.getBakePool();
+    const synthEventsCount = this.scheduledTimeline.filter((it) =>
+      this.isContinuousSynthItem(it)
+    ).length;
+    playbackDiag.startSession({
+      title: score.meta?.title || 'Untitled',
+      tempoBpm: this.tempoBpm,
+      totalEvents: score.events.length,
+      timelineLen: this.scheduledTimeline.length,
+      synthEventsCount,
+      totalDurationSec: this.scoreDurationSec,
+      sampleRate: ctx.sampleRate || 44100,
+      ctxState: String(ctx.state || 'running'),
+      workerCount: pool ? pool.size : 0,
+    });
+
     // Synchronously pre-bake the opening 1.6s window (capped at 45ms) before starting the clock,
     // and dispatch the rolling 9.0s ring window to the off-thread worker pool.
+    const prebakeStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
     this.prebakeContinuousSynthTimeline(ctx, this.scheduledTimeline, this.tempoBpm, 0, 1.6, 8, 45);
-    if (this.getBakePool()) {
-      this.requestWorkerBakes(ctx, this.scheduledTimeline, this.tempoBpm, 0, 9.0);
+    const syncBakeMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - prebakeStart;
+    const syncBakedCount = this.scheduledTimeline.filter((it) => Boolean(it.prebakedBuffer)).length;
+    let initialWorkerQueued = 0;
+    if (pool) {
+      initialWorkerQueued = this.requestWorkerBakes(
+        ctx,
+        this.scheduledTimeline,
+        this.tempoBpm,
+        0,
+        9.0
+      ).length;
     }
+    playbackDiag.recordInitialPrebake({
+      syncBakedCount,
+      syncBakeMs,
+      workerQueuedCount: initialWorkerQueued,
+      poolPendingCount: pool ? pool.pendingCount : 0,
+    });
 
     const baseStart = ctx.currentTime + 0.05;
     this.startContextTime = baseStart;
 
     const DEFAULT_LOOKAHEAD_SEC = 0.6;
+    let schedulerSubTick = 0;
 
     const scheduleLookaheadSlice = () => {
       if (!this.isPlaying || this.playbackSessionId !== sessionId || !this.ctx) return;
+      const tickWallStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
       const now = this.ctx.currentTime;
       const elapsed = Math.max(0, now - this.startContextTime);
       // Widen lookahead when the browser tab is hidden so 1s background timer throttling never drops notes
       const lookaheadSec =
         typeof document !== 'undefined' && document.hidden ? 1.6 : DEFAULT_LOOKAHEAD_SEC;
 
-      // Advance the active timeline ring window and evict finished AudioBuffers behind the playhead
-      this.voiceRingBuffer.evictTimelineWindow(
-        this.scheduledTimeline,
-        elapsed,
-        0.5,
-        10.0,
-        this.isLooping
-      );
+      const activePool = this.getBakePool();
+      const shouldRefillRing =
+        schedulerSubTick % 4 === 0 ||
+        (activePool !== null && activePool.queuedCount < 4);
+      schedulerSubTick++;
 
-      if (this.getBakePool()) {
-        this.requestWorkerBakes(
-          this.ctx,
+      if (shouldRefillRing) {
+        // Advance the active timeline ring window and evict finished AudioBuffers behind the playhead
+        this.voiceRingBuffer.evictTimelineWindow(
           this.scheduledTimeline,
-          this.tempoBpm,
           elapsed,
-          elapsed + 8.5
+          0.5,
+          10.0,
+          this.isLooping
         );
-      } else {
-        // Fallback when Web Workers are unavailable (e.g. unit test environments)
-        this.prebakeContinuousSynthTimeline(
-          this.ctx,
-          this.scheduledTimeline,
-          this.tempoBpm,
-          elapsed,
-          elapsed + 2.5,
-          2,
-          6
-        );
+
+        if (activePool) {
+          this.requestWorkerBakes(
+            this.ctx,
+            this.scheduledTimeline,
+            this.tempoBpm,
+            elapsed,
+            elapsed + 9.5
+          );
+        } else {
+          // Fallback when Web Workers are unavailable (e.g. unit test environments)
+          this.prebakeContinuousSynthTimeline(
+            this.ctx,
+            this.scheduledTimeline,
+            this.tempoBpm,
+            elapsed,
+            elapsed + 2.5,
+            2,
+            6
+          );
+        }
       }
-      if (this.activeVoices.size > 32) {
+      if (this.activeVoices.size > 32 && schedulerSubTick % 2 === 0) {
         this.pruneFinishedVoices(now);
       }
 
@@ -3516,6 +3641,7 @@ export class StudioAudioEngine {
         } else {
           // If a main-thread GC or UI frame spike delayed the timer past item.startSec,
           // recover both short drum/ratchet hits and sustained notes immediately instead of dropping them!
+          playbackDiag.recordLateRecovery(elapsed, item.event.trackId || 'pno', latenessSec);
           const recoverOffset = item.style === 'grid' || item.gridKey ? 0 : latenessSec;
           if (item.durSec - recoverOffset >= 0.02) {
             this.triggerRealtimeVoice(this.ctx, item, now + 0.006, recoverOffset);
@@ -3523,6 +3649,26 @@ export class StudioAudioEngine {
         }
         this.nextScheduleIndex++;
       }
+
+      const tickDurationMs =
+        (typeof performance !== 'undefined' ? performance.now() : Date.now()) - tickWallStart;
+      const currentWhole = this.secondsToWholeNote(
+        Math.max(0, elapsed - countInSec),
+        baseTempo,
+        tempoMap
+      );
+      playbackDiag.recordSchedulerTick(elapsed, tickDurationMs, {
+        currentQuarterBeat: Math.min(this.totalQuarterBeats, currentWhole * 4),
+        activeVoices: this.activeVoices.size,
+        nextScheduleIndex: this.nextScheduleIndex,
+        timelineLen: this.scheduledTimeline.length,
+        workerSize: activePool ? activePool.size : 0,
+        workerActiveJobs: activePool ? activePool.activeCount : 0,
+        workerQueuedJobs: activePool ? activePool.queuedCount : 0,
+        ringSlotsUsed: this.voiceRingBuffer.size,
+        ringSlotCapacity: this.voiceRingBuffer.capacity,
+        ringFramesUsed: this.voiceRingBuffer.currentFrames,
+      });
 
       if (elapsed >= this.scoreDurationSec) {
         if (this.isLooping) {
@@ -3548,12 +3694,18 @@ export class StudioAudioEngine {
   }
 
   public stop(notify: boolean = true): void {
+    const wasPlaying = this.isPlaying;
+    const stopElapsed =
+      wasPlaying && this.ctx ? Math.max(0, this.ctx.currentTime - this.startContextTime) : 0;
     this.isPlaying = false;
     this.playbackSessionId++;
     this.pendingBakes.clear();
     this.pendingBakeKeys.clear();
     this.voicesAwaitingBake.clear();
     this.bakePool?.cancelPending();
+    if (wasPlaying) {
+      playbackDiag.recordStop(stopElapsed);
+    }
     if (this.schedulerIntervalId !== null) {
       window.clearInterval(this.schedulerIntervalId);
       this.schedulerIntervalId = null;

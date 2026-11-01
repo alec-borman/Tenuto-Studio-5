@@ -716,13 +716,17 @@ export default function WebGPUCanvas({
     const el = scrollViewportRef.current;
     if (!el) return;
     if (!isPlaying && playheadBeat === 0) {
-      el.scrollLeft = 0;
+      if (el.scrollLeft !== 0) {
+        el.scrollLeft = 0;
+      }
       return;
     }
     if (isPlaying) {
       const viewportW = el.clientWidth || 600;
       const targetScroll = Math.max(0, playheadX - viewportW * 0.35);
-      el.scrollLeft = targetScroll;
+      if (Math.abs(el.scrollLeft - targetScroll) > 6) {
+        el.scrollLeft = targetScroll;
+      }
     }
   }, [playheadX, isPlaying, playheadBeat]);
 

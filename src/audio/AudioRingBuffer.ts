@@ -17,6 +17,7 @@ export interface VoicePcmSlot {
   right: Float32Array;
   frames: number;
   slotIndex: number;
+  audioBuffer?: AudioBuffer;
 }
 
 export interface TimelineRingItem {
@@ -64,6 +65,10 @@ export class VoicePcmRingBuffer {
     return this.keyToSlot.has(key);
   }
 
+  public getSlot(key: string): VoicePcmSlot | undefined {
+    return this.keyToSlot.get(key);
+  }
+
   public get(key: string): { left: Float32Array; right: Float32Array } | undefined {
     const slot = this.keyToSlot.get(key);
     if (!slot) return undefined;
@@ -83,6 +88,7 @@ export class VoicePcmRingBuffer {
       existing.left = left;
       existing.right = right;
       existing.frames = frames;
+      existing.audioBuffer = undefined;
       this.enforceFrameBudget(existing.slotIndex);
       return;
     }
@@ -109,6 +115,7 @@ export class VoicePcmRingBuffer {
   private evictSlotAt(idx: number): void {
     const prev = this.slots[idx];
     if (!prev) return;
+    prev.audioBuffer = undefined;
     this.slots[idx] = null;
     this.keyToSlot.delete(prev.key);
     this.totalFrames = Math.max(0, this.totalFrames - prev.frames);

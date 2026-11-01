@@ -929,7 +929,7 @@ export default function SplitWorkspace() {
     }
   };
 
-  const mixerMeterBeat = activeBottomDock === 'mixer' ? playheadBeat : 0;
+  const mixerMeterBeat = activeBottomDock === 'mixer' ? Math.round(playheadBeat * 2) / 2 : 0;
 
   const enrichedMixerAstState = useMemo<ASTState>(() => {
     const meterMap =

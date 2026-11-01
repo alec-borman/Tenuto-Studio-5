@@ -353,6 +353,8 @@ export default function CodeEditor({
   const lastRevealedLineRef = useRef<number>(0);
   const lastRevealedMeasureRef = useRef<number>(0);
 
+  const codeLines = useMemo(() => code.replace(/\r\n?/g, '\n').split('\n'), [code]);
+
   const activeTokens = useMemo(
     () => computeActiveKaraokeTokens(events, playheadBeat, isPlaying),
     [events, playheadBeat, isPlaying]
@@ -385,9 +387,7 @@ export default function CodeEditor({
       }
 
       const model = editor.getModel?.();
-      const codeLines = code.replace(/\r\n?/g, '\n').split('\n');
       const newDecorations: any[] = [];
-      const scrollTarget = computeActiveMeasureScrollTarget(code, activeTokens);
 
       for (const tok of activeTokens) {
         const lineNum = tok.line;
@@ -447,28 +447,28 @@ export default function CodeEditor({
         newDecorations
       );
 
-      // Always keep the current measure centered in the Monaco editor viewport
-      if (
-        scrollTarget &&
-        (scrollTarget.measureNumber !== lastRevealedMeasureRef.current ||
-          scrollTarget.centerLine !== lastRevealedLineRef.current)
-      ) {
-        lastRevealedMeasureRef.current = scrollTarget.measureNumber;
-        lastRevealedLineRef.current = scrollTarget.centerLine;
+      // Only compute and scroll to the active measure when the measure number actually changes!
+      const currentMeasure = activeTokens[0].measureNumber;
+      if (currentMeasure !== lastRevealedMeasureRef.current) {
+        const scrollTarget = computeActiveMeasureScrollTarget(code, activeTokens);
+        if (scrollTarget) {
+          lastRevealedMeasureRef.current = scrollTarget.measureNumber;
+          lastRevealedLineRef.current = scrollTarget.centerLine;
 
-        if (typeof editor.revealLinesInCenter === 'function') {
-          editor.revealLinesInCenter(scrollTarget.startLine, scrollTarget.endLine, 0);
-        }
-        if (typeof editor.revealLineInCenter === 'function') {
-          editor.revealLineInCenter(scrollTarget.centerLine, 0);
-        } else {
-          editor.revealLineInCenterIfOutsideViewport?.(scrollTarget.centerLine, 0);
+          if (typeof editor.revealLinesInCenter === 'function') {
+            editor.revealLinesInCenter(scrollTarget.startLine, scrollTarget.endLine, 0);
+          }
+          if (typeof editor.revealLineInCenter === 'function') {
+            editor.revealLineInCenter(scrollTarget.centerLine, 0);
+          } else {
+            editor.revealLineInCenterIfOutsideViewport?.(scrollTarget.centerLine, 0);
+          }
         }
       }
     } catch {
       // Graceful fallback for mocked environments
     }
-  }, [activeSpanSignature, code]);
+  }, [activeSpanSignature, code, codeLines]);
 
   return (
     <div className="w-full h-full flex flex-col overflow-hidden relative tenuto-editor-playback">

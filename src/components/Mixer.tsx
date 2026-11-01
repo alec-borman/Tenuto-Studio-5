@@ -100,6 +100,10 @@ export default function Mixer({
   const [filterMode, setFilterMode] = useState<MixerFilterMode>('all');
   const stripsScrollRef = useRef<HTMLDivElement>(null);
 
+  const tracksVolumePanSig = astState.tracks
+    .map((t) => `${t.id}:${t.volume}:${t.pan ?? 0}`)
+    .join('|');
+
   useEffect(() => {
     const updatedVolumes: Record<string, number> = {};
     const updatedPans: Record<string, number> = {};
@@ -109,7 +113,7 @@ export default function Mixer({
     });
     setLocalVolumes(updatedVolumes);
     setLocalPans(updatedPans);
-  }, [astState.tracks]);
+  }, [tracksVolumePanSig]);
 
   const groupList = astState.groups || [];
   const returnTracks = astState.tracks.filter((t) => t.isReturn);

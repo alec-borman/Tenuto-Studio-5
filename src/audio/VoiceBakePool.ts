@@ -1,3 +1,5 @@
+import { playbackDiag } from './PlaybackDiagnostics';
+
 export interface BakedVoicePcm {
   left: Float32Array;
   right: Float32Array;
@@ -16,6 +18,7 @@ interface QueuedJob {
 interface ActiveJob extends QueuedJob {
   worker: Worker;
   timer: ReturnType<typeof setTimeout>;
+  dispatchedAtMs: number;
   cancelled: boolean;
 }
 
@@ -73,6 +76,14 @@ export class VoiceBakePool {
     return this.workers.length;
   }
 
+  get activeCount(): number {
+    return this.activeByJobId.size;
+  }
+
+  get queuedCount(): number {
+    return this.queue.length;
+  }
+
   get pendingCount(): number {
     return this.queue.length + this.activeByJobId.size;
   }
@@ -81,14 +92,15 @@ export class VoiceBakePool {
     item: unknown,
     sampleRate: number,
     tempoBpm: number,
-    voiceSeed: number
+    voiceSeed: number,
+    urgent: boolean = false
   ): Promise<BakedVoicePcm> {
     if (this.broken || this.workers.length === 0) {
       return Promise.reject(new Error('Voice bake pool unavailable'));
     }
     const jobId = this.nextJobId++;
     return new Promise<BakedVoicePcm>((resolve, reject) => {
-      this.queue.push({
+      const job: QueuedJob = {
         jobId,
         item,
         sampleRate,
@@ -96,7 +108,12 @@ export class VoiceBakePool {
         voiceSeed,
         resolve,
         reject,
-      });
+      };
+      if (urgent) {
+        this.queue.unshift(job);
+      } else {
+        this.queue.push(job);
+      }
       this.dispatchNext();
     });
   }
@@ -108,6 +125,7 @@ export class VoiceBakePool {
       if (this.activeByWorker.get(w)) continue;
 
       const next = this.queue.shift()!;
+      const dispatchedAtMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
       const timer = setTimeout(() => {
         this.handleJobTimeout(next.jobId);
       }, 2500);
@@ -116,6 +134,7 @@ export class VoiceBakePool {
         ...next,
         worker: w,
         timer,
+        dispatchedAtMs,
         cancelled: false,
       };
       this.activeByWorker.set(w, active);
@@ -162,6 +181,9 @@ export class VoiceBakePool {
     this.activeByJobId.delete(jobId);
     this.activeByWorker.set(active.worker, null);
 
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    playbackDiag.recordWorkerTimeout(jobId, now - active.dispatchedAtMs);
+
     // Terminate and respawn the stalled worker so the pool stays healthy
     this.replaceWorker(active.worker);
 
@@ -198,6 +220,7 @@ export class VoiceBakePool {
   }
 
   private handleWorkerError(w: Worker, err: Error): void {
+    playbackDiag.recordWorkerError(err.message);
     const active = this.activeByWorker.get(w);
     if (active) {
       clearTimeout(active.timer);
@@ -227,8 +250,12 @@ export class VoiceBakePool {
     this.activeByWorker.set(w, null);
     this.consecutiveTimeouts = 0;
 
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    playbackDiag.recordWorkerJobCompleted(now - active.dispatchedAtMs);
+
     if (!active.cancelled) {
       if (error || !left || !right) {
+        playbackDiag.recordWorkerError(error || 'Empty voice bake result');
         active.reject(new Error(error || 'Empty voice bake result'));
       } else {
         active.resolve({ left, right });
