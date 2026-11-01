@@ -307,7 +307,22 @@ export class ContinuousSynthEngine {
     if (
       s === 'synth' &&
       (physics?.lyric !== undefined ||
-        physics?.fx?.some((f) => f.type.toLowerCase() === 'vocoder'))
+        physics?.fx?.some((f) => f.type.toLowerCase() === 'vocoder') ||
+        physics?.glideMs !== undefined ||
+        physics?.detune !== undefined ||
+        physics?.detuneMod !== undefined ||
+        physics?.filterSweep !== undefined ||
+        physics?.cutoff !== undefined ||
+        physics?.cutoffMod !== undefined ||
+        physics?.lpg !== undefined ||
+        physics?.binauralSpreadCents !== undefined ||
+        physics?.spinRateHz !== undefined ||
+        physics?.morphAmount !== undefined ||
+        physics?.morphMod !== undefined ||
+        physics?.metalizerAmount !== undefined ||
+        physics?.wavefoldAmount !== undefined ||
+        physics?.swarmSpreadSemitones !== undefined ||
+        physics?.wowFlutter !== undefined)
     ) {
       return true;
     }
@@ -380,16 +395,16 @@ export class ContinuousSynthEngine {
     const isPluckPatch = patch.includes('pluck') || patch.includes('acid');
     const isSwarmatron =
       patch.includes('swarmatron') ||
-      patch === 'ribbon_cluster_8' ||
+      patch.includes('ribbon_cluster') ||
       phys?.swarmSpreadSemitones !== undefined;
     const isHauntologyPad =
-      patch.includes('hauntology') || patch === 'tape_nostalgia_pad';
+      patch.includes('hauntology') || patch.includes('tape_nostalgia');
     const isBuchla200e = patch === 'buchla_200e' || patch === 'west_coast_200';
     const isBuchlaKrell =
       patch.includes('buchla') ||
       patch.includes('krell') ||
-      patch === 'cybernetic_eoc' ||
-      patch === 'west_coast_200';
+      patch.includes('west_coast') ||
+      patch.includes('cybernetic');
     const isPolyBrute = patch === 'polybrute_12' || patch === 'morph_analog_12';
     const isMoogMuse = patch === 'moog_muse' || patch === 'vintage_ladder_8';
     const isNinaMotor = patch === 'nina_motor' || patch === 'hybrid_motor_12';
@@ -413,20 +428,22 @@ export class ContinuousSynthEngine {
           ];
 
     const numNotes = chordNotes.length;
-    // Scale unison count: 8 oscillators for Swarmatron, 3 for Hauntology/Reese, or adaptive chord unison
+    // Scale unison count: 8 oscillators for Swarmatron, 2 for Buchla/West Coast triangle core, 3 for Hauntology/Reese
     const numUnison = isSwarmatron
       ? numNotes >= 4
         ? 4
         : 8
-      : isHauntologyPad || isReese
-        ? 3
-        : isSuperGemini || isObX8
-          ? 4
-          : numNotes >= 5
-            ? 2
-            : numNotes >= 3
-              ? 3
-              : 7;
+      : isBuchlaKrell
+        ? 2
+        : isHauntologyPad || isReese
+          ? 3
+          : isSuperGemini || isObX8
+            ? 4
+            : numNotes >= 5
+              ? 2
+              : numNotes >= 3
+                ? 3
+                : 7;
     const totalOscs = numNotes * numUnison;
 
     const slopAmount = Math.max(
@@ -479,8 +496,10 @@ export class ContinuousSynthEngine {
         const sym = numUnison > 1 ? (u / (numUnison - 1)) * 2 - 1 : 0;
         unisonDetuneNorm[u] = sym >= 0 ? sym * 1.07 : sym * 0.92;
       }
-      // Center fundamental oscillator carries 1.28x weight so side-voice beating never cancels the fundamental
-      unisonWeight[u] = u === centerUnisonIdx ? 1.28 : 0.92;
+      // Fundamental-dominant unison weighting (1.55 center vs 0.42 side) guarantees that
+      // the sum of side oscillators in a channel never exceeds the center fundamental,
+      // making 180-degree phase cancellation to 0.0 mathematically impossible.
+      unisonWeight[u] = u === centerUnisonIdx ? 1.55 : 0.42;
 
       if (stackMode === 'octaves' && u >= numUnison - 1) {
         unisonStackRatios[u] = 2.0;
@@ -569,9 +588,11 @@ export class ContinuousSynthEngine {
               ? 2400
               : isObX8 || isSuperGemini
                 ? 3600
-                : isSwarmatron || isPolyBrute || isNinaMotor
-                  ? 3400
-                  : 7800);
+                : isSwarmatron
+                  ? 1400
+                  : isPolyBrute || isNinaMotor
+                    ? 3400
+                    : 7800);
 
     const baseRes =
       phys?.resonance ??
@@ -709,7 +730,7 @@ export class ContinuousSynthEngine {
           const c1 = phys.flutterCurve[phys.flutterCurve.length - 1];
           rateHz = c0 + (c1 - c0) * normU;
         }
-        const depth = phys?.flutterDepth ?? (hasExplicitFlutter ? 0.55 : 0.10);
+        const depth = phys?.flutterDepth ?? (hasExplicitFlutter ? 0.50 : 0.08);
         const lfo = 0.5 + 0.5 * Math.sin(2 * Math.PI * rateHz * songTimeSec);
         ampEnv *= 1 - depth * (1 - lfo);
       }
@@ -769,13 +790,16 @@ export class ContinuousSynthEngine {
         : isHauntologyPad && phys?.detune === undefined
           ? 20
           : baseDetunePct;
-      const activeSwarmSt = phys?.swarmMod
-        ? this.evaluateWindowedModulation(phys.swarmMod, normU, 0.2)
-        : typeof phys?.swarmSpreadSemitones === 'number'
-          ? phys.swarmSpreadSemitones
-          : isSwarmatron
-            ? 1.8
-            : 0;
+      const activeSwarmSt = Math.min(
+        1.2,
+        phys?.swarmMod
+          ? this.evaluateWindowedModulation(phys.swarmMod, normU, 0.15)
+          : typeof phys?.swarmSpreadSemitones === 'number'
+            ? phys.swarmSpreadSemitones
+            : isSwarmatron
+              ? 0.65
+              : 0
+      );
       const maxSpreadOctaves =
         activeSwarmSt > 0
           ? (activeSwarmSt * 0.5) / 12
@@ -922,7 +946,7 @@ export class ContinuousSynthEngine {
               ? 65
               : 0
       );
-      const foldDrive = activeFoldPct > 0 ? 1 + (activeFoldPct / 100) * 3.8 : 1.0;
+      const foldDrive = activeFoldPct > 0 ? 1 + (activeFoldPct / 100) * 1.8 : 1.0;
 
       const cp3Pct = phys?.cp3Drive ?? (isMoogMuse ? 35 : 0);
       const brutePct = phys?.bruteFactor ?? (isPolyBrute ? 25 : 0);
@@ -1260,18 +1284,20 @@ export class ContinuousSynthEngine {
     sampleRate: number,
     crossoverHz: number = 120
   ): void {
+    // Mid/Side Bass-Mono Crossover:
+    // High-pass only the stereo Side signal (L - R) above 120 Hz while leaving the
+    // center Mid signal (L + R) untouched so Left/Right detuned bass oscillators never
+    // sum into mono and cancel the center fundamental to 0.0!
     const alpha = Math.min(0.25, (2 * Math.PI * crossoverHz) / sampleRate);
-    let lowL = 0;
-    let lowR = 0;
+    let lowSide = 0;
 
     for (let i = 0; i < left.length; i++) {
-      lowL += alpha * (left[i] - lowL);
-      lowR += alpha * (right[i] - lowR);
-      const highL = left[i] - lowL;
-      const highR = right[i] - lowR;
-      const monoSub = 0.5 * (lowL + lowR);
-      left[i] = monoSub + highL;
-      right[i] = monoSub + highR;
+      const mid = 0.5 * (left[i] + right[i]);
+      const side = 0.5 * (left[i] - right[i]);
+      lowSide += alpha * (side - lowSide);
+      const highSide = side - lowSide;
+      left[i] = mid + highSide;
+      right[i] = mid - highSide;
     }
   }
 }

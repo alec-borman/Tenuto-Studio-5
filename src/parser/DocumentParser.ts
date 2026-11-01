@@ -825,8 +825,8 @@ export class DocumentParser {
         // Todd Barton Buchla Krell Cybernetic End-of-Cycle (EOC) Expansion (.krell(N))
         if (ev.physics?.krellEvents && ev.physics.krellEvents > 1 && !ev.pitch.isRest && !ev.pitch.isSpacer && !ev.duration.isGrace) {
           const kCount = ev.physics.krellEvents;
-          // S&H modal pitch offsets: high notes flash quickly (weight 1), low notes swell slowly (weight 3)
-          const shOffsets = [12, -7, 7, -12, 3, -5, 10, 0, -9, 5, -14, 8, -2, 14, -4, 0];
+          // Consonant modal/pentatonic S&H pitch offsets: high notes flash quickly (weight 1), low notes swell slowly (weight 3)
+          const shOffsets = [0, 7, -5, 3, -2, 5, 10, -7, 0, 7, 2, -5];
           const weights: number[] = [];
           let weightSum = 0;
           for (let k = 0; k < kCount; k++) {

@@ -418,35 +418,37 @@ export class AbletonAudioFxEngine {
         f3Coeff = clamp(2 * Math.sin((Math.PI * clamp(f3, 1400, 7500)) / sampleRate), 0.04, 0.9);
       }
 
-      // Add subtle glottal pulse harmonic richness to carrier so narrow formant bands speak clearly
+      // Scale carrier excitation proportionally to dry amplitude so .p / .mp vocoder pads
+      // preserve their musical dynamics instead of slamming into a 0 dBFS square wave.
       const dryL = left[idx];
       const dryR = right[idx];
-      const glottalExciterL = Math.tanh(dryL * 2.4);
-      const glottalExciterR = Math.tanh(dryR * 2.4);
+      const absPeak = Math.max(1e-5, Math.abs(dryL), Math.abs(dryR));
+      const glottalExciterL = Math.tanh((dryL / absPeak) * 1.65) * absPeak;
+      const glottalExciterR = Math.tanh((dryR / absPeak) * 1.65) * absPeak;
 
-      // Filter Left Carrier through Formant Bank
-      const hp1L = glottalExciterL - lp1L - qDamp1 * bp1L;
+      // Filter Left Carrier through Unity-Gain-Normalized Formant Bank (multiply input by qDamp)
+      const hp1L = qDamp1 * glottalExciterL - lp1L - qDamp1 * bp1L;
       bp1L += f1Coeff * hp1L;
       lp1L += f1Coeff * bp1L;
 
-      const hp2L = glottalExciterL - lp2L - qDamp2 * bp2L;
+      const hp2L = qDamp2 * glottalExciterL - lp2L - qDamp2 * bp2L;
       bp2L += f2Coeff * hp2L;
       lp2L += f2Coeff * bp2L;
 
-      const hp3L = glottalExciterL - lp3L - qDamp3 * bp3L;
+      const hp3L = qDamp3 * glottalExciterL - lp3L - qDamp3 * bp3L;
       bp3L += f3Coeff * hp3L;
       lp3L += f3Coeff * bp3L;
 
-      // Filter Right Carrier through Formant Bank
-      const hp1R = glottalExciterR - lp1R - qDamp1 * bp1R;
+      // Filter Right Carrier through Unity-Gain-Normalized Formant Bank
+      const hp1R = qDamp1 * glottalExciterR - lp1R - qDamp1 * bp1R;
       bp1R += f1Coeff * hp1R;
       lp1R += f1Coeff * bp1R;
 
-      const hp2R = glottalExciterR - lp2R - qDamp2 * bp2R;
+      const hp2R = qDamp2 * glottalExciterR - lp2R - qDamp2 * bp2R;
       bp2R += f2Coeff * hp2R;
       lp2R += f2Coeff * bp2R;
 
-      const hp3R = glottalExciterR - lp3R - qDamp3 * bp3R;
+      const hp3R = qDamp3 * glottalExciterR - lp3R - qDamp3 * bp3R;
       bp3R += f3Coeff * hp3R;
       lp3R += f3Coeff * bp3R;
 
@@ -460,12 +462,12 @@ export class AbletonAudioFxEngine {
         const p = t / onsetSec;
         noiseEnv =
           phoneme.onsetConsonant === 'plosive'
-            ? Math.exp(-p * 5.0) * 0.38
-            : Math.sin(p * Math.PI) * 0.32;
+            ? Math.exp(-p * 5.0) * 0.16
+            : Math.sin(p * Math.PI) * 0.14;
       } else if (codaSec > 0 && t > durSec - codaSec && phoneme.codaConsonant !== 'none') {
         noiseCenterHz = phoneme.codaNoiseHz || 3200;
         const p = (t - (durSec - codaSec)) / codaSec;
-        noiseEnv = Math.sin(clamp(p, 0, 1) * Math.PI) * 0.28;
+        noiseEnv = Math.sin(clamp(p, 0, 1) * Math.PI) * 0.12;
       }
 
       if (noiseEnv > 0 && noiseCenterHz > 0) {
@@ -473,11 +475,10 @@ export class AbletonAudioFxEngine {
         const pseudoRand = Math.sin(i * 12.9898 + 78.233) * 43758.5453;
         const white = (pseudoRand - Math.floor(pseudoRand)) * 2 - 1;
         const nf = clamp(2 * Math.sin((Math.PI * clamp(noiseCenterHz, 300, 8500)) / sampleRate), 0.05, 0.9);
-        const nhp = white - noiseLpState - 0.25 * noiseBpState;
+        const nhp = 0.25 * white - noiseLpState - 0.25 * noiseBpState;
         noiseBpState += nf * nhp;
         noiseLpState += nf * noiseBpState;
-        const carrierEnv = Math.min(1.0, (Math.abs(dryL) + Math.abs(dryR)) * 3.5 + 0.15);
-        consonantBurst = noiseBpState * noiseEnv * carrierEnv;
+        consonantBurst = noiseBpState * noiseEnv * Math.min(0.35, absPeak * 1.2);
       }
 
       // Syllable articulation envelope (prevents click on consonant transitions)
@@ -488,13 +489,17 @@ export class AbletonAudioFxEngine {
           ? Math.max(0, (durSec - t) / 0.012)
           : 1.0;
 
+      // Blend 35% warm dry harmonic body with 65% articulated formant bands so chords sound lush, never harsh
       const vocodedL =
-        ((bp1L * w1 + bp2L * w2 + bp3L * w3) * 0.85 + consonantBurst) * sylEnv;
+        ((bp1L * w1 + bp2L * w2 + bp3L * w3) * 0.72 + consonantBurst) * sylEnv;
       const vocodedR =
-        ((bp1R * w1 + bp2R * w2 + bp3R * w3) * 0.85 + consonantBurst) * sylEnv;
+        ((bp1R * w1 + bp2R * w2 + bp3R * w3) * 0.72 + consonantBurst) * sylEnv;
 
-      left[idx] = dryL * (1 - mix) + Math.tanh(vocodedL * 1.35) * mix;
-      right[idx] = dryR * (1 - mix) + Math.tanh(vocodedR * 1.35) * mix;
+      const blendedWetL = dryL * 0.35 + Math.tanh(vocodedL * 1.1) * 0.75;
+      const blendedWetR = dryR * 0.35 + Math.tanh(vocodedR * 1.1) * 0.75;
+
+      left[idx] = dryL * (1 - mix) + blendedWetL * mix;
+      right[idx] = dryR * (1 - mix) + blendedWetR * mix;
     }
   }
 
@@ -844,10 +849,10 @@ export class AbletonAudioFxEngine {
       }
 
       case 'tape_degrade': {
-        const wowHz = clamp(Number(p.wow_hz ?? 0.45), 0.12, 2.0);
-        const wowDepthSec = clamp(Number(p.wow_depth_ms ?? 1.8), 0.1, 6.0) / 1000;
-        const flutterHz = clamp(Number(p.flutter_hz ?? 9.5), 6.0, 15.0);
-        const flutterDepthSec = clamp(Number(p.flutter_depth_ms ?? 0.35), 0.05, 1.5) / 1000;
+        const wowHz = clamp(Number(p.wow_hz ?? 0.42), 0.12, 2.0);
+        const wowDepthSec = clamp(Number(p.wow_depth_ms ?? 0.65), 0.05, 1.5) / 1000;
+        const flutterHz = clamp(Number(p.flutter_hz ?? 9.2), 6.0, 15.0);
+        const flutterDepthSec = clamp(Number(p.flutter_depth_ms ?? 0.06), 0.01, 0.2) / 1000;
         const highCutHz = clamp(Number(p.high_cut ?? 5200), 900, 7000);
         const drive = clamp(Number(p.drive ?? 0.32), 0, 1);
         const mix = clamp(Number(p.mix ?? 1.0), 0, 1);

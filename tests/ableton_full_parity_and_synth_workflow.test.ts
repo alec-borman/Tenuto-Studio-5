@@ -212,7 +212,8 @@ describe('TDB-727 & TDB-728: Fix Windows Electron Piano Fallback, Prioritize Nat
     const orchestrator = new PlaybackOrchestrator(mockTcal, mockAudioCtx);
     await expect(orchestrator.compileAndPlay(score.events)).resolves.toBeUndefined();
 
-    // 5. Verify vox track with .fx(vocoder) and .lyric(...) is routed to ContinuousSynthEngine and baked with Vocoder FX
+    // 5. Verify vox track with .fx(vocoder) and .lyric(...) is routed to ContinuousSynthEngine and baked with Vocoder FX without +19dB resonator clipping
+    const { AbletonAudioFxEngine } = await import('../src/audio/fx/AbletonAudioFxEngine');
     const timeline = (engine as any).buildScheduledTimeline(score);
     const voxEvents = timeline.filter((t: any) => t.event.trackId === 'vox');
     expect(voxEvents.length).toBeGreaterThan(0);
@@ -223,6 +224,28 @@ describe('TDB-727 & TDB-728: Fix Windows Electron Piano Fallback, Prioritize Nat
         voxEvents[0].event.physics
       )
     ).toBe(true);
+
+    const voxSr = 44100;
+    const voxFrames = Math.floor(voxEvents[0].durSec * voxSr);
+    const voxL = new Float32Array(voxFrames);
+    const voxR = new Float32Array(voxFrames);
+    ContinuousSynthEngine.renderVoiceIntoTrackStem(voxL, voxR, 0, voxFrames, voxSr, 88, 1, voxEvents[0]);
+    AbletonAudioFxEngine.applyTalkingVocoderToSlice(
+      voxL,
+      voxR,
+      0,
+      voxFrames,
+      voxSr,
+      voxEvents[0].event.physics?.lyric || 'Voltage',
+      {}
+    );
+    let voxPeak = 0;
+    for (let i = 0; i < voxFrames; i++) {
+      const p = Math.max(Math.abs(voxL[i]), Math.abs(voxR[i]));
+      if (p > voxPeak) voxPeak = p;
+    }
+    expect(voxPeak).toBeGreaterThan(0.02);
+    expect(voxPeak).toBeLessThan(1.2);
 
     // 6. Verify whole-note .legato / .glide() synth voices do NOT overrun the 4/4 barline by 1.08x
     const m1Lead = timeline.find(
