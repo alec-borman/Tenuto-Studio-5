@@ -53,6 +53,16 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     expect(content).toContain('npm run electron:build:win');
     expect(content).not.toContain('Do not expect to compose music today');
 
+    const guidePath = path.resolve(
+      __dirname,
+      '../Definitive Guide to Tenuto Composition.md'
+    );
+    expect(fs.existsSync(guidePath)).toBe(true);
+    const guideContent = fs.readFileSync(guidePath, 'utf-8');
+    expect(guideContent).toContain('v5.4.2');
+    expect(guideContent).toContain('Blueprint 1:');
+    expect(guideContent).toContain('Blueprint 6:');
+
     const grammarContent = fs.readFileSync(
       path.resolve(__dirname, '../TENUTO_GRAMMAR.md'),
       'utf-8'
@@ -70,6 +80,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     for (const brand of forbiddenTrademarks) {
       expect(content).not.toContain(brand);
       expect(grammarContent).not.toContain(brand);
+      expect(guideContent).not.toContain(brand);
     }
 
     const pkgJson = JSON.parse(

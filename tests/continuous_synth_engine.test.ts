@@ -415,7 +415,116 @@ describe('TDB-750: Anti-Skip AudioParam Guard, Wavetable Cache & Voltage/Gesture
     }
     expect(energy).toBeGreaterThan(0.5);
   });
+
+  it('compiles all 6 complete stylistic blueprints from Definitive Guide to Tenuto Composition.md with zero errors', () => {
+    const blueprints = [
+      `tenuto "6.0" {
+        meta @{ title: "Berlin School Dual Temporality", tempo: 124, time: "4/4", key: "D", scale: "dorian" }
+        return bbd_echo "Bucket-Brigade Dotted-8th Delay"
+          .fx(echo, @{ time: 0.362, feedback: 0.52, mix: 1.0 })
+          .fx(chorus, @{ rate: 0.35, amount: 0.4, mix: 0.45 })
+        def seq   "Micro-Time Step Sequencer" style=synth patch="pluck_lead" cutoff=2800 resonance=2.2 sends=@{ bbd_echo: 0.65 }
+        def choir "Macro-Time Mellotron Choir" style=synth patch="flutter_pad" detune=48 cutoff=2400 sends=@{ bbd_echo: 0.45 }
+          .fx(true_stereo_hall_reverb, @{ decay: 5.2, predelay: 28, mix: 0.55 })
+        measure 1 {
+          seq:   d2:16 a2:16 d3:16 d3:16.ratchet(2, "flat") f2:16 c3:16 d3:16 a2:16.ratchet(3, "up") g2:16 d3:16 f3:16 e3:16 d2:16 a2:16 c3:16 a2:16 |
+          choir: [d3 a3 f4 g4]:1.p.cresc.open_voice.filter(900, 3200).glide(240ms) |
+        }
+        measure 2 {
+          seq:   d3:4.mp.dim r:4 r:2 |
+          choir: [c3 g3 e4 a4]:1.f.dim.open_voice.filter(3200, 1100) |
+        }
+      }`,
+      `tenuto "6.0" {
+        meta @{ title: "Parallel Minor-9th Chord Planing", tempo: 122, time: "4/4", key: "C", scale_lock: false, sidechain: "drums" }
+        def plan  "Planing Chord Stab" style=synth patch="morph_analog_12" cutoff=2600 detune=55 width=145
+          .fx(dual_bus_silk_sum, @{ silk: "red", texture: 0.55 })
+          .fx(echo, @{ time: 0.368, feedback: 0.42, mix: 0.32 })
+        def sub   "Static C Pedal Sub" style=synth patch="reese_bass" cutoff=210 sub=90
+        def drums "House Kit"          style=grid  patch="tenuto_808_kit"
+        measure 1 {
+          plan:  b3:2.mp.plane("m9").rootless.filter(1200, 3400).glide(180ms) d4:2.mf.plane("m9").rootless.filter(1400, 3800).glide(180ms) |
+          sub:   c1:2.f.legato.filter(150, 210) c2:2.mf.legato.filter(160, 220) |
+          drums: <[ v1: k:4 k:4 k:4 k:4 | v2: r:4 cp:4 r:4 cp:4 | v3: r:8 oh:8 r:8 oh:8 r:8 oh:8 r:8 oh:8 ]>
+        }
+        measure 2 {
+          plan:  e4:2.f.plane("m9").rootless.filter(1600, 4200).glide(180ms) f#4:2.f.plane("m9").rootless.neg_harm.filter(2800, 1400) |
+          sub:   c1:1.f.legato.filter(170, 190) |
+          drums: <[ v1: k:4 k:4 k:4 k:4 | v2: r:4 cp:4 r:4 cp:4 | v3: r:8 oh:8 r:8 oh:8 r:8 oh:8 h:16.ratchet(2, "up") oh:16 ]>
+        }
+      }`,
+      `tenuto "6.0" {
+        meta @{ title: "Lost Futures (Hauntology Study)", tempo: 68, time: "4/4", key: "F", scale: "dorian", master_tune: -24 }
+        def pad  "Dashboard Tape Pad" style=synth patch="tape_nostalgia_pad" vol=86 cutoff=900 sub=20
+          .fx(tape_degrade, @{ wow_hz: 0.38, wow_depth_ms: 2.1, flutter_hz: 9.2, high_cut: 4800, drive: 0.34, mix: 1.0 })
+        def lead "Underwater Vowel Lead" style=synth patch="tape_nostalgia_pad" vol=88 cutoff=1600
+          .fx(chorus, @{ rate: 0.8, amount: 0.35, mix: 0.45 })
+          .fx(reverb, @{ decay: 2.0, predelay: 20, mix: 0.40 })
+        measure 1 {
+          pad:  [f2 c3 ab3 eb4]:1.p.open_voice.warp_wave("bend", 30%).detune(18%, 0.15..0.90).filter(780, 1050).wow_flutter(5.2, 0.38, 2.6, 9.2).glide(280ms) |
+          lead: r:4 c5:2.mp.legato.vowel("oh", "ooh", 0.2).wow_flutter(4.8, 0.42, 2.2, 8.8).glide(220ms) ab4:4.p.legato.vowel("ooh", "oh", 0.2) |
+        }
+        measure 2 {
+          pad:  [db2 ab2 f3 c4]:1.p.open_voice.warp_wave("bend", 30%).detune(20%, 0.15..0.90).filter(820, 920).wow_flutter(5.5, 0.36, 2.8, 9.5) |
+          lead: g4:2..p.legato.vowel("oh", "ooh", 0.2).wow_flutter(5.0, 0.40, 2.4, 9.0) f4:4.pp.dim |
+        }
+      }`,
+      `tenuto "6.0" {
+        meta @{ title: "Ribbon Dread & 3D MPE Gesture", tempo: 74, time: "4/4", key: "D", scale: "minor" }
+        def pno   "Felt Acoustic Piano"  style=standard patch="salamander_grand" vol=84
+          .fx(true_stereo_hall_reverb, @{ decay: 3.4, predelay: 20, mix: 0.38 })
+        def mpe   "3D MPE Soloist"       style=synth    patch="morph_analog_12"  vol=88 cutoff=2800
+        def swarm "8-Osc Ribbon Cluster" style=synth    patch="ribbon_cluster_8" vol=78 cutoff=2200
+        def krell "West Coast Cyber"     style=synth    patch="west_coast_200"   vol=80
+        measure 1 {
+          pno:   [d3 a3 f4]:2.p.ped [a2 e3 c#4]:2.p.ped |
+          mpe:   [d4 a4 c5 f5]:1.mp.squeeze(92%).bend_voice(1, 50c, 0.20..0.80).tri_fold(45%).glide(220ms) |
+          swarm: d1:1.p.cresc.swarm([0.15, 3.2, 0.35]).filter(400, 1900) |
+          krell: a4:1.mp.eoc_cycle(5).fold(72%).lpg("both", 380ms) |
+        }
+      }`,
+      `tenuto "6.0" {
+        meta @{ title: "Outrun Horizon", tempo: 112, time: "4/4", key: "F", scale: "minor", sidechain: "drums" }
+        def lead  "Analog Brass Lead" style=synth patch="state_variable_8" vol=92 detune=62 cutoff=4200 width=140
+          .fx(chorus, @{ rate: 0.45, amount: 0.4, mix: 0.42 })
+          .fx(echo, @{ time: 0.401, feedback: 0.4, mix: 0.35 })
+        def pad   "Suspended 9th Pad" style=synth patch="supersaw" vol=84 detune=72 cutoff=3600
+        def bass  "Driving 8th Bass"  style=synth patch="vintage_ladder_8" vol=90 cutoff=1450 resonance=1.8
+        def drums "Gated Drum Kit"    style=grid  patch="tenuto_808_kit"
+          .fx(gated_reverb, @{ decay: 3.4, gate_ms: 165, threshold: -22, mix: 0.55 })
+        measure 1 {
+          lead:  r:4 c5:4.f.legato.vib.glide(140ms) g5:4..ff.legato.vib f5:8.f.legato |
+          pad:   f3:1.mf.plane("sus4").open_voice.filter(1400, 3800) |
+          bass:  f1:8.stacc.discrete_drive(55%) f2:8.stacc f1:8.stacc f2:8.stacc f1:8.stacc f2:8.stacc g1:8.stacc g2:8.stacc |
+          drums: <[ v1: k:4 r:4 k:4 r:4 | v2: r:4 s:4 r:4 s:4 | v3: h:8 h:8 h:8 h:8 h:8 h:8 h:8 oh:8 ]>
+        }
+        measure 2 {
+          lead:  eb5:2.f.legato.vib.glide(160ms) c5:2.mf.dim.vib |
+          pad:   db3:1.mf.plane("maj9").open_voice.filter(3800, 1800) |
+          bass:  db1:8.stacc.discrete_drive(55%) db2:8.stacc db1:8.stacc db2:8.stacc db1:8.stacc db2:8.stacc eb1:8.stacc eb2:8.stacc |
+          drums: <[ v1: k:4 r:8 k:8 r:4 r:4 | v2: r:4 s:4 r:4 s:4 | v3: h:8 h:8 h:8 h:8 h:8 h:8 lt:16 mt:16 ht:8 ]>
+        }
+      }`,
+      `tenuto "6.0" {
+        meta @{ title: "Non-Octave Alpha Essay", tempo: 82, time: "4/4", temperament: "non_octave_alpha", scale_lock: false }
+        def vox1 "Binaural Alpha Voice" style=synth patch="binaural_hybrid_20" vol=86 cutoff=3200
+        def vox2 "Rotating Motor Voice" style=synth patch="hybrid_motor_12"    vol=82 cutoff=2600
+        measure 1 {
+          vox1: c4:4.mp.legato.binaural(14c) e4:4.mp.legato.binaural(14c) g4:2.mf.legato.binaural(16c).vib |
+          vox2: [c3 g3 e4]:1.p.open_voice.spin(0.75).morph([15, 85, 25]).filter(1100, 2900) |
+        }
+      }`,
+    ];
+
+    const parser = new DocumentParser();
+    for (const src of blueprints) {
+      const score = parser.compile(src);
+      expect(score.diagnostics.filter((d) => d.severity === 'error')).toHaveLength(0);
+      expect(score.events.length).toBeGreaterThan(0);
+    }
+  });
 });
+
 
 
 
