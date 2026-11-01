@@ -1,5 +1,5 @@
 import { ASTSerializer, AtomicEvent, WarpMode } from './ASTSerializer';
-import { applyTemperamentAndMasterTune } from './PitchEngine';
+import { applyTemperamentAndMasterTune, parseKeyRootSemitone } from './PitchEngine';
 import { TemporalResult } from './TemporalEngine';
 import { AutomationLane, compileAutomationLanes } from '../audio/AutomationEngine';
 import { ContinuousSynthEngine } from '../audio/synths/ContinuousSynthEngine';
@@ -9,10 +9,20 @@ export type ScoreEvent = AtomicEvent;
 const HARMONIC_PLANE_INTERVALS: Record<string, number[]> = {
   m9: [0, 3, 7, 10, 14],
   maj9: [0, 4, 7, 11, 14],
+  dom9: [0, 4, 7, 10, 14],
+  '9': [0, 4, 7, 10, 14],
   m7: [0, 3, 7, 10],
   maj7: [0, 4, 7, 11],
+  m7b5: [0, 3, 6, 10],
+  dim7: [0, 3, 6, 9],
+  add9: [0, 4, 7, 14],
+  madd9: [0, 3, 7, 14],
   sus4: [0, 5, 7, 10, 14],
   sus2: [0, 2, 7, 10, 14],
+  quartal: [0, 5, 10, 15],
+  quintal: [0, 7, 14],
+  fifth: [0, 7],
+  fourth: [0, 5],
 };
 
 const SEMITONE_SHARP_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -22,6 +32,17 @@ function midiToSharpNoteName(midi: number): string {
   const octave = Math.floor(rounded / 12) - 1;
   const degree = ((rounded % 12) + 12) % 12;
   return `${SEMITONE_SHARP_NAMES[degree]}${octave}`;
+}
+
+/**
+ * Reflects a MIDI note across the Tonic–Dominant axis (R + 3.5 semitones)
+ * so every interval maintains its exact gravitational pull toward the tonic
+ * with inverted emotional polarity.
+ */
+export function reflectMidiNegativeHarmony(midi: number, rootKey: string = 'C'): number {
+  const { rootSemitone } = parseKeyRootSemitone(rootKey);
+  const octaveTonic = Math.floor((midi - rootSemitone) / 12) * 12 + rootSemitone;
+  return Math.max(12, Math.min(108, 2 * octaveTonic + 7 - midi));
 }
 
 export interface FXChainItem {
@@ -635,6 +656,24 @@ export class DocumentParser {
             }
           }
 
+          if (sharedPhysics?.negativeHarmony && chordEvents.length > 0) {
+            const rootKey = (serializer as any).pitchEngine?.getTuningConfiguration?.()?.rootKey || 'C';
+            for (const cev of chordEvents) {
+              const reflectedMidi = reflectMidiNegativeHarmony(cev.pitch.midi, rootKey);
+              const reflectedFreq =
+                (serializer as any).pitchEngine?.computeFrequencyForMidi?.(reflectedMidi) ??
+                440 * Math.pow(2, (reflectedMidi - 69) / 12);
+              cev.pitch = {
+                ...cev.pitch,
+                midi: reflectedMidi,
+                frequency: reflectedFreq,
+                noteName: midiToSharpNoteName(reflectedMidi),
+              };
+              cev.negativeHarmony = true;
+            }
+            chordEvents.sort((a, b) => a.pitch.midi - b.pitch.midi);
+          }
+
           if (sharedPhysics?.rootlessVoicing && chordEvents.length >= 3) {
             chordEvents.sort((a, b) => a.pitch.midi - b.pitch.midi);
             chordEvents.shift();
@@ -766,7 +805,76 @@ export class DocumentParser {
         ev.patch = trackDef.patch;
         ev.env = trackDef.env;
 
-        // Handle Parallel Harmonic Planing (.plane("m9" | "maj9" | "m7" | "sus4")) on a single root note
+        if (ev.physics?.negativeHarmony && !ev.pitch.isRest && !ev.pitch.isSpacer && !ev.physics?.harmonicPlane) {
+          const rootKey = (serializer as any).pitchEngine?.getTuningConfiguration?.()?.rootKey || 'C';
+          const reflectedMidi = reflectMidiNegativeHarmony(ev.pitch.midi, rootKey);
+          const reflectedFreq =
+            (serializer as any).pitchEngine?.computeFrequencyForMidi?.(reflectedMidi) ??
+            440 * Math.pow(2, (reflectedMidi - 69) / 12);
+          ev.pitch = {
+            ...ev.pitch,
+            midi: reflectedMidi,
+            frequency: reflectedFreq,
+            noteName: midiToSharpNoteName(reflectedMidi),
+          };
+          ev.negativeHarmony = true;
+        }
+
+        // Todd Barton Buchla Krell Cybernetic End-of-Cycle (EOC) Expansion (.krell(N))
+        if (ev.physics?.krellEvents && ev.physics.krellEvents > 1 && !ev.pitch.isRest && !ev.pitch.isSpacer && !ev.duration.isGrace) {
+          const kCount = ev.physics.krellEvents;
+          // S&H modal pitch offsets: high notes flash quickly (weight 1), low notes swell slowly (weight 3)
+          const shOffsets = [12, -7, 7, -12, 3, -5, 10, 0, -9, 5, -14, 8, -2, 14, -4, 0];
+          const weights: number[] = [];
+          let weightSum = 0;
+          for (let k = 0; k < kCount; k++) {
+            const semi = shOffsets[k % shOffsets.length];
+            const w = semi >= 7 ? 1 : semi <= -5 ? 3 : 2;
+            weights.push(w);
+            weightSum += w;
+          }
+
+          let krellCursor = { ...cursorTime };
+          for (let k = 0; k < kCount; k++) {
+            const semi = shOffsets[k % shOffsets.length];
+            const stepMidi = Math.max(24, Math.min(96, ev.pitch.midi + semi));
+            const stepFreq =
+              (serializer as any).pitchEngine?.computeFrequencyForMidi?.(stepMidi) ??
+              440 * Math.pow(2, (stepMidi - 69) / 12);
+            const rawNum = ev.duration.numerator * weights[k];
+            const rawDen = ev.duration.denominator * weightSum;
+            const div = this.gcd(rawNum, rawDen);
+            const stepDur = { numerator: rawNum / div, denominator: rawDen / div };
+            const foldAmt = 45 + ((k * 19) % 45);
+            const isLowSwell = semi < 0;
+
+            events.push({
+              ...ev,
+              pitch: {
+                midi: stepMidi,
+                frequency: stepFreq,
+                noteName: midiToSharpNoteName(stepMidi),
+              },
+              duration: stepDur,
+              startTime: { ...krellCursor },
+              wavefoldAmount: foldAmt,
+              osmoseSqueeze: isLowSwell ? 85 : undefined,
+              physics: {
+                ...ev.physics,
+                krellEvents: undefined,
+                wavefoldAmount: foldAmt,
+                osmoseSqueeze: isLowSwell ? 85 : ev.physics.osmoseSqueeze,
+              },
+            });
+            krellCursor = this.addFractions(krellCursor, stepDur);
+          }
+
+          cursorTime = this.addFractions(cursorTime, ev.duration);
+          voiceDuration = this.addFractions(voiceDuration, ev.duration);
+          continue;
+        }
+
+        // Handle Parallel Harmonic Planing (.plane("m9" | "maj9" | "m7" | "sus4" | "quartal")) on a single root note
         if (ev.physics?.harmonicPlane && !ev.pitch.isRest && !ev.pitch.isSpacer) {
           const planeType = ev.physics.harmonicPlane.toLowerCase();
           const intervals = HARMONIC_PLANE_INTERVALS[planeType] || HARMONIC_PLANE_INTERVALS.m9;
@@ -782,12 +890,19 @@ export class DocumentParser {
             activeIntervals = activeIntervals.slice(1);
           }
 
-          const pitches = activeIntervals.map((semi) => rootMidi + semi);
+          const rootKey = (serializer as any).pitchEngine?.getTuningConfiguration?.()?.rootKey || 'C';
+          const pitches = activeIntervals
+            .map((semi) => {
+              const m = rootMidi + semi;
+              return ev.physics?.negativeHarmony ? reflectMidiNegativeHarmony(m, rootKey) : m;
+            })
+            .sort((a, b) => a - b);
           const noteNames = pitches.map((m) => midiToSharpNoteName(m));
-          const frequencies = activeIntervals.map((semi) => rootFreq * Math.pow(2, semi / 12));
+          const frequencies = pitches.map(
+            (m) => rootFreq * Math.pow(2, (m - rootMidi) / 12)
+          );
 
-          const planeEvents: AtomicEvent[] = activeIntervals.map((semi, idx) => {
-            const m = rootMidi + semi;
+          const planeEvents: AtomicEvent[] = pitches.map((m, idx) => {
             const f = frequencies[idx];
             return {
               ...ev,
@@ -801,6 +916,7 @@ export class DocumentParser {
               frequencies,
               harmonicPlane: ev.physics?.harmonicPlane,
               rootlessVoicing: Boolean(ev.physics?.rootlessVoicing),
+              negativeHarmony: Boolean(ev.physics?.negativeHarmony),
             };
           });
 
@@ -1414,13 +1530,14 @@ export class DocumentParser {
         const measureStartTime = { ...currentScoreTime };
         let maxVoiceDurationInMeasure = { ...measureCapacity };
 
-        const assignmentRegex = /^\s*([a-zA-Z0-9_]+)\s*:\s+(<\[[\s\S]*?\]>|\{[\s\S]*?\}|[^\n]+)$/gm;
+        const assignmentRegex = /^[ \t]*([a-zA-Z0-9_]+)[ \t]*:[ \t]*(<\[[\s\S]*?\]>|\{[\s\S]*?\}|[^\r\n]*)$/gm;
         let assignMatch: RegExpExecArray | null;
 
         while ((assignMatch = assignmentRegex.exec(measureBody)) !== null) {
           const trackId = assignMatch[1].trim();
           if (trackId.toLowerCase() === 'meta') continue;
           const rhs = assignMatch[2].trim();
+          if (!rhs) continue;
 
           const trackDef = this.ensureTrackDefinition(trackId, defsMap, trackVolumes);
 
@@ -1640,13 +1757,14 @@ export class DocumentParser {
       }
 
       let maxSceneDuration = { ...measureCapacity };
-      const assignmentRegex = /^\s*([a-zA-Z0-9_]+)\s*:\s+(<\[[\s\S]*?\]>|\{[\s\S]*?\}|[^\n]+)$/gm;
+      const assignmentRegex = /^[ \t]*([a-zA-Z0-9_]+)[ \t]*:[ \t]*(<\[[\s\S]*?\]>|\{[\s\S]*?\}|[^\r\n]*)$/gm;
       let assignMatch: RegExpExecArray | null;
 
       while ((assignMatch = assignmentRegex.exec(sceneBody)) !== null) {
         const trackId = assignMatch[1].trim();
         if (trackId.toLowerCase() === 'meta') continue;
         let rhs = assignMatch[2].trim();
+        if (!rhs) continue;
 
         // Extract optional inline follow action dictionary: @follow @{ bars: 4, actionA: "next", chanceA: 80 }
         let inlineFollow: FollowActionConfig | undefined;

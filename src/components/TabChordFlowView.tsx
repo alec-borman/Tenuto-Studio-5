@@ -1274,6 +1274,129 @@ export default function TabChordFlowView({
     [livePlayheadMidis, preferFlats, activeSlice]
   );
 
+  // Precompute static SVG trajectory paths (`dPath`, `detuneWavePath`, `xStart`, `wPx`, `yStart`, `badgeW`)
+  // once when score/zoom/layout changes so 60fps `playheadBeat` ticks only move the playhead line & active orbs!
+  const precomputedTrackGeometry = useMemo(() => {
+    const topPad = 16;
+    const bottomPad = 16;
+    const usableH = Math.max(44, staffHeightPx - topPad - bottomPad);
+    const geomByTrack = new Map<
+      string,
+      {
+        effectiveMinMidi: number;
+        effectiveMaxMidi: number;
+        renderedItems: Array<{
+          item: TrackedVoiceEvent;
+          xStart: number;
+          wPx: number;
+          yStart: number;
+          dPath: string;
+          detuneWavePath: string;
+          pitchText: string;
+          badgeW: number;
+        }>;
+      }
+    >();
+
+    for (const track of visibleTracks) {
+      const trackTrajectories = trajectoriesByTrack.get(track.id) || [];
+      let tMinMidi = 127;
+      let tMaxMidi = 0;
+      for (const item of trackTrajectories) {
+        if (item.startMidi < tMinMidi) tMinMidi = item.startMidi;
+        if (item.startMidi > tMaxMidi) tMaxMidi = item.startMidi;
+        if (item.targetMidi < tMinMidi) tMinMidi = item.targetMidi;
+        if (item.targetMidi > tMaxMidi) tMaxMidi = item.targetMidi;
+      }
+      if (tMinMidi > tMaxMidi) {
+        tMinMidi = 48;
+        tMaxMidi = 72;
+      }
+      const midCenter = (tMinMidi + tMaxMidi) * 0.5;
+      const halfRange = Math.max(6, (tMaxMidi - tMinMidi) * 0.5 + 2);
+      const effectiveMinMidi = midCenter - halfRange;
+      const effectiveMaxMidi = midCenter + halfRange;
+
+      const trackMidiToY = (midiVal: number): number => {
+        const norm =
+          (midiVal - effectiveMinMidi) / Math.max(1, effectiveMaxMidi - effectiveMinMidi);
+        const clampedNorm = Math.max(0, Math.min(1, norm));
+        return Number((topPad + (1 - clampedNorm) * usableH).toFixed(1));
+      };
+
+      const renderedItems = trackTrajectories.map((item) => {
+        const xStart = effectiveHitZoneX + item.startWhole * wholeNoteScale;
+        const xEnd = effectiveHitZoneX + item.endWhole * wholeNoteScale;
+        const wPx = Math.max(4, xEnd - xStart - 1.5);
+        const yStart = trackMidiToY(item.startMidi);
+
+        let dPath = '';
+        const numSteps = item.hasGlide ? 14 : 2;
+        for (let s = 0; s <= numSteps; s++) {
+          const u = s / numSteps;
+          const wTime = item.startWhole + u * item.durationWhole;
+          const x = xStart + u * wPx;
+          const y = trackMidiToY(evaluateTrackedEventMidiAtWhole(item, wTime));
+          dPath += `${s === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)} `;
+        }
+
+        let detuneWavePath = '';
+        if (item.hasDetune && wPx > 14) {
+          const sNorm = item.detuneMod?.startNorm ?? 0.0;
+          const eNorm = item.detuneMod?.endNorm ?? 1.0;
+          const waveSteps = 20;
+          for (let w = 0; w <= waveSteps; w++) {
+            const u = sNorm + (w / waveSteps) * (eNorm - sNorm);
+            const x = xStart + u * wPx;
+            const windowEnv = Math.sin((w / waveSteps) * Math.PI);
+            const spreadPx =
+              Math.sin(w * 1.6) *
+              windowEnv *
+              Math.min(7, 2.5 + ((item.detunePct ?? 75) / 100) * 4.5);
+            const baseMidiAtU = evaluateTrackedEventMidiAtWhole(
+              item,
+              item.startWhole + u * item.durationWhole
+            );
+            const y = trackMidiToY(baseMidiAtU) + spreadPx;
+            detuneWavePath += `${w === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)} `;
+          }
+        }
+
+        const pitchText = formatMidiPitchDisplay(item.startMidi, preferFlats);
+        const badgeW = Math.min(
+          Math.max(12, wPx - 2),
+          wPx >= 44 ? 40 : wPx >= 22 ? 20 : Math.max(10, wPx - 1)
+        );
+
+        return {
+          item,
+          xStart,
+          wPx,
+          yStart,
+          dPath,
+          detuneWavePath,
+          pitchText,
+          badgeW,
+        };
+      });
+
+      geomByTrack.set(track.id, {
+        effectiveMinMidi,
+        effectiveMaxMidi,
+        renderedItems,
+      });
+    }
+
+    return geomByTrack;
+  }, [
+    visibleTracks,
+    trajectoriesByTrack,
+    staffHeightPx,
+    effectiveHitZoneX,
+    wholeNoteScale,
+    preferFlats,
+  ]);
+
   let globalOrbCounter = 0;
 
   return (
@@ -1543,9 +1666,9 @@ export default function TabChordFlowView({
                 ? 'bg-pink-500/30 border-pink-300 text-pink-100 font-bold'
                 : 'bg-black/45 border-amber-300/30 text-amber-100 hover:bg-amber-500/20'
             }`}
-            title="Hide secondary toolbars for clean TikTok / Reels vertical screen capture"
+            title="Hide secondary toolbars for clean 9:16 vertical screen capture"
           >
-            {isTiktokCleanHud ? 'TikTok HUD: ON' : 'TikTok HUD'}
+            {isTiktokCleanHud ? 'Clean HUD: ON' : 'Clean HUD'}
           </button>
 
           <button
@@ -1559,9 +1682,9 @@ export default function TabChordFlowView({
                 ? 'bg-cyan-500/30 border-cyan-300 text-cyan-100 font-bold'
                 : 'bg-black/45 border-amber-300/30 text-amber-100 hover:bg-amber-500/20'
             }`}
-            title="Rotate to vertical iPhone 15 Pro resolution (393×852 / 1179×2556) in normal or Fullscreen view"
+            title="Rotate to vertical 9:16 portrait resolution (393×852 / 1179×2556) in normal or Fullscreen view"
           >
-            {isIphonePortrait ? 'iPhone 15 Pro (393×852)' : 'Rotate iPhone'}
+            {isIphonePortrait ? 'Portrait (393×852)' : 'Rotate Portrait'}
           </button>
 
           <button
@@ -1799,22 +1922,9 @@ export default function TabChordFlowView({
               preferFlats
             );
 
-            let tMinMidi = 127;
-            let tMaxMidi = 0;
-            for (const item of trackTrajectories) {
-              if (item.startMidi < tMinMidi) tMinMidi = item.startMidi;
-              if (item.startMidi > tMaxMidi) tMaxMidi = item.startMidi;
-              if (item.targetMidi < tMinMidi) tMinMidi = item.targetMidi;
-              if (item.targetMidi > tMaxMidi) tMaxMidi = item.targetMidi;
-            }
-            if (tMinMidi > tMaxMidi) {
-              tMinMidi = 48;
-              tMaxMidi = 72;
-            }
-            const midCenter = (tMinMidi + tMaxMidi) * 0.5;
-            const halfRange = Math.max(6, (tMaxMidi - tMinMidi) * 0.5 + 2);
-            const effectiveMinMidi = midCenter - halfRange;
-            const effectiveMaxMidi = midCenter + halfRange;
+            const precomputedGeom = precomputedTrackGeometry.get(track.id);
+            const effectiveMinMidi = precomputedGeom?.effectiveMinMidi ?? 48;
+            const effectiveMaxMidi = precomputedGeom?.effectiveMaxMidi ?? 72;
 
             const topPad = 16;
             const bottomPad = 16;
@@ -2121,56 +2231,17 @@ export default function TabChordFlowView({
                     })}
 
                     {/* Proportional Beat Bars, Detune Shimmer Envelopes & Explicit Slides */}
-                    {trackTrajectories.map((item) => {
-                      const xStart = effectiveHitZoneX + item.startWhole * wholeNoteScale;
-                      const xEnd = effectiveHitZoneX + item.endWhole * wholeNoteScale;
-                      const wPx = Math.max(4, xEnd - xStart - 1.5);
-                      const yStart = trackMidiToY(item.startMidi);
-
-                      let dPath = '';
-                      const numSteps = item.hasGlide ? 14 : 2;
-                      for (let s = 0; s <= numSteps; s++) {
-                        const u = s / numSteps;
-                        const wTime = item.startWhole + u * item.durationWhole;
-                        const x = xStart + u * wPx;
-                        const y = trackMidiToY(evaluateTrackedEventMidiAtWhole(item, wTime));
-                        dPath += `${s === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)} `;
-                      }
-
-                      // If this note has `.detune(...)`, build a visual unison detune shimmer wave
-                      // over its active `startNorm..endNorm` window (e.g. 0.3..0.9 in Measure 9!)
-                      let detuneWavePath = '';
-                      if (item.hasDetune && wPx > 14) {
-                        const sNorm = item.detuneMod?.startNorm ?? 0.0;
-                        const eNorm = item.detuneMod?.endNorm ?? 1.0;
-                        const waveSteps = 20;
-                        for (let w = 0; w <= waveSteps; w++) {
-                          const u = sNorm + (w / waveSteps) * (eNorm - sNorm);
-                          const x = xStart + u * wPx;
-                          const windowEnv = Math.sin((w / waveSteps) * Math.PI);
-                          const spreadPx =
-                            Math.sin(w * 1.6) *
-                            windowEnv *
-                            Math.min(7, 2.5 + ((item.detunePct ?? 75) / 100) * 4.5);
-                          const baseMidiAtU = evaluateTrackedEventMidiAtWhole(
-                            item,
-                            item.startWhole + u * item.durationWhole
-                          );
-                          const y = trackMidiToY(baseMidiAtU) + spreadPx;
-                          detuneWavePath += `${w === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)} `;
-                        }
-                      }
-
-                      const pitchText = formatMidiPitchDisplay(
-                        item.startMidi,
-                        preferFlats
-                      );
-                      const badgeW = Math.min(
-                        Math.max(12, wPx - 2),
-                        wPx >= 44 ? 40 : wPx >= 22 ? 20 : Math.max(10, wPx - 1)
-                      );
-
-                      return (
+                    {(precomputedGeom?.renderedItems || []).map(
+                      ({
+                        item,
+                        xStart,
+                        wPx,
+                        yStart,
+                        dPath,
+                        detuneWavePath,
+                        pitchText,
+                        badgeW,
+                      }) => (
                         <g key={item.id}>
                           {/* Proportional Beat Duration Bar */}
                           <path
@@ -2228,8 +2299,8 @@ export default function TabChordFlowView({
                             </text>
                           )}
                         </g>
-                      );
-                    })}
+                      )
+                    )}
 
                     {/* Glowing Hit-Zone Highway Bar & Active Playhead Line */}
                     {isIphonePortrait && (

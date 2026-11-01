@@ -63,9 +63,9 @@ Define as many tracks as your arrangement needs using `def <trackId> "<Display N
 
 ### 3.1 Full 128-Instrument HD SoundFont Patch Catalog (`patch="..."`)
 
-Tenuto Studio 5 streams and caches real multi-sampled acoustic recordings from the **MusyngKite General MIDI SoundFont library** (and automatically detects orchestral instruments from track IDs like `vln1`, `vla`, `vc`, `cb`, `fl`, `hn`, `choir`, `soprano`, `alto`, `harp`, `pno`):
+Tenuto Studio 5 streams and caches real multi-sampled acoustic recordings from the **General MIDI HD SoundFont library** (and automatically detects orchestral instruments from track IDs like `vln1`, `vla`, `vc`, `cb`, `fl`, `hn`, `choir`, `soprano`, `alto`, `harp`, `pno`):
 
-* **Pianos & Keyboards:** `salamander_grand`, `acoustic_grand_piano`, `bright_piano`, `electric_grand`, `rhodes`, `dx7`, `harpsichord`, `clavinet`, `celesta`
+* **Pianos & Keyboards:** `salamander_grand`, `acoustic_grand_piano`, `bright_piano`, `electric_grand`, `electric_piano_1`, `electric_piano_2`, `vintage_epiano`, `fm_epiano`, `harpsichord`, `clavinet`, `celesta`
 * **Chromatic Percussion:** `vibraphone`, `marimba`, `xylophone`, `glockenspiel`, `tubular_bells`, `music_box`, `dulcimer`
 * **Organs & Accordions:** `church_organ`, `drawbar_organ`, `rock_organ`, `reed_organ`, `accordion`, `bandoneon`, `harmonica`
 * **Orchestral Strings & Harp:** `violin`, `viola`, `cello`, `contrabass`, `string_ensemble_1`, `chamber_strings`, `tremolo_strings`, `pizzicato_strings`, `orchestral_harp`, `timpani`

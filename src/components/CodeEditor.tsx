@@ -262,6 +262,19 @@ export function configureTenutoMonaco(monaco: any): void {
         'width',
         'slop',
         'noise',
+        'temperament',
+        'master_tune',
+        'ratchet',
+        'swarm',
+        'vowel',
+        'plane',
+        'rootless',
+        'fold',
+        'squeeze',
+        'bend_voice',
+        'wow_flutter',
+        'neg_harm',
+        'krell',
       ],
       tokenizer: {
         root: [
@@ -336,12 +349,23 @@ export default function CodeEditor({
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
   const decorationIdsRef = useRef<string[]>([]);
+  const lastDecorationSigRef = useRef<string>('');
   const lastRevealedLineRef = useRef<number>(0);
   const lastRevealedMeasureRef = useRef<number>(0);
 
   const activeTokens = useMemo(
     () => computeActiveKaraokeTokens(events, playheadBeat, isPlaying),
     [events, playheadBeat, isPlaying]
+  );
+
+  // Structural signature of active token spans (excludes 60fps progressPct so Monaco deltaDecorations
+  // and code.split('\n') only execute when the active note or measure actually changes!)
+  const activeSpanSignature = useMemo(
+    () =>
+      activeTokens
+        .map((t) => `${t.measureNumber}:${t.line}:${t.col}:${t.endCol}:${t.coreToken}`)
+        .join('|'),
+    [activeTokens]
   );
 
   // Synchronize Surgical Core-Note Token Decorations & Always-Centered Measure Scrolling
@@ -444,7 +468,7 @@ export default function CodeEditor({
     } catch {
       // Graceful fallback for mocked environments
     }
-  }, [activeTokens, code]);
+  }, [activeSpanSignature, code]);
 
   return (
     <div className="w-full h-full flex flex-col overflow-hidden relative tenuto-editor-playback">

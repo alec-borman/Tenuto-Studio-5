@@ -9,7 +9,7 @@ import {
 import { AbletonAudioFxEngine } from '../src/audio/AbletonAudioFxEngine';
 import { StudioAudioEngine } from '../src/audio/StudioAudioEngine';
 
-describe('TDB-750: Anti-Skip AudioParam Guard, Wavetable Cache & Voltage/Gesture Synth Expansion (v5.3.8)', () => {
+describe('TDB-750: Anti-Skip AudioParam Guard, Wavetable Cache & Voltage/Gesture Synth Expansion (v5.4.0)', () => {
   it('prevents setValueCurveAtTime / linearRampToValueAtTime collisions via clampCurveWindowBeforeGlide', () => {
     const win = clampCurveWindowBeforeGlide(2.0, 1.0, 0.25, 0.95, 0.14);
     expect(win.startSec).toBeGreaterThanOrEqual(2.25);
@@ -146,4 +146,276 @@ describe('TDB-750: Anti-Skip AudioParam Guard, Wavetable Cache & Voltage/Gesture
     expect(wav.type).toBe('audio/wav');
     expect(wav.size).toBeGreaterThan(44100 * 2);
   });
+
+  it('compiles .wow_flutter, .neg_harm (Negative Harmony), .krell(N) EOC cybernetics, .plane("quartal"), and tape_degrade FX', async () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Cybernetics & Hauntology", tempo: 118, time: "4/4", key: "C" }
+        def haunt "Hauntology" style=synth patch="hauntology_pad" .fx(tape_degrade, @{ wow_hz: 0.42, flutter_hz: 9.5, high_cut: 5200, drive: 0.3 })
+        def krell "Buchla Krell" style=synth patch="buchla_krell"
+        def plan  "Quartal & Negative Harmony" style=synth patch="flutter_pad"
+
+        measure 1 {
+          haunt: c4:1.wow_flutter(5, 0.42, 2.5, 9.5) |
+          krell: c4:1.krell(5).fold(75%) |
+          plan:  [c4 e4 g4]:2.neg_harm c4:2.plane("quartal") |
+        }
+      }
+    `);
+
+    const hauntEv = score.events.find((e) => e.trackId === 'haunt')!;
+    expect(hauntEv.wowFlutter).toEqual({
+      wowCents: 5,
+      wowHz: 0.42,
+      flutterCents: 2.5,
+      flutterHz: 9.5,
+    });
+    expect(AbletonAudioFxEngine.isSupportedFx('tape_degrade')).toBe(true);
+
+    // Krell patch subdivides c4:1 into 5 autonomous EOC events whose durations sum to 1.0 whole note
+    const krellEvents = score.events.filter((e) => e.trackId === 'krell');
+    expect(krellEvents).toHaveLength(5);
+    const krellTotalDur = krellEvents.reduce(
+      (sum, ev) => sum + ev.duration.numerator / ev.duration.denominator,
+      0
+    );
+    expect(krellTotalDur).toBeCloseTo(1.0, 5);
+
+    // Negative Harmony reflects [c4 e4 g4] (60, 64, 67) across C-G axis to C minor [c4 eb4 g4] (60, 63, 67)
+    const negEvents = score.events.filter(
+      (e) => e.trackId === 'plan' && e.startTime && e.startTime.numerator === 0
+    );
+    expect(negEvents.map((e) => e.pitch.midi)).toEqual([60, 63, 67]);
+
+    // Quartal planing on C4 (60) builds [60, 65, 70, 75]
+    const quartalEvents = score.events.filter(
+      (e) => e.trackId === 'plan' && e.startTime && e.startTime.numerator === 1 && e.startTime.denominator === 2
+    );
+    expect(quartalEvents.map((e) => e.pitch.midi)).toEqual([60, 65, 70, 75]);
+
+    const engine = new StudioAudioEngine();
+    const wav = await engine.exportWavBlob(score);
+    expect(wav.size).toBeGreaterThan(44100 * 2);
+  });
+
+  it('eliminates 3-voice unison phase-cancellation dropouts, preserves explicit sub-bass .filter(120, 175) cutoffs, coalesces chords before humanization, and ignores dangling track labels', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Multi-Measure Dropout Regression", tempo: 72, time: "4/4", key: "E" }
+        def lead "Lead" style=synth patch="saw_lead"
+        def pad "Pad" style=synth patch="flutter_pad"
+        def sub "Sub" style=synth patch="reese_bass" cutoff=145 sub=90
+
+        measure 1 {
+          gtr_lead_or_lead_note:
+          lead: a4:2.mp b4:2.mp |
+          pad:  [f#3 a3 c#4 e4]:1.p.detune([28, 72, 34]).filter(460, 2200) |
+          sub:  e1:1.mp.detune([12, 48, 16]).filter(120, 175) |
+        }
+        measure 2 {
+          lead: g#4:1.mp |
+          pad:  [e3 g#3 b3 d#4]:1.p.detune([24, 64, 28]).filter(440, 1900) |
+          sub:  e1:1.mp.detune([14, 42, 16]).filter(115, 165) |
+        }
+      }
+    `);
+
+    // 1. Dangling label `gtr_lead_or_lead_note:` must NOT swallow `lead: a4:2.mp b4:2.mp`
+    const m1LeadEvents = score.events.filter((e) => e.trackId === 'lead' && e.measureNumber === 1);
+    expect(m1LeadEvents).toHaveLength(2);
+    expect(m1LeadEvents.map((e) => e.pitch.midi)).toEqual([69, 71]);
+
+    // 2. Build scheduled timeline and verify 4-note pad chords coalesce into 1 shared voice even with humanizeTimelinePhrasing
+    const engine = new StudioAudioEngine();
+    const timeline = (engine as any).buildScheduledTimeline(score);
+    const padVoices = timeline.filter((item: any) => item.event.trackId === 'pad');
+    expect(padVoices).toHaveLength(2);
+    expect(padVoices[0].chordVoices).toHaveLength(4);
+    expect(padVoices[1].chordVoices).toHaveLength(4);
+
+    // 3. Render the 3.33s M1 pad chord and verify asymmetric unison never phase-cancels to near-zero RMS mid-hold
+    const sr = 44100;
+    const frames = Math.floor(padVoices[0].durSec * sr);
+    const padL = new Float32Array(frames);
+    const padR = new Float32Array(frames);
+    ContinuousSynthEngine.renderVoiceIntoTrackStem(padL, padR, 0, frames, sr, 72, 1, padVoices[0]);
+
+    const windowFrames = Math.floor(0.15 * sr);
+    for (let wStart = Math.floor(0.2 * sr); wStart + windowFrames < frames - Math.floor(0.2 * sr); wStart += windowFrames) {
+      let sumSq = 0;
+      for (let i = wStart; i < wStart + windowFrames; i++) {
+        sumSq += padL[i] * padL[i] + padR[i] * padR[i];
+      }
+      const rms = Math.sqrt(sumSq / (windowFrames * 2));
+      expect(rms).toBeGreaterThan(0.015);
+    }
+
+    // 4. Render the M1 sub-bass note (`e1` = 41.2 Hz with `.filter(120, 175)`) and verify explicit filter cutoff is not crushed by keytracking
+    const subItem = timeline.find((item: any) => item.event.trackId === 'sub')!;
+    const subFrames = Math.floor(subItem.durSec * sr);
+    const subL = new Float32Array(subFrames);
+    const subR = new Float32Array(subFrames);
+    ContinuousSynthEngine.renderVoiceIntoTrackStem(subL, subR, 0, subFrames, sr, 72, 2, subItem);
+    let subSumSq = 0;
+    for (let i = Math.floor(0.2 * sr); i < Math.floor(1.5 * sr); i++) {
+      subSumSq += subL[i] * subL[i];
+    }
+    const subRms = Math.sqrt(subSumSq / Math.floor(1.3 * sr));
+    expect(subRms).toBeGreaterThan(0.04);
+
+    // 5. Verify rolling AudioBuffer eviction behind fromSec in prebakeContinuousSynthTimeline when isLooping is false
+    const mockCtx = {
+      sampleRate: 44100,
+      createBuffer: (channels: number, length: number, sampleRate: number) => ({
+        numberOfChannels: channels,
+        length,
+        sampleRate,
+        duration: length / sampleRate,
+        getChannelData: () => new Float32Array(length),
+      }),
+    } as any;
+    (engine as any).isLooping = false;
+    engine.prebakeContinuousSynthTimeline(mockCtx, timeline, 72, 0, 2.0, 8);
+    expect(padVoices[0].prebakedBuffer).toBeDefined();
+
+    // Advance window past M1 (startSec=0, durSec=3.33s -> 3.33 + 0.6 < 4.5s) and verify eviction
+    engine.prebakeContinuousSynthTimeline(mockCtx, timeline, 72, 4.5, 8.0, 8);
+    expect(padVoices[0].prebakedBuffer).toBeUndefined();
+    expect(padVoices[1].prebakedBuffer).toBeDefined();
+  });
+
+  it('compiles flagship hardware synth patches (polybrute_12, moog_muse, nina_motor, super_gemini, buchla_200e), circuit modifiers (.lpg, .metalizer, .brute_factor, .cp3_drive, .binaural, .spin, .morph, .fulltouch, .aliasing), and 7 DCA outboard FX', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Flagship Hardware & DCA Outboard Stack", tempo: 120, time: "4/4", key: "C" }
+        def pb "PolyBrute 12" style=synth patch="polybrute_12" .fx(burl_mothership, @{ transformer: "bx1", drive: 0.45 }) .fx(neve_5059, @{ silk: "super", texture: 0.7 })
+        def muse "Moog Muse" style=synth patch="moog_muse" .fx(wes_mimas, @{ ratio: "all_buttons", drive: 0.55 }) .fx(wes_rhea, @{ threshold: -14, thd: "high" })
+        def nina "Melbourne NINA" style=synth patch="nina_motor" .fx(eventide_h9000, @{ shift1_st: 7, shift2_st: -12, mix: 0.4 })
+        def gemini "UDO Super Gemini" style=synth patch="super_gemini" .fx(bricasti_m7, @{ decay: 2.8, predelay: 24, mix: 0.45 })
+        def buchla "Buchla 200e" style=synth patch="buchla_200e" .fx(bettermaker_limiter, @{ gain_db: 3.0, ceiling: -0.3, odd_even_thd: 0.35 })
+
+        measure 1 {
+          pb: [c4 e4 g4]:2.mf.metalizer(65%).brute_factor(55%).morph([0, 90, 20]).fulltouch("at") r:2 |
+          muse: c2:2.f.cp3_drive(60%) r:2 |
+          nina: g4:2.mp.spin(1.5) r:2 |
+          gemini: [c4 g4 b4]:2.mp.binaural(14c) r:2 |
+          buchla: e3:2.mf.lpg("both", 380ms).aliasing(40%) r:2 |
+        }
+      }
+    `);
+
+    const pbEv = score.events.find((e) => e.trackId === 'pb')!;
+    expect(pbEv.metalizerAmount).toBe(65);
+    expect(pbEv.bruteFactor).toBe(55);
+    expect(pbEv.morphAmount).toBe(20);
+    expect(pbEv.fullTouchMode).toBe('at');
+
+    const museEv = score.events.find((e) => e.trackId === 'muse')!;
+    expect(museEv.cp3Drive).toBe(60);
+
+    const ninaEv = score.events.find((e) => e.trackId === 'nina')!;
+    expect(ninaEv.spinRateHz).toBe(1.5);
+
+    const geminiEv = score.events.find((e) => e.trackId === 'gemini')!;
+    expect(geminiEv.binauralSpreadCents).toBe(14);
+
+    const buchlaEv = score.events.find((e) => e.trackId === 'buchla')!;
+    expect(buchlaEv.lpg).toEqual({ mode: 'both', decayMs: 380 });
+    expect(buchlaEv.aliasingAmount).toBe(40);
+
+    const engine = new StudioAudioEngine();
+    const timeline = (engine as any).buildScheduledTimeline(score);
+    expect(timeline.every((item: any) => item.sfInstrument === null)).toBe(true);
+
+    const sr = 44100;
+    const frames = Math.floor(0.35 * sr);
+    const left = new Float32Array(frames);
+    const right = new Float32Array(frames);
+
+    for (const item of timeline) {
+      ContinuousSynthEngine.renderVoiceIntoTrackStem(left, right, 0, frames, sr, 120, 1, item);
+      const fxChain = AbletonAudioFxEngine.resolveActiveFxChain(item.def, item.event);
+      expect(fxChain.length).toBeGreaterThan(0);
+      for (const fx of fxChain) {
+        expect(AbletonAudioFxEngine.isSupportedFx(fx.type)).toBe(true);
+      }
+      AbletonAudioFxEngine.applyFxChainToSlice(left, right, 0, frames, sr, fxChain, {
+        tempoBpm: 120,
+      });
+    }
+
+    let energy = 0;
+    for (let i = 0; i < frames; i++) {
+      expect(Number.isFinite(left[i])).toBe(true);
+      expect(Number.isFinite(right[i])).toBe(true);
+      energy += left[i] * left[i] + right[i] * right[i];
+    }
+    expect(energy).toBeGreaterThan(1.0);
+  });
+
+  it('compiles and renders vendor-neutral canonical patches (morph_analog_12, vintage_ladder_8, hybrid_motor_12, binaural_hybrid_20, west_coast_200, ribbon_cluster_8, tape_nostalgia_pad), modifiers (.tri_fold, .steiner_drive, .discrete_drive, .touch_travel, .eoc_cycle), non_octave_alpha temperament, and 7 studio outboard FX', () => {
+    const parser = new DocumentParser();
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "Vendor-Neutral Studio Stack", tempo: 120, time: "4/4", key: "C", temperament: "non_octave_alpha" }
+        def morph "Morph Analog 12" style=synth patch="morph_analog_12" .fx(transformer_color_adc, @{ transformer: "input_iron", drive: 0.45 }) .fx(dual_bus_silk_sum, @{ mode: "dual", texture: 0.7 })
+        def ladder "Vintage Ladder 8" style=synth patch="vintage_ladder_8" .fx(fet_fast_limiter, @{ ratio: "all_buttons", drive: 0.55 }) .fx(vari_mu_tube_comp, @{ threshold: -14, thd: "high" })
+        def motor "Hybrid Motor 12" style=synth patch="hybrid_motor_12" .fx(spectral_pitch_harmonizer, @{ shift1_st: 7, shift2_st: -12, mix: 0.4 })
+        def binaural "Binaural Hybrid 20" style=synth patch="binaural_hybrid_20" .fx(true_stereo_hall_reverb, @{ decay: 2.8, predelay: 24, mix: 0.45 })
+        def wc "West Coast 200" style=synth patch="west_coast_200" .fx(mastering_clip_limiter, @{ gain_db: 3.0, ceiling: -0.3, odd_even_thd: 0.35 })
+
+        measure 1 {
+          morph: [c4 e4 g4]:2.mf.tri_fold(65%).steiner_drive(55%).morph([0, 90, 20]).touch_travel("at") r:2 |
+          ladder: c2:2.f.discrete_drive(60%) r:2 |
+          motor: g4:2.mp.spin(1.5) r:2 |
+          binaural: [c4 g4 b4]:2.mp.binaural(14c) r:2 |
+          wc: e3:2.mf.eoc_cycle(3).lpg("both", 380ms).aliasing(40%) r:2 |
+        }
+      }
+    `);
+
+    const morphEv = score.events.find((e) => e.trackId === 'morph')!;
+    expect(morphEv.metalizerAmount).toBe(65);
+    expect(morphEv.bruteFactor).toBe(55);
+    expect(morphEv.fullTouchMode).toBe('at');
+
+    const ladderEv = score.events.find((e) => e.trackId === 'ladder')!;
+    expect(ladderEv.cp3Drive).toBe(60);
+
+    const wcEvs = score.events.filter((e) => e.trackId === 'wc');
+    expect(wcEvs).toHaveLength(3);
+    expect(wcEvs[0].lpg).toEqual({ mode: 'both', decayMs: 380 });
+
+    const engine = new StudioAudioEngine();
+    const timeline = (engine as any).buildScheduledTimeline(score);
+    expect(timeline.every((item: any) => item.sfInstrument === null)).toBe(true);
+
+    const sr = 44100;
+    const frames = Math.floor(0.25 * sr);
+    const left = new Float32Array(frames);
+    const right = new Float32Array(frames);
+
+    for (const item of timeline) {
+      ContinuousSynthEngine.renderVoiceIntoTrackStem(left, right, 0, frames, sr, 120, 1, item);
+      const fxChain = AbletonAudioFxEngine.resolveActiveFxChain(item.def, item.event);
+      for (const fx of fxChain) {
+        expect(AbletonAudioFxEngine.isSupportedFx(fx.type)).toBe(true);
+      }
+      AbletonAudioFxEngine.applyFxChainToSlice(left, right, 0, frames, sr, fxChain, {
+        tempoBpm: 120,
+      });
+    }
+
+    let energy = 0;
+    for (let i = 0; i < frames; i++) {
+      energy += left[i] * left[i] + right[i] * right[i];
+    }
+    expect(energy).toBeGreaterThan(0.5);
+  });
 });
+
+
+

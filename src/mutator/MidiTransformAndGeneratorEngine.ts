@@ -5,9 +5,10 @@ export type MidiTransformType =
   | 'strum'
   | 'connect_legato'
   | 'ornament'
-  | 'humanize';
+  | 'humanize'
+  | 'negative_harmony';
 
-export type MidiGeneratorType = 'stacks' | 'seed_melody' | 'rhythm_groove';
+export type MidiGeneratorType = 'stacks' | 'seed_melody' | 'rhythm_groove' | 'krell_patch';
 
 const SHARP_NAMES = ['c', 'c#', 'd', 'd#', 'e', 'f', 'f#', 'g', 'g#', 'a', 'a#', 'b'];
 const FLAT_NAMES = ['c', 'db', 'd', 'eb', 'e', 'f', 'gb', 'g', 'ab', 'a', 'bb', 'b'];
@@ -73,6 +74,11 @@ export class MidiTransformAndGeneratorEngine {
       return `${n(0)}:8.stacc ${n(7)}:8 ${n(0)}:8.stacc ${n(4)}:8 ${n(5)}:8.stacc ${n(12)}:8 ${n(4)}:8 ${n(6)}:8 |`;
     }
 
+    if (generatorType === 'krell_patch') {
+      // Autonomous Buchla 259 Krell cybernetic EOC patch (1 whole-note span subdivided into 5 EOC events)
+      return `${n(2)}:1.krell(5).fold(72%) |`;
+    }
+
     if (generatorType === 'stacks') {
       // Lush Live 12 'Stacks' diatonic 9th/add11 chord progression (2 half-note stacks = 4 beats)
       const chord1 = `[${n(0)} ${n(2)} ${n(4)} ${n(6)} ${n(8)}]:2.arp.ped.mf`;
@@ -135,6 +141,18 @@ export class MidiTransformAndGeneratorEngine {
       return sourceCode.replace(
         /\b([a-gA-G][#b]*[0-9]+:[0-9.]+)(?!\.vel_range)/g,
         '$1.vel_range(68, 108)'
+      );
+    }
+
+    if (transformType === 'negative_harmony') {
+      // Append `.neg_harm` to chords and melodic notes that do not already carry `.neg_harm`
+      const withChords = sourceCode.replace(
+        /(\[[^\]]+\]:[0-9./]+)(?!\.neg_harm)/g,
+        '$1.neg_harm'
+      );
+      return withChords.replace(
+        /\b([a-gA-G][#b]*[0-9]+:[0-9.]+)(?!\.neg_harm)/g,
+        '$1.neg_harm'
       );
     }
 

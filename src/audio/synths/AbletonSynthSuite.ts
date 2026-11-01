@@ -11,7 +11,14 @@ export type AbletonSynthEngineType =
   | 'electric'
   | 'reese'
   | 'reese_bass'
-  | 'riser';
+  | 'riser'
+  | 'ribbon_cluster_8'
+  | 'tape_nostalgia_pad'
+  | 'cybernetic_eoc'
+  | 'west_coast_200'
+  | 'swarmatron'
+  | 'hauntology_pad'
+  | 'buchla_krell';
 
 export interface AbletonSynthParams {
   engine: AbletonSynthEngineType;
@@ -61,25 +68,25 @@ export class AbletonSynthSuite {
     switch (clean) {
       case 'operator':
         return {
-          engineLabel: 'Ableton Operator (4-Op FM)',
+          engineLabel: 'Studio 4-Operator FM Synth',
           topologySummary: '4-Op FM Cascade & Additive Matrix (11 Algs)',
           primaryMacroLabel: 'FM Index & Ratio Morph',
         };
       case 'meld':
         return {
-          engineLabel: 'Ableton Meld (Bi-Timbral)',
+          engineLabel: 'Studio Bi-Timbral Macro Synth',
           topologySummary: 'Dual Macro-Oscillator Scale Swarm & Harmonics',
           primaryMacroLabel: 'Swarm Spread & Tilt',
         };
       case 'drift':
         return {
-          engineLabel: 'Ableton Drift (Analog Modeling)',
+          engineLabel: 'Studio Drift Analog Synth',
           topologySummary: 'Shape-Mod Osc + Organic Voice Drift + LP',
           primaryMacroLabel: 'Voice Drift & Sub Blend',
         };
       case 'analog':
         return {
-          engineLabel: 'Ableton Analog (Dual VCO)',
+          engineLabel: 'Studio Dual-VCO Subtractive Synth',
           topologySummary: 'Dual Sync/PWM VCO + Dual Multimode Filters',
           primaryMacroLabel: 'VCO Detune & Filter Drive',
         };
@@ -98,34 +105,57 @@ export class AbletonSynthSuite {
         };
       case 'collision':
         return {
-          engineLabel: 'Ableton Collision (Modal Mallet)',
+          engineLabel: 'Studio Modal Mallet Resonator',
           topologySummary: 'Mallet Exciters -> Dual Beam/Membrane Resonators',
           primaryMacroLabel: 'Mallet Stiffness & Decay',
         };
       case 'tension':
         return {
-          engineLabel: 'Ableton Tension (String Model)',
+          engineLabel: 'Studio Waveguide String Model',
           topologySummary: 'Karplus-Strong Waveguide + Body Coupling',
           primaryMacroLabel: 'String Damping & Bow/Pluck',
         };
       case 'electric':
         return {
-          engineLabel: 'Ableton Electric (Tine/Reed)',
+          engineLabel: 'Studio Tine & Reed Electric Piano',
           topologySummary: 'Mallet Fork -> Tine Bell + Magnetic Pickup Bark',
           primaryMacroLabel: 'Tine Bell & Pickup Drive',
+        };
+      case 'ribbon_cluster_8':
+      case 'swarmatron':
+        return {
+          engineLabel: '8-Oscillator Ribbon Cluster Synth',
+          topologySummary: '8 Ribbon-Spread Analog Oscillators + Microtonal Beating',
+          primaryMacroLabel: 'Cluster Ribbon Spread & Cutoff',
+        };
+      case 'tape_nostalgia_pad':
+      case 'hauntology_pad':
+        return {
+          engineLabel: 'Tape Nostalgia Pad (3-Voice Triangle)',
+          topologySummary: '3-Voice 30%-Bent Triangle (8c) + 900Hz 4-Pole LP + 20% Sub',
+          primaryMacroLabel: 'Vowel Formant & Tape Wow/Flutter',
+        };
+      case 'west_coast_200':
+      case 'cybernetic_eoc':
+      case 'buchla_200e':
+      case 'buchla_krell':
+        return {
+          engineLabel: 'West Coast Wavefolder & LPG Synth',
+          topologySummary: 'Harmonic Wavefolder + Vactrol Low-Pass Gate + EOC Envelope',
+          primaryMacroLabel: 'Wavefold Symmetry & LPG Decay',
         };
       case 'wavetable':
       case 'supersaw':
       case 'flutter_pad':
         return {
-          engineLabel: 'Ableton Wavetable (2-Osc Morph)',
+          engineLabel: 'Studio Dual-Oscillator Wavetable',
           topologySummary: 'Dual 24-Harmonic Wavetables + 8-Voice Unison',
           primaryMacroLabel: 'Wave Position & Unison',
         };
       default:
         return {
-          engineLabel: 'MusyngKite HD / Hybrid Engine',
-          topologySummary: 'Multi-Sampled Acoustic + Concertgebouw DSP',
+          engineLabel: 'Studio Multi-Sampled Acoustic Engine',
+          topologySummary: 'Multi-Sampled Acoustic + Symphonic Hall DSP',
           primaryMacroLabel: 'Filter Cutoff & Expression',
         };
     }

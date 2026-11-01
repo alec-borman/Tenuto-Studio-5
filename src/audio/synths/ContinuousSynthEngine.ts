@@ -274,15 +274,47 @@ export class ContinuousSynthEngine {
       p === 'pluck_lead' ||
       p === 'acid_lead' ||
       p === 'saw_lead' ||
+      p === 'ribbon_cluster_8' ||
+      p === 'tape_nostalgia_pad' ||
+      p === 'cybernetic_eoc' ||
+      p === 'west_coast_200' ||
+      p === 'morph_analog_12' ||
+      p === 'vintage_ladder_8' ||
+      p === 'hybrid_motor_12' ||
+      p === 'binaural_hybrid_20' ||
+      p === 'state_variable_8' ||
+      p === 'vintage_poly_10' ||
+      p === 'stepped_wavetable_24' ||
+      p === 'spectral_hybrid_16' ||
+      p === 'granular_workstation_80' ||
       p === 'swarmatron' ||
       p === 'hauntology_pad' ||
-      p === 'buchla_krell'
+      p === 'buchla_krell' ||
+      p === 'buchla_200e' ||
+      p === 'polybrute_12' ||
+      p === 'moog_muse' ||
+      p === 'nina_motor' ||
+      p === 'super_gemini' ||
+      p === 'ob_x8' ||
+      p === 'prophet_10' ||
+      p === 'ppg_3rd_wave' ||
+      p === 'quantum_mk2' ||
+      p === 'gr_mega'
     ) {
       return true;
     }
     if (s === 'grid') return false;
     return Boolean(
       physics?.detuneMod ||
+        physics?.lpg ||
+        physics?.metalizerAmount !== undefined ||
+        physics?.bruteFactor !== undefined ||
+        physics?.cp3Drive !== undefined ||
+        physics?.binauralSpreadCents !== undefined ||
+        physics?.spinRateHz !== undefined ||
+        physics?.morphAmount !== undefined ||
+        physics?.fullTouchMode !== undefined ||
+        physics?.aliasingAmount !== undefined ||
         physics?.detuneCentsMod ||
         physics?.cutoffMod ||
         physics?.flutterRateHz ||
@@ -307,12 +339,13 @@ export class ContinuousSynthEngine {
         physics?.wavefoldAmount !== undefined ||
         physics?.osmoseSqueeze !== undefined ||
         physics?.voiceBend !== undefined ||
-        physics?.ratchet !== undefined
+        physics?.ratchet !== undefined ||
+        physics?.wowFlutter !== undefined
     );
   }
 
   /**
-   * High-speed 64-sample Control-Rate (`k-rate`) synthesizer renderer.
+   * High-speed 128-sample Control-Rate (`k-rate`) synthesizer renderer.
    * Supports both single notes and coalesced multi-note chords (`item.chordVoices`) so an entire
    * 7-note supersaw chord shares one filter/comb/noise/drive/Haas pipeline and executes in < 0.25ms.
    */
@@ -338,9 +371,27 @@ export class ContinuousSynthEngine {
     const isRiser = patch.includes('riser');
     const isFlutterPatch = patch.includes('flutter');
     const isPluckPatch = patch.includes('pluck') || patch.includes('acid');
-    const isSwarmatron = patch.includes('swarmatron') || phys?.swarmSpreadSemitones !== undefined;
-    const isHauntologyPad = patch.includes('hauntology');
-    const isBuchlaKrell = patch.includes('buchla') || patch.includes('krell');
+    const isSwarmatron =
+      patch.includes('swarmatron') ||
+      patch === 'ribbon_cluster_8' ||
+      phys?.swarmSpreadSemitones !== undefined;
+    const isHauntologyPad =
+      patch.includes('hauntology') || patch === 'tape_nostalgia_pad';
+    const isBuchla200e = patch === 'buchla_200e' || patch === 'west_coast_200';
+    const isBuchlaKrell =
+      patch.includes('buchla') ||
+      patch.includes('krell') ||
+      patch === 'cybernetic_eoc' ||
+      patch === 'west_coast_200';
+    const isPolyBrute = patch === 'polybrute_12' || patch === 'morph_analog_12';
+    const isMoogMuse = patch === 'moog_muse' || patch === 'vintage_ladder_8';
+    const isNinaMotor = patch === 'nina_motor' || patch === 'hybrid_motor_12';
+    const isSuperGemini = patch === 'super_gemini' || patch === 'binaural_hybrid_20';
+    const isObX8 = patch === 'ob_x8' || patch === 'state_variable_8';
+    const isProphet10 = patch === 'prophet_10' || patch === 'vintage_poly_10';
+    const isPpg3rdWave = patch === 'ppg_3rd_wave' || patch === 'stepped_wavetable_24';
+    const isQuantumMk2 = patch === 'quantum_mk2' || patch === 'spectral_hybrid_16';
+    const isGrMega = patch === 'gr_mega' || patch === 'granular_workstation_80';
 
     const chordNotes =
       item.chordVoices && item.chordVoices.length > 0
@@ -362,16 +413,23 @@ export class ContinuousSynthEngine {
         : 8
       : isHauntologyPad || isReese
         ? 3
-        : numNotes >= 5
-          ? 2
-          : numNotes >= 3
-            ? 3
-            : 7;
+        : isSuperGemini || isObX8
+          ? 4
+          : numNotes >= 5
+            ? 2
+            : numNotes >= 3
+              ? 3
+              : 7;
     const totalOscs = numNotes * numUnison;
 
     const slopAmount = Math.max(
       0,
-      Math.min(1, ((phys?.analogSlop ?? macros.slop ?? (isHauntologyPad ? 32 : 18)) as number) / 100)
+      Math.min(
+        1,
+        ((phys?.analogSlop ??
+          macros.slop ??
+          (isHauntologyPad || isProphet10 || isObX8 ? 32 : isMoogMuse ? 26 : 18)) as number) / 100
+      )
     );
 
     const oscPhases = new Float32Array(totalOscs);
@@ -379,13 +437,44 @@ export class ContinuousSynthEngine {
     const oscGainL = new Float32Array(totalOscs);
     const oscGainR = new Float32Array(totalOscs);
     const unisonPanNorm = new Float32Array(numUnison);
+    const unisonDetuneNorm = new Float32Array(numUnison);
+    const unisonWeight = new Float32Array(numUnison);
     const unisonStackRatios = new Float32Array(numUnison);
     const noteSlopScalar = new Float32Array(numNotes);
 
-    const stackMode = phys?.stackMode || (patch === 'supersaw' ? 'super' : 'none');
+    const stackMode = phys?.stackMode || (patch === 'supersaw' || isGrMega ? 'super' : 'none');
+
+    // Asymmetric JP-8000 / Golden-Ratio unison detune offsets prevent symmetric (-x, 0, +x)
+    // phase cancellation where 1 + 2*cos(dw*t) hits exact -infinity dB nulls during long holds
+    const ASYM_3 = [-0.91, 0.0, 1.09];
+    const ASYM_7 = [-1.0, -0.618, -0.236, 0.0, 0.293, 0.676, 1.045];
+    const centerUnisonIdx = Math.floor(numUnison / 2);
+    const binauralCents =
+      phys?.binauralSpreadCents !== undefined
+        ? phys.binauralSpreadCents
+        : isSuperGemini
+          ? 14
+          : 0;
+    const hasBinauralSplit = binauralCents > 0;
 
     for (let u = 0; u < numUnison; u++) {
-      unisonPanNorm[u] = numUnison > 1 ? (u / (numUnison - 1)) * 2 - 1 : 0;
+      if (hasBinauralSplit) {
+        // UDO Super Gemini binaural split: even oscillators hard-biased Left, odd oscillators Right
+        unisonPanNorm[u] = u % 2 === 0 ? -0.92 : 0.92;
+      } else {
+        unisonPanNorm[u] = numUnison > 1 ? (u / (numUnison - 1)) * 2 - 1 : 0;
+      }
+      if (numUnison === 3) {
+        unisonDetuneNorm[u] = ASYM_3[u];
+      } else if (numUnison === 7) {
+        unisonDetuneNorm[u] = ASYM_7[u];
+      } else {
+        const sym = numUnison > 1 ? (u / (numUnison - 1)) * 2 - 1 : 0;
+        unisonDetuneNorm[u] = sym >= 0 ? sym * 1.07 : sym * 0.92;
+      }
+      // Center fundamental oscillator carries 1.28x weight so side-voice beating never cancels the fundamental
+      unisonWeight[u] = u === centerUnisonIdx ? 1.28 : 0.92;
+
       if (stackMode === 'octaves' && u >= numUnison - 1) {
         unisonStackRatios[u] = 2.0;
       } else if (stackMode === 'fifths' && u === numUnison - 1) {
@@ -397,9 +486,10 @@ export class ContinuousSynthEngine {
       }
     }
 
-    const normFactor = 0.62 / Math.sqrt(totalOscs);
+    const normFactor = 0.64 / Math.sqrt(totalOscs);
     const baseWidthScalar = (phys?.stereoWidth ?? (macros.width ? Number(macros.width) : 100)) / 100;
     const hasDynamicWidthCurve = Boolean(phys?.widthCurve && phys.widthCurve.length >= 2);
+    const activeSpinHz = phys?.spinRateHz ?? (isNinaMotor ? 0.85 : 0);
 
     for (let nIdx = 0; nIdx < numNotes; nIdx++) {
       const sRand = Math.sin((voiceSeed + nIdx * 31 + 1) * 12.9898) * 43758.5453;
@@ -412,10 +502,11 @@ export class ContinuousSynthEngine {
         oscPhases[oscIdx] = pSeed - Math.floor(pSeed); // Normalized [0, 1) phase
 
         const normPos = unisonPanNorm[u];
+        const w = unisonWeight[u];
         const panPos = Math.max(-1, Math.min(1, item.pan + normPos * 0.75 * baseWidthScalar));
         const panRad = (panPos + 1) * 0.25 * Math.PI;
-        oscGainL[oscIdx] = Math.cos(panRad) * normFactor;
-        oscGainR[oscIdx] = Math.sin(panRad) * normFactor;
+        oscGainL[oscIdx] = Math.cos(panRad) * normFactor * w;
+        oscGainR[oscIdx] = Math.sin(panRad) * normFactor * w;
       }
     }
 
@@ -432,6 +523,8 @@ export class ContinuousSynthEngine {
     let bpR = 0;
     let pinkState = 0;
     let noiseLfsr = ((voiceSeed + 1) * 1103515245 + 12345) | 0;
+    let heldSampleL = 0;
+    let heldSampleR = 0;
 
     const combSamples = phys?.combFreqHz
       ? Math.max(8, Math.min(2048, Math.floor(sampleRate / phys.combFreqHz)))
@@ -442,7 +535,17 @@ export class ContinuousSynthEngine {
 
     const avgMidi =
       chordNotes.reduce((acc, n) => acc + n.midi, 0) / Math.max(1, numNotes);
-    const keytrackPct = (phys?.keytrack ?? macros.keytrack ?? 35) / 100;
+    // When a note specifies an explicit .filter(startHz, endHz) or .cutoff(hz) in Hz,
+    // only apply keytracking if .keytrack(...) was explicitly requested on the note
+    const hasExplicitNoteFilter = Boolean(
+      phys?.cutoffMod || phys?.filterSweep || phys?.cutoff !== undefined
+    );
+    const keytrackPct =
+      phys?.keytrack !== undefined
+        ? phys.keytrack / 100
+        : hasExplicitNoteFilter
+          ? 0
+          : (macros.keytrack ?? 35) / 100;
     const keytrackRatio = Math.pow(2, ((avgMidi - 60) * keytrackPct) / 12);
 
     const baseCutoffHz =
@@ -455,13 +558,26 @@ export class ContinuousSynthEngine {
           ? 900
           : isReese
             ? 520
-            : isSwarmatron
-              ? 3400
-              : 7800);
+            : isMoogMuse || isProphet10
+              ? 2400
+              : isObX8 || isSuperGemini
+                ? 3600
+                : isSwarmatron || isPolyBrute || isNinaMotor
+                  ? 3400
+                  : 7800);
 
     const baseRes =
-      phys?.resonance ?? (isHauntologyPad ? 0.7 : isPluckPatch ? 3.2 : isSwarmatron ? 1.8 : 1.2);
-    const qDamp = Math.max(0.12, Math.min(1.0, 1.0 / Math.max(0.6, baseRes * 0.7)));
+      phys?.resonance ??
+      (isHauntologyPad
+        ? 0.7
+        : isPluckPatch
+          ? 3.2
+          : isPolyBrute || isMoogMuse
+            ? 2.1
+            : isSwarmatron
+              ? 1.8
+              : 1.2);
+    const qDamp = Math.max(0.24, Math.min(1.0, 1.0 / Math.max(0.6, baseRes * 0.65)));
     const invSampleRate = 1.0 / sampleRate;
     const durFrames = Math.max(1, Math.floor(item.durSec * sampleRate));
     const secPerBeat = 60 / Math.max(40, tempoBpm || 120);
@@ -476,12 +592,21 @@ export class ContinuousSynthEngine {
             : 0.42;
     const lowestNoteFreq = Math.min(...chordNotes.map((n) => n.freq));
     const airPct =
-      (phys?.airSheen ?? (macros.air ? Number(macros.air) : patch === 'supersaw' ? 55 : 0)) / 100;
+      (phys?.airSheen ??
+        (macros.air ? Number(macros.air) : patch === 'supersaw' || isObX8 || isSuperGemini ? 55 : 0)) /
+      100;
     const hasPwm = Boolean(phys?.pwmDuty);
     const hasWaveMirror = phys?.waveWarpMode === 'mirror';
-    const hasWaveBend = phys?.waveWarpMode === 'bend' || isHauntologyPad;
+    const hasWaveBend = phys?.waveWarpMode === 'bend' || isHauntologyPad || isNinaMotor;
     const waveBendScale = 1 + (phys?.waveWarpAmount ?? (isHauntologyPad ? 0.3 : 0.5)) * 2.2;
-    const hasBuchlaFold = isBuchlaKrell || phys?.wavefoldAmount !== undefined;
+    const hasBuchlaFold =
+      isBuchlaKrell ||
+      isBuchla200e ||
+      isPolyBrute ||
+      phys?.wavefoldAmount !== undefined ||
+      phys?.metalizerAmount !== undefined;
+    const aliasingPct = phys?.aliasingAmount ?? (isPpg3rdWave ? 28 : 0);
+    const aliasStepHold = aliasingPct > 0 ? Math.max(2, Math.floor(1 + (aliasingPct / 100) * 14)) : 1;
     const chordAmpAvg =
       chordNotes.reduce((acc, n) => acc + n.amp, 0) / Math.max(1, numNotes);
 
@@ -512,8 +637,9 @@ export class ContinuousSynthEngine {
           ampEnv = Math.max(0, 1 - rel);
         }
       } else if (item.swell === 'crescendo' || item.swell === 'diminuendo') {
+        const attRamp = t < 0.008 ? t / 0.008 : 1.0;
         if (midSample <= durFrames) {
-          ampEnv = item.startAmp + (item.endAmp - item.startAmp) * normU;
+          ampEnv = (item.startAmp + (item.endAmp - item.startAmp) * normU) * attRamp;
         } else {
           const relProg = (midSample - durFrames) / Math.max(1, len - durFrames);
           ampEnv = item.endAmp * Math.pow(Math.max(0, 1 - relProg), 1.6);
@@ -531,6 +657,27 @@ export class ContinuousSynthEngine {
         } else {
           const relProg = (midSample - durFrames) / Math.max(1, len - durFrames);
           ampEnv = 0.92 * Math.pow(Math.max(0, 1 - relProg), 1.6);
+        }
+      }
+
+      // Arturia PolyBrute 12 FullTouch MPE keybed envelope shaping
+      if (phys?.fullTouchMode === 'pizz') {
+        ampEnv *= Math.exp(-t * 7.5);
+      } else if (phys?.fullTouchMode === 'at' || phys?.fullTouchMode === 'at_z') {
+        ampEnv *= 0.35 + 0.65 * Math.sin(normU * Math.PI);
+      }
+
+      // Buchla 292e Vactrol Low-Pass Gate (asymmetrical photoresistor decay shaping VCA & LP)
+      const lpgSpec =
+        phys?.lpg ?? (isBuchla200e ? { mode: 'both' as const, decayMs: 420 } : undefined);
+      let vactrolEnv = 1.0;
+      if (lpgSpec) {
+        const tau = Math.max(0.03, lpgSpec.decayMs / 1000);
+        const vAtt = t < 0.004 ? t / 0.004 : 1.0;
+        // Asymmetrical vactrol photoresistor decay tail
+        vactrolEnv = vAtt * (0.7 * Math.exp(-t / tau) + 0.3 * Math.exp(-t / (tau * 2.4)));
+        if (lpgSpec.mode === 'vca' || lpgSpec.mode === 'both') {
+          ampEnv *= vactrolEnv;
         }
       }
 
@@ -585,12 +732,28 @@ export class ContinuousSynthEngine {
         globalPitchMultiplier *= Math.pow(2, wCents / 1200);
       }
 
+      if (phys?.wowFlutter || isHauntologyPad) {
+        const wf = phys?.wowFlutter ?? {
+          wowCents: 4.5,
+          wowHz: 0.42,
+          flutterCents: 2.2,
+          flutterHz: 9.5,
+        };
+        // Irregular dual-sine seasick tape wow + fast transient-blurring flutter
+        const wowWave =
+          0.72 * Math.sin(2 * Math.PI * wf.wowHz * songTimeSec) +
+          0.28 * Math.sin(2 * Math.PI * (wf.wowHz * 1.618) * songTimeSec + 1.1);
+        const flutterWave = Math.sin(2 * Math.PI * wf.flutterHz * songTimeSec);
+        const totalTapeCents = wf.wowCents * wowWave + wf.flutterCents * flutterWave;
+        globalPitchMultiplier *= Math.pow(2, totalTapeCents / 1200);
+      }
+
       let syncRatio = phys?.syncRatio ?? 1.0;
       if (phys?.syncSweep) {
         syncRatio = phys.syncSweep[0] + (phys.syncSweep[1] - phys.syncSweep[0]) * normU;
       }
 
-      // 3. Windowed Unison Detune, Swarmatron Ribbon Spread & Stereo Pan Gains at k-rate
+      // 3. Windowed Unison Detune, Swarmatron Ribbon Spread, Binaural Split & 360-deg NINA Spin at k-rate
       const activeDetunePct = phys?.detuneMod
         ? this.evaluateWindowedModulation(phys.detuneMod, normU, 8)
         : isHauntologyPad && phys?.detune === undefined
@@ -609,6 +772,7 @@ export class ContinuousSynthEngine {
           : isHauntologyPad && phys?.detune === undefined
             ? 8 / 1200
             : ((activeDetunePct / 100) * (isReese ? 34 : 42)) / 1200;
+      const binauralOctaves = hasBinauralSplit ? (binauralCents * 0.5) / 1200 : 0;
 
       let widthScalar = baseWidthScalar;
       if (hasDynamicWidthCurve && phys?.widthCurve) {
@@ -648,17 +812,28 @@ export class ContinuousSynthEngine {
         for (let u = 0; u < numUnison; u++) {
           const oscIdx = nIdx * numUnison + u;
           const normPos = unisonPanNorm[u];
-          const x = normPos * maxSpreadOctaves;
+          const detPos = unisonDetuneNorm[u];
+          const binOffset = hasBinauralSplit ? (u % 2 === 0 ? -binauralOctaves : binauralOctaves) : 0;
+          const x = detPos * maxSpreadOctaves + binOffset;
           const detuneRatio = 1 + x * 0.69314718 + x * x * 0.2402265;
           const inc = baseNoteFreq * unisonStackRatios[u] * detuneRatio;
 
           oscPhaseIncs[oscIdx] = inc < 0.45 ? inc : 0.45;
 
-          if (hasDynamicWidthCurve) {
+          if (activeSpinHz > 0) {
+            // Melbourne Instruments NINA 360-degree four-quadrant VCA rotation
+            const w = unisonWeight[u];
+            const theta = 2 * Math.PI * activeSpinHz * songTimeSec + u * 0.9;
+            const panPos = Math.max(-1, Math.min(1, item.pan + Math.sin(theta) * 0.88 * widthScalar));
+            const panRad = (panPos + 1) * 0.25 * Math.PI;
+            oscGainL[oscIdx] = Math.cos(panRad) * normFactor * w;
+            oscGainR[oscIdx] = Math.sin(panRad) * normFactor * w;
+          } else if (hasDynamicWidthCurve) {
+            const w = unisonWeight[u];
             const panPos = Math.max(-1, Math.min(1, item.pan + normPos * 0.75 * widthScalar));
             const panRad = (panPos + 1) * 0.25 * Math.PI;
-            oscGainL[oscIdx] = Math.cos(panRad) * normFactor;
-            oscGainR[oscIdx] = Math.sin(panRad) * normFactor;
+            oscGainL[oscIdx] = Math.cos(panRad) * normFactor * w;
+            oscGainR[oscIdx] = Math.sin(panRad) * normFactor * w;
           }
         }
       }
@@ -695,6 +870,19 @@ export class ContinuousSynthEngine {
           ? 240 + (baseCutoffHz - 240) * Math.pow(normU, 2.2)
           : baseCutoffHz;
 
+      if (lpgSpec && (lpgSpec.mode === 'lp' || lpgSpec.mode === 'both')) {
+        modCutoffHz = 110 + (modCutoffHz - 110) * Math.pow(vactrolEnv, 0.85);
+      }
+
+      const morphNorm = phys?.morphMod
+        ? this.evaluateWindowedModulation(phys.morphMod, normU, 0) / 100
+        : phys?.morphAmount !== undefined
+          ? phys.morphAmount / 100
+          : 0;
+      if (morphNorm > 0) {
+        modCutoffHz *= 1 + 1.4 * morphNorm;
+      }
+
       if (phys?.vowelFormant) {
         const [f1From, f2From] = computeFormantVowelFrequencies(phys.vowelFormant.from);
         const [f1To, f2To] = computeFormantVowelFrequencies(phys.vowelFormant.to);
@@ -704,45 +892,73 @@ export class ContinuousSynthEngine {
         modCutoffHz = 0.45 * f1Active + 0.55 * f2Active;
       }
 
-      const effectiveCutoff = Math.max(60, Math.min(15500, modCutoffHz * keytrackRatio));
-      const svfF = Math.min(0.85, 2 * Math.sin((Math.PI * effectiveCutoff) * invSampleRate));
+      const effectiveCutoff = Math.max(55, Math.min(15500, modCutoffHz * keytrackRatio));
+      const svfHalfF = Math.min(0.46, Math.sin((Math.PI * effectiveCutoff) * invSampleRate));
 
-      const activeFoldPct = phys?.wavefoldMod
-        ? this.evaluateWindowedModulation(phys.wavefoldMod, normU, 0)
-        : typeof phys?.wavefoldAmount === 'number'
-          ? phys.wavefoldAmount
-          : isBuchlaKrell
-            ? 65
+      const activeMetalizerPct = phys?.metalizerMod
+        ? this.evaluateWindowedModulation(phys.metalizerMod, normU, 0)
+        : phys?.metalizerAmount !== undefined
+          ? phys.metalizerAmount
+          : isPolyBrute
+            ? 28
             : 0;
+      const activeFoldPct = Math.max(
+        activeMetalizerPct,
+        phys?.wavefoldMod
+          ? this.evaluateWindowedModulation(phys.wavefoldMod, normU, 0)
+          : typeof phys?.wavefoldAmount === 'number'
+            ? phys.wavefoldAmount
+            : isBuchlaKrell || isBuchla200e
+              ? 65
+              : 0
+      );
       const foldDrive = activeFoldPct > 0 ? 1 + (activeFoldPct / 100) * 3.8 : 1.0;
+
+      const cp3Pct = phys?.cp3Drive ?? (isMoogMuse ? 35 : 0);
+      const brutePct = phys?.bruteFactor ?? (isPolyBrute ? 25 : 0);
+      const hardwareCircuitDrive = Math.max(cp3Pct, brutePct) / 100;
 
       const driveVal = phys?.driveMod
         ? this.evaluateWindowedModulation(phys.driveMod, normU, 0)
         : isReese
           ? 0.35
-          : 0;
-      const driveScalar = driveVal > 0 ? 1 + (driveVal > 1 ? driveVal / 100 : driveVal) * 2.8 : 1.0;
+          : hardwareCircuitDrive;
+      const driveScalar =
+        driveVal > 0 || hardwareCircuitDrive > 0
+          ? 1 + Math.max(driveVal > 1 ? driveVal / 100 : driveVal, hardwareCircuitDrive) * 2.8
+          : 1.0;
       const blockFinalGain =
         ampEnv *
         (item.swell === 'crescendo' || item.swell === 'diminuendo' ? 1.0 : chordAmpAvg) *
         0.78;
 
-      const isFastSawPath =
-        !hasPwm && !hasWaveMirror && !hasWaveBend && !hasBuchlaFold && fmPhaseInc === 0;
+      const isTriangleCore = isHauntologyPad || isBuchlaKrell || isBuchla200e || isPolyBrute;
+      const isFastOscLoop = !hasPwm && fmPhaseInc === 0;
 
-      // 4. Tight Branchless Inner Sample Loop (64 samples)
+      // 4. Tight Branchless Inner Sample Loop (128 samples)
       for (let i = blockStart; i < blockEnd; i++) {
         let sigL = 0;
         let sigR = 0;
 
-        if (isFastSawPath) {
-          for (let o = 0; o < totalOscs; o++) {
-            let ph = oscPhases[o] + oscPhaseIncs[o];
-            if (ph >= 1) ph -= 1;
-            oscPhases[o] = ph;
-            const oscSample = 2 * ph - 1;
-            sigL += oscSample * oscGainL[o];
-            sigR += oscSample * oscGainR[o];
+        if (isFastOscLoop) {
+          if (isTriangleCore) {
+            for (let o = 0; o < totalOscs; o++) {
+              let ph = oscPhases[o] + oscPhaseIncs[o];
+              if (ph >= 1) ph -= 1;
+              oscPhases[o] = ph;
+              const oscSample = 1 - 4 * Math.abs(ph - 0.5);
+              sigL += oscSample * oscGainL[o];
+              sigR += oscSample * oscGainR[o];
+            }
+          } else {
+            for (let o = 0; o < totalOscs; o++) {
+              let ph = oscPhases[o] + oscPhaseIncs[o];
+              if (ph >= 1) ph -= 1;
+              oscPhases[o] = ph;
+              const oscSample = 2 * ph - 1;
+              sigL += oscSample * oscGainL[o];
+              sigR += oscSample * oscGainR[o];
+            }
           }
         } else {
           let fmOffset = 0;
@@ -762,28 +978,44 @@ export class ContinuousSynthEngine {
             if (p >= 1) p -= 1;
             else if (p < 0) p += 1;
 
-            let oscSample = hasPwm
+            const oscSample = hasPwm
               ? p < pwmThreshold
                 ? 0.85
                 : -0.85
-              : isHauntologyPad || isBuchlaKrell
+              : isTriangleCore
                 ? 1 - 4 * Math.abs(p - 0.5)
                 : 2 * p - 1;
-
-            if (hasWaveMirror) {
-              oscSample = Math.abs(oscSample) * 2 - 0.8;
-            } else if (hasWaveBend) {
-              const x = oscSample * waveBendScale;
-              oscSample = x / (1 + Math.abs(x));
-            }
-
-            if (hasBuchlaFold && foldDrive > 1.01) {
-              oscSample = Math.sin(oscSample * foldDrive * Math.PI * 0.5);
-            }
 
             sigL += oscSample * oscGainL[o];
             sigR += oscSample * oscGainR[o];
           }
+        }
+
+        // Apply wave-mirror, wave-bend, and branchless Buchla/Metalizer wavefolder once per summed stereo sample
+        if (hasWaveMirror) {
+          sigL = Math.abs(sigL) * 1.6 - 0.5;
+          sigR = Math.abs(sigR) * 1.6 - 0.5;
+        } else if (hasWaveBend) {
+          const xL = sigL * waveBendScale;
+          const xR = sigR * waveBendScale;
+          sigL = xL / (1 + Math.abs(xL));
+          sigR = xR / (1 + Math.abs(xR));
+        }
+
+        if (hasBuchlaFold && foldDrive > 1.01) {
+          const fL = ((sigL * foldDrive * 0.5 + 0.5) % 2 + 2) % 2;
+          const fR = ((sigR * foldDrive * 0.5 + 0.5) % 2 + 2) % 2;
+          sigL = 2 * Math.abs(fL - 1) - 1;
+          sigR = 2 * Math.abs(fR - 1) - 1;
+        }
+
+        if (aliasStepHold > 1) {
+          if (i % aliasStepHold === 0) {
+            heldSampleL = Math.round(sigL * 16) / 16;
+            heldSampleR = Math.round(sigR * 16) / 16;
+          }
+          sigL = heldSampleL;
+          sigR = heldSampleR;
         }
 
         if (subLevel > 0.01) {
@@ -817,13 +1049,24 @@ export class ContinuousSynthEngine {
           sigR += noiseSig * activeNoise;
         }
 
-        const hpL = sigL - lpL - qDamp * bpL;
-        bpL += svfF * hpL;
-        lpL += svfF * bpL;
+        // 2x-Oversampled Chamberlin State-Variable Filter (rock-solid at high cutoff & resonance)
+        let hpL = sigL - lpL - qDamp * bpL;
+        bpL += svfHalfF * hpL;
+        lpL += svfHalfF * bpL;
+        hpL = sigL - lpL - qDamp * bpL;
+        bpL += svfHalfF * hpL;
+        lpL += svfHalfF * bpL;
+        if (bpL > 4.0) bpL = 4.0;
+        else if (bpL < -4.0) bpL = -4.0;
 
-        const hpR = sigR - lpR - qDamp * bpR;
-        bpR += svfF * hpR;
-        lpR += svfF * bpR;
+        let hpR = sigR - lpR - qDamp * bpR;
+        bpR += svfHalfF * hpR;
+        lpR += svfHalfF * bpR;
+        hpR = sigR - lpR - qDamp * bpR;
+        bpR += svfHalfF * hpR;
+        lpR += svfHalfF * bpR;
+        if (bpR > 4.0) bpR = 4.0;
+        else if (bpR < -4.0) bpR = -4.0;
 
         let outL = lpL;
         let outR = lpR;
@@ -842,8 +1085,8 @@ export class ContinuousSynthEngine {
         }
 
         if (driveScalar > 1.01) {
-          const dL = outL * driveScalar;
-          const dR = outR * driveScalar;
+          const dL = (outL + 0.08 * hardwareCircuitDrive * outL * outL) * driveScalar;
+          const dR = (outR + 0.08 * hardwareCircuitDrive * outR * outR) * driveScalar;
           outL = dL / (1 + Math.abs(dL));
           outR = dR / (1 + Math.abs(dR));
         }

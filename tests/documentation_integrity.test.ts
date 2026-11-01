@@ -40,23 +40,42 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     expect(content).toContain('Copy-Paste Prompt for Gemini');
   });
 
-  it('provides the synchronized v5.3.6 README.md, package.json, and electron-builder.json', () => {
+  it('provides the synchronized v5.4.2 README.md, package.json, and electron-builder.json free of third-party hardware/platform trademarks', () => {
     const readmePath = path.resolve(__dirname, '../README.md');
     expect(fs.existsSync(readmePath)).toBe(true);
 
     const content = fs.readFileSync(readmePath, 'utf-8');
     expect(content).toContain('TENUTO STUDIO 5');
-    expect(content).toContain('v5.3.6');
+    expect(content).toContain('v5.4.2');
     expect(content).toContain('TENUTO_GRAMMAR.md');
     expect(content).toContain('repomix.config.json');
     expect(content).toContain('npm run electron:build:mac');
     expect(content).toContain('npm run electron:build:win');
     expect(content).not.toContain('Do not expect to compose music today');
 
+    const grammarContent = fs.readFileSync(
+      path.resolve(__dirname, '../TENUTO_GRAMMAR.md'),
+      'utf-8'
+    );
+    const forbiddenTrademarks = [
+      'PolyBrute',
+      'Burl',
+      'Bettermaker',
+      'Bricasti',
+      'Eventide',
+      'WesAudio',
+      'Swarmatron',
+      'TikTok',
+    ];
+    for (const brand of forbiddenTrademarks) {
+      expect(content).not.toContain(brand);
+      expect(grammarContent).not.toContain(brand);
+    }
+
     const pkgJson = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8')
     );
-    expect(pkgJson.version).toBe('5.3.6');
+    expect(pkgJson.version).toBe('5.4.2');
     expect(pkgJson.scripts['clean:bloat']).toBeDefined();
     expect(pkgJson.scripts['electron:build:mac']).toContain('--mac pkg');
     expect(pkgJson.scripts['electron:build:win']).toContain('--win nsis');
@@ -64,7 +83,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     const builderJson = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '../electron-builder.json'), 'utf-8')
     );
-    expect(builderJson.extraMetadata.version).toBe('5.3.6');
+    expect(builderJson.extraMetadata.version).toBe('5.4.2');
   });
 });
 

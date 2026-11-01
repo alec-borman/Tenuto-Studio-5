@@ -1260,7 +1260,7 @@ export default function WebGPUCanvas({
                 ? 'bg-purple-600 text-white'
                 : 'text-purple-400 hover:text-purple-300'
             }`}
-            title="Show/Hide Ableton Live 12 MIDI Transformations & Generators"
+            title="Show/Hide Studio MIDI Transformations & Generators"
           >
             MIDI Tools
           </button>
@@ -1283,6 +1283,7 @@ export default function WebGPUCanvas({
                 { id: 'connect_legato', label: 'Connect (.legato)' },
                 { id: 'ornament', label: 'Ornament (.vib)' },
                 { id: 'humanize', label: 'Humanize Vel' },
+                { id: 'negative_harmony', label: 'Negative Harmony (.neg_harm)' },
               ] as const
             ).map((tr) => (
               <button
@@ -1306,6 +1307,7 @@ export default function WebGPUCanvas({
                 { id: 'stacks', label: '+ Gen Stacks' },
                 { id: 'seed_melody', label: '+ Gen Seed Melody' },
                 { id: 'rhythm_groove', label: '+ Gen Rhythm' },
+                { id: 'krell_patch', label: '+ Gen Krell' },
               ] as const
             ).map((gen) => (
               <button

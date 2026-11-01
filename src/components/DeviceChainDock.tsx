@@ -11,7 +11,7 @@ export interface DeviceChainDockProps {
 
 const PATCH_CATALOG = [
   {
-    group: 'Ableton Flagship Synths',
+    group: 'Studio Flagship Synths',
     options: [
       'supersaw',
       'reese_bass',
@@ -28,6 +28,14 @@ const PATCH_CATALOG = [
       'tension',
       'electric',
       'granulator',
+      'ribbon_cluster_8',
+      'tape_nostalgia_pad',
+      'cybernetic_eoc',
+      'west_coast_200',
+      'morph_analog_12',
+      'vintage_ladder_8',
+      'hybrid_motor_12',
+      'binaural_hybrid_20',
       'saw_lead',
       'warm_pad',
       'string_pad',
@@ -39,8 +47,8 @@ const PATCH_CATALOG = [
     options: [
       'salamander_grand',
       'acoustic_grand_piano',
-      'rhodes',
-      'dx7',
+      'electric_piano_1',
+      'electric_piano_2',
       'harpsichord',
       'church_organ',
       'vibraphone',
@@ -121,6 +129,8 @@ const FX_DEVICE_DEFAULTS: Record<string, Record<string, number | string>> = {
   roar: { drive: 0.4, feedback: 0.2, mix: 0.85 },
   saturator: { drive: 6.0, mix: 0.8 },
   hybrid_reverb: { decay: 3.2, predelay: 18, mix: 0.45 },
+  gated_reverb: { decay: 3.2, gate_ms: 160, threshold: -24, mix: 0.55 },
+  tape_degrade: { wow_hz: 0.42, flutter_hz: 9.5, high_cut: 5200, drive: 0.32, mix: 1.0 },
   echo: { time: 0.375, feedback: 0.4, mix: 0.32 },
   reverb: { mix: 0.45, decay: 2.4 },
   delay: { mix: 0.3, time: 0.375 },
@@ -573,7 +583,7 @@ export default function DeviceChainDock({
             className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-cyan-300 outline-none cursor-pointer"
           >
             <option value="" disabled>
-              Select Ableton FX...
+              Select Studio FX...
             </option>
             {Object.keys(FX_DEVICE_DEFAULTS).map((fxKey) => (
               <option key={fxKey} value={fxKey}>

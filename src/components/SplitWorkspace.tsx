@@ -880,8 +880,13 @@ export default function SplitWorkspace() {
     }
   };
 
+  const mixerMeterBeat = activeBottomDock === 'mixer' ? playheadBeat : 0;
+
   const enrichedMixerAstState = useMemo<ASTState>(() => {
-    const meterMap = studioAudio.getTrackMeterLevels(compiledScoreState, playheadBeat);
+    const meterMap =
+      activeBottomDock === 'mixer'
+        ? studioAudio.getTrackMeterLevels(compiledScoreState, mixerMeterBeat)
+        : {};
     return {
       ...astState,
       tracks: astState.tracks.map((t) => {
@@ -915,7 +920,8 @@ export default function SplitWorkspace() {
   }, [
     astState,
     compiledScoreState,
-    playheadBeat,
+    activeBottomDock,
+    mixerMeterBeat,
     mutedTracks,
     soloedTracks,
     armedTracks,
@@ -1238,8 +1244,8 @@ export default function SplitWorkspace() {
                 onSelect={setActiveSelection}
                 onMutation={handleCanvasMutation}
                 events={compiledEvents}
-                playheadBeat={playheadBeat}
-                isPlaying={isPlaying}
+                playheadBeat={activeMainView === 'piano_roll' ? playheadBeat : 0}
+                isPlaying={activeMainView === 'piano_roll' ? isPlaying : false}
                 rootKey={scoreMeta.key}
                 scaleName={scoreMeta.scale}
                 automationLanes={compiledScoreState?.automationLanes || []}

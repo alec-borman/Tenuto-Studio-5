@@ -12,6 +12,9 @@ export interface PitchResult {
 export type SynthTemperament =
   | '12tet'
   | 'just'
+  | 'non_octave_alpha'
+  | 'non_octave_beta'
+  | 'non_octave_gamma'
   | 'carlos_alpha'
   | 'carlos_beta'
   | 'carlos_gamma';
@@ -32,7 +35,7 @@ const JUST_INTONATION_CENTS_OFFSET: Record<number, number> = {
 };
 
 /**
- * Applies Wendy Carlos non-octave equal temperaments (Alpha: 78.0c/step, Beta: 63.8c/step,
+ * Applies non-octave equal temperaments (Alpha: 78.0c/step, Beta: 63.8c/step,
  * Gamma: 35.1c/step), pure Just Intonation, and global master_tune cent offsets (-100..+100c).
  */
 export function applyTemperamentAndMasterTune(
@@ -46,13 +49,13 @@ export function applyTemperamentAndMasterTune(
   const stepsFromRoot = midiNote - rootMidi;
   const normTemperament = (temperament || '12tet').toLowerCase();
 
-  if (normTemperament === 'carlos_alpha') {
+  if (normTemperament === 'non_octave_alpha' || normTemperament === 'carlos_alpha') {
     // 78.0 cents per step instead of 100 cents
     centsDelta += stepsFromRoot * (78.0 - 100.0);
-  } else if (normTemperament === 'carlos_beta') {
+  } else if (normTemperament === 'non_octave_beta' || normTemperament === 'carlos_beta') {
     // 63.8 cents per step instead of 100 cents
     centsDelta += stepsFromRoot * (63.8 - 100.0);
-  } else if (normTemperament === 'carlos_gamma') {
+  } else if (normTemperament === 'non_octave_gamma' || normTemperament === 'carlos_gamma') {
     // 35.1 cents per step instead of 100 cents
     centsDelta += stepsFromRoot * (35.1 - 100.0);
   } else if (normTemperament === 'just') {
@@ -194,6 +197,9 @@ export const BUILTIN_TUNING_CENTS: Record<string, number[]> = {
   '19tet': Array.from({ length: 19 }, (_, i) => ((i + 1) * 1200) / 19),
   '24tet': Array.from({ length: 24 }, (_, i) => ((i + 1) * 1200) / 24),
   '31tet': Array.from({ length: 31 }, (_, i) => ((i + 1) * 1200) / 31),
+  non_octave_alpha: Array.from({ length: 9 }, (_, i) => (i + 1) * 78.0),
+  non_octave_beta: Array.from({ length: 11 }, (_, i) => (i + 1) * 63.8),
+  non_octave_gamma: Array.from({ length: 20 }, (_, i) => (i + 1) * 35.1),
   carlos_alpha: Array.from({ length: 9 }, (_, i) => (i + 1) * 78.0),
   carlos_beta: Array.from({ length: 11 }, (_, i) => (i + 1) * 63.8),
   carlos_gamma: Array.from({ length: 20 }, (_, i) => (i + 1) * 35.1),

@@ -1057,8 +1057,14 @@ export class StudioAudioEngine {
       });
     }
 
-    this.humanizeTimelinePhrasing(list);
-    list.sort((a, b) => a.startSec - b.startSec);
+    // 1. Sort by trackId then startSec and coalesce simultaneous ContinuousSynthEngine chord notes FIRST
+    // so humanizeTimelinePhrasing never mutates earlier chord members' durations before coalescing.
+    list.sort((a, b) => {
+      if (a.event.trackId !== b.event.trackId) {
+        return (a.event.trackId || '').localeCompare(b.event.trackId || '');
+      }
+      return a.startSec - b.startSec;
+    });
 
     const coalescedList: ScheduledNoteEvent[] = [];
     for (let i = 0; i < list.length; i++) {
@@ -1077,8 +1083,8 @@ export class StudioAudioEngine {
       if (
         prev &&
         prev.event.trackId === curr.event.trackId &&
-        Math.abs(prev.startSec - curr.startSec) < 0.004 &&
-        Math.abs(prev.durSec - curr.durSec) < 0.01 &&
+        Math.abs(prev.startSec - curr.startSec) < 0.006 &&
+        Math.abs(prev.durSec - curr.durSec) < 0.025 &&
         ContinuousSynthEngine.isContinuousSynthPatch(prev.patch, prev.style, prev.event.physics)
       ) {
         if (!prev.chordVoices) {
@@ -1103,24 +1109,44 @@ export class StudioAudioEngine {
       coalescedList.push(curr);
     }
 
+    // 2. Apply phrase legatos and dynamic arches on the coalesced timeline, then sort chronologically
+    this.humanizeTimelinePhrasing(coalescedList);
+    coalescedList.sort((a, b) => a.startSec - b.startSec);
+
     SamplerAndDrumRackEngine.applyDrumRackChokeGroups(coalescedList);
     return coalescedList;
   }
 
   /**
-   * Pre-renders all continuous-synth chord/note AudioBuffers before the playback clock starts
-   * so `triggerRealtimeVoice` schedules `AudioBufferSourceNode` in O(1) time (< 0.02ms)
-   * with zero main-thread lag during playback.
+   * Rolling Lookahead JIT Prebaker: pre-renders only ContinuousSynthEngine voices within
+   * `[fromSec, toSec]` (capped at `maxVoicesToBake` per slice) and evicts finished `prebakedBuffer`
+   * instances behind `fromSec` when not looping so pressing Play starts in <12ms and RAM stays flat.
    */
-  private prebakeContinuousSynthTimeline(
+  public prebakeContinuousSynthTimeline(
     ctx: BaseAudioContext,
     timeline: ScheduledNoteEvent[],
-    tempoBpm: number
+    tempoBpm: number,
+    fromSec: number = 0,
+    toSec: number = Number.POSITIVE_INFINITY,
+    maxVoicesToBake: number = 28
   ): void {
     if (typeof ctx.createBuffer !== 'function') return;
     const sr = ctx.sampleRate || 44100;
-    let seed = 1;
-    for (const item of timeline) {
+    let bakedCount = 0;
+
+    for (let idx = 0; idx < timeline.length; idx++) {
+      const item = timeline[idx];
+      if (
+        !this.isLooping &&
+        item.prebakedBuffer &&
+        item.startSec + item.durSec + 0.6 < fromSec
+      ) {
+        item.prebakedBuffer = undefined;
+        continue;
+      }
+      if (item.startSec + item.durSec < fromSec) continue;
+      if (item.startSec > toSec) break;
+      if (item.prebakedBuffer) continue;
       if (
         !ContinuousSynthEngine.isContinuousSynthPatch(
           item.patch,
@@ -1148,11 +1174,24 @@ export class StudioAudioEngine {
         frames,
         sr,
         tempoBpm,
-        seed++,
+        idx + 1,
         item
       );
       item.prebakedBuffer = buf;
+      bakedCount++;
+      if (bakedCount >= maxVoicesToBake) break;
     }
+  }
+
+  private prebakeTimelineWindow(
+    ctx: BaseAudioContext,
+    timeline: ScheduledNoteEvent[],
+    tempoBpm: number,
+    fromSec: number,
+    upToSec: number,
+    maxItems: number = 16
+  ): void {
+    this.prebakeContinuousSynthTimeline(ctx, timeline, tempoBpm, fromSec, upToSec, maxItems);
   }
 
   /**
@@ -1332,7 +1371,12 @@ export class StudioAudioEngine {
     };
   }
 
-  private triggerRealtimeVoice(ctx: AudioContext, item: ScheduledNoteEvent, absStartSec: number): void {
+  private triggerRealtimeVoice(
+    ctx: AudioContext,
+    item: ScheduledNoteEvent,
+    absStartSec: number,
+    inNoteOffsetSec: number = 0
+  ): void {
     if (!this.dryBus || !this.drumBus) return;
 
     // Soft-steal oldest voice with a 22ms de-clicking fade-out if active voices exceed 72
@@ -1344,7 +1388,7 @@ export class StudioAudioEngine {
     }
 
     const safeStart = Math.max(ctx.currentTime + 0.008, absStartSec);
-    const durSec = Math.max(0.05, item.durSec);
+    const durSec = Math.max(0.05, item.durSec - inNoteOffsetSec);
     const isDrumTrack = item.style === 'grid' || Boolean(item.gridKey);
     const targetBus: AudioNode = isDrumTrack ? this.drumBus : this.dryBus;
 
@@ -1443,7 +1487,7 @@ export class StudioAudioEngine {
         let buf = item.prebakedBuffer;
         if (!buf) {
           const sr = ctx.sampleRate || 44100;
-          const totalVoiceSec = durSec + 0.28;
+          const totalVoiceSec = item.durSec + 0.28;
           const voiceFrames = Math.max(128, Math.floor(totalVoiceSec * sr));
           buf = ctx.createBuffer(2, voiceFrames, sr);
           const chL = buf.getChannelData(0);
@@ -1462,12 +1506,30 @@ export class StudioAudioEngine {
         }
         const src = ctx.createBufferSource();
         src.buffer = buf;
-        src.connect(voiceOut);
-        src.start(safeStart);
+        const envGain = ctx.createGain();
+        const safeOffset = Math.max(0, Math.min(inNoteOffsetSec, Math.max(0, buf.duration - 0.04)));
+        if (safeOffset > 0.005) {
+          envGain.gain.setValueAtTime(0.001, safeStart);
+          envGain.gain.linearRampToValueAtTime(1.0, safeStart + 0.015);
+        } else {
+          envGain.gain.setValueAtTime(1.0, safeStart);
+        }
+        src.connect(envGain);
+        envGain.connect(voiceOut);
+        src.start(safeStart, safeOffset);
         let cleaned = false;
         const cleanup: ActiveVoiceCleanup = {
-          fadeOutAndStop: (_now: number) => {
-            cleanup.stopAndDisconnect();
+          fadeOutAndStop: (now: number) => {
+            if (cleaned) return;
+            cleaned = true;
+            this.activeVoices.delete(cleanup);
+            try {
+              envGain.gain.cancelScheduledValues?.(now);
+              envGain.gain.setTargetAtTime?.(0.0001, now, 0.008);
+              src.stop(now + 0.03);
+            } catch {
+              cleanup.stopAndDisconnect();
+            }
           },
           stopAndDisconnect: () => {
             if (cleaned) return;
@@ -1476,6 +1538,7 @@ export class StudioAudioEngine {
             try {
               src.stop();
               src.disconnect();
+              envGain.disconnect();
               pannerNode?.disconnect();
             } catch {
               // Ignore
@@ -2742,17 +2805,29 @@ export class StudioAudioEngine {
     await this.soundfontLoader.prewarmScoreSamples(ctx, score);
     if (!this.isPlaying) return;
 
-    this.prebakeContinuousSynthTimeline(ctx, this.scheduledTimeline, this.tempoBpm);
+    // Rolling JIT Prebake: pre-render only the first 4.0 seconds before starting the clock
+    // so Play starts instantaneously without freezing the browser on 16-to-60 measure synth scores
+    this.prebakeTimelineWindow(ctx, this.scheduledTimeline, this.tempoBpm, 0, 4.0, 24);
 
     const baseStart = ctx.currentTime + 0.06;
     this.startContextTime = baseStart;
 
-    const LOOKAHEAD_SEC = 0.22;
+    const LOOKAHEAD_SEC = 0.6;
 
     const scheduleLookaheadSlice = () => {
       if (!this.isPlaying || !this.ctx) return;
       const now = this.ctx.currentTime;
       const elapsed = Math.max(0, now - this.startContextTime);
+
+      // Rolling JIT prebake: stay 4.0s ahead of the playhead (max 3 voices per 25ms tick = <3ms CPU)
+      this.prebakeTimelineWindow(
+        this.ctx,
+        this.scheduledTimeline,
+        this.tempoBpm,
+        elapsed,
+        elapsed + 4.0,
+        3
+      );
 
       while (
         nextMetronomeIdx < metronomeTicks.length &&
@@ -2761,7 +2836,7 @@ export class StudioAudioEngine {
         const tick = metronomeTicks[nextMetronomeIdx];
         if (
           (this.isMetronomeEnabled || tick.isCountIn) &&
-          tick.timeSec >= elapsed - 0.025
+          tick.timeSec >= elapsed - 0.035
         ) {
           this.scheduleMetronomeClick(
             this.ctx,
@@ -2778,10 +2853,13 @@ export class StudioAudioEngine {
         this.scheduledTimeline[this.nextScheduleIndex].startSec <= elapsed + LOOKAHEAD_SEC
       ) {
         const item = this.scheduledTimeline[this.nextScheduleIndex];
-        // Only schedule notes that are in the future or within 25ms of now
-        // so lagged UI frames never pile up overdue notes on the same sample
-        if (item.startSec >= elapsed - 0.025) {
-          this.triggerRealtimeVoice(this.ctx, item, this.startContextTime + item.startSec);
+        const latenessSec = elapsed - item.startSec;
+        if (latenessSec <= 0.04) {
+          this.triggerRealtimeVoice(this.ctx, item, this.startContextTime + item.startSec, 0);
+        } else if (item.durSec - latenessSec > 0.06) {
+          // If a main-thread GC or UI frame spike delayed the timer past item.startSec,
+          // recover the sustained note immediately from its in-note offset instead of dropping the measure!
+          this.triggerRealtimeVoice(this.ctx, item, now + 0.008, latenessSec);
         }
         this.nextScheduleIndex++;
       }

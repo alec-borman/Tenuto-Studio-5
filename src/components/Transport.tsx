@@ -280,7 +280,7 @@ export default function Transport({
                   ? 'bg-cyan-500/20 text-cyan-300 border-cyan-400/50 shadow-xs'
                   : 'bg-slate-950 hover:bg-slate-800 text-slate-300 border-slate-700'
               }`}
-              title="Rotate interface to vertical iPhone 15 Pro resolution (393×852 logical / 1179×2556 native 3x)"
+              title="Rotate interface to vertical 9:16 portrait resolution (393×852 logical / 1179×2556 native 3x)"
             >
               <Smartphone
                 className={`w-3.5 h-3.5 transition-transform ${
@@ -288,7 +288,7 @@ export default function Transport({
                 }`}
               />
               <span>
-                {isIphonePortrait ? 'iPhone 15 Pro (1179×2556)' : 'Rotate iPhone 15 Pro'}
+                {isIphonePortrait ? 'Portrait 9:16 (1179×2556)' : 'Rotate Portrait 9:16'}
               </span>
             </button>
           )}

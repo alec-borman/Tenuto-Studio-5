@@ -113,4 +113,60 @@ describe('TDB-727 & TDB-728: Fix Windows Electron Piano Fallback, Prioritize Nat
     const elapsedMs = performance.now() - t0;
     expect(elapsedMs).toBeLessThan(40);
   });
+
+  it('compiles and renders all 16 measures of a 4-voice synth study (with dangling track labels, .filter sweeps, and 3-voice chords) with zero silent measures', () => {
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+
+    const score = parser.compile(`
+      tenuto "6.0" {
+        meta @{ title: "4-Voice Synth Performance Study", tempo: 72, time: "4/4", key: "E", scale: "major" }
+        def lead "MPE Soloist Lead" style=synth patch="saw_lead" vol=88 detune=62 cutoff=3400 resonance=1.2
+        def pad "Open-Voiced Planing Pad" style=synth patch="flutter_pad" vol=84 detune=64 cutoff=2800 resonance=1.05
+        def arp "Cybernetic Sequence" style=synth patch="pluck_lead" vol=80 detune=54 cutoff=3200 resonance=1.15
+        def bass "Acoustic Anchor Bass" style=synth patch="reese_bass" vol=90 detune=42 cutoff=780 resonance=1.1 sub=78
+
+        measure 1 {
+          lead: b3:2.p.cresc.squeeze(55).warp_wave("bend", 0.30).filter(1400, 3200) e4:2.mp.glide(160ms).mpe(bend: [0, +0.3, 0]) |
+          pad: [e3 b3 f#4]:1.p.cresc.open_voice.wow_flutter(5c, 0.4, 2c, 8.5).vowel("oh", "ooh", 0.25) |
+          arp: g#3:8.p b3:8 e4:8 f#4:8 g#4:8.fold(35%) f#4:8 e4:8 b3:8 |
+          bass: e1:1.mp.filter(160, 520) |
+        }
+        measure 2 {
+          gtr_dangling_empty_label:
+          lead: f#4:2.mp.squeeze(62).mpe(bend: [0, +0.4, 0]) g#4:2.mf.glide(180ms).detune(68%, 0.2..0.9) |
+          pad: [c#3 g#3 d#4]:1.mp.open_voice.wow_flutter(6c, 0.45, 2.5c, 9.0).vowel("ooh", "ah", 0.30) |
+          arp: e4:8.mp g#4:8 b4:8.ratchet(2, "up") d#5:8.fold(42%) b4:8 g#4:8 e4:8 c#4:8 |
+          bass: c#1:2.mp.filter(180, 560) g#1:2.mp.glide(140ms) |
+        }
+      }
+    `);
+
+    // Ensure measure 2's lead note was not swallowed by the dangling label above it
+    const m2Lead = score.events.filter((e) => e.measureNumber === 2 && e.trackId === 'lead');
+    expect(m2Lead.length).toBe(2);
+
+    const timeline = (engine as any).buildScheduledTimeline(score);
+    const padChords = timeline.filter((t: any) => t.event.trackId === 'pad');
+    // Both Measure 1 and Measure 2 pad chords must be coalesced into 3-voice chords
+    expect(padChords).toHaveLength(2);
+    expect(padChords[0].chordVoices).toHaveLength(3);
+    expect(padChords[1].chordVoices).toHaveLength(3);
+
+    // Verify neither pad chord nor bass note suffers from phase-null silence or keytrack mute
+    const sr = 44100;
+    for (const item of [...padChords, ...timeline.filter((t: any) => t.event.trackId === 'bass')]) {
+      const frames = Math.floor(item.durSec * sr);
+      const left = new Float32Array(frames);
+      const right = new Float32Array(frames);
+      ContinuousSynthEngine.renderVoiceIntoTrackStem(left, right, 0, frames, sr, 72, 1, item);
+      let sumSq = 0;
+      for (let i = 0; i < frames; i++) {
+        sumSq += left[i] * left[i] + right[i] * right[i];
+      }
+      const rms = Math.sqrt(sumSq / (frames * 2));
+      expect(rms).toBeGreaterThan(0.02);
+    }
+  });
 });
+

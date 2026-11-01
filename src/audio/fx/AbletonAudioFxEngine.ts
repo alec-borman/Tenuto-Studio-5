@@ -74,12 +74,27 @@ export class AbletonAudioFxEngine {
       norm === 'filter' ||
       norm === 'comp' ||
       norm === 'glue' ||
-      norm === 'gated_reverb'
+      norm === 'gated_reverb' ||
+      norm === 'tape_degrade' ||
+      norm === 'transformer_color_adc' ||
+      norm === 'dual_bus_silk_sum' ||
+      norm === 'fet_fast_limiter' ||
+      norm === 'vari_mu_tube_comp' ||
+      norm === 'mastering_clip_limiter' ||
+      norm === 'spectral_pitch_harmonizer' ||
+      norm === 'true_stereo_hall_reverb' ||
+      norm === 'burl_mothership' ||
+      norm === 'neve_5059' ||
+      norm === 'wes_mimas' ||
+      norm === 'wes_rhea' ||
+      norm === 'bettermaker_limiter' ||
+      norm === 'eventide_h9000' ||
+      norm === 'bricasti_m7'
     );
   }
 
   /**
-   * Normalizes an FX device name into its canonical Ableton Audio Effect identifier.
+   * Normalizes an FX device name into its canonical Audio Effect identifier.
    */
   public static normalizeFxType(fxType: string): string {
     const norm = (fxType || '').trim().toLowerCase();
@@ -88,6 +103,13 @@ export class AbletonAudioFxEngine {
     if (norm === 'filter') return 'auto_filter';
     if (norm === 'comp') return 'compressor';
     if (norm === 'glue') return 'glue_compressor';
+    if (norm === 'transformer_color_adc') return 'burl_mothership';
+    if (norm === 'dual_bus_silk_sum') return 'neve_5059';
+    if (norm === 'fet_fast_limiter') return 'wes_mimas';
+    if (norm === 'vari_mu_tube_comp') return 'wes_rhea';
+    if (norm === 'mastering_clip_limiter') return 'bettermaker_limiter';
+    if (norm === 'spectral_pitch_harmonizer') return 'eventide_h9000';
+    if (norm === 'true_stereo_hall_reverb') return 'bricasti_m7';
     return norm;
   }
 
@@ -206,6 +228,11 @@ export class AbletonAudioFxEngine {
           amp *= 1 + normDrive * 0.2;
           break;
         }
+        case 'tape_degrade': {
+          const highCut = clamp(Number(p.high_cut ?? 5200), 900, 7500);
+          cutoffHz = cutoffHz !== undefined ? Math.min(cutoffHz, highCut) : highCut;
+          break;
+        }
         case 'hybrid_reverb':
         case 'reverb':
         case 'gated_reverb': {
@@ -252,11 +279,26 @@ export class AbletonAudioFxEngine {
           }
           break;
         }
-        case 'limiter': {
+        case 'limiter':
+        case 'bettermaker_limiter': {
           const gainDb = Number(p.gain_db ?? 2.0);
           const ceilingDb = Number(p.ceiling ?? -0.3);
           const ceilingLin = dbToLinear(clamp(ceilingDb, -18, 0));
           amp = Math.min(ceilingLin * 1.35, amp * dbToLinear(clamp(gainDb, 0, 18)));
+          break;
+        }
+        case 'burl_mothership':
+        case 'neve_5059':
+        case 'wes_mimas':
+        case 'wes_rhea': {
+          const drive = clamp(Number(p.drive ?? p.texture ?? 0.45), 0, 1);
+          amp *= 1 + drive * 0.16;
+          break;
+        }
+        case 'bricasti_m7':
+        case 'eventide_h9000': {
+          const mix = clamp(Number(p.mix ?? 0.42), 0, 1);
+          reverbSendGain = Math.max(reverbSendGain, mix * 0.85);
           break;
         }
         default:
@@ -794,6 +836,294 @@ export class AbletonAudioFxEngine {
           const gatedRevR = revR * gateEnv;
           left[startFrame + i] = dryL * (1 - mix) + (dryL * 0.55 + gatedRevL * 0.95) * mix;
           right[startFrame + i] = dryR * (1 - mix) + (dryR * 0.55 + gatedRevR * 0.95) * mix;
+        }
+        break;
+      }
+
+      case 'tape_degrade': {
+        const wowHz = clamp(Number(p.wow_hz ?? 0.45), 0.12, 2.0);
+        const wowDepthSec = clamp(Number(p.wow_depth_ms ?? 1.8), 0.1, 6.0) / 1000;
+        const flutterHz = clamp(Number(p.flutter_hz ?? 9.5), 6.0, 15.0);
+        const flutterDepthSec = clamp(Number(p.flutter_depth_ms ?? 0.35), 0.05, 1.5) / 1000;
+        const highCutHz = clamp(Number(p.high_cut ?? 5200), 900, 7000);
+        const drive = clamp(Number(p.drive ?? 0.32), 0, 1);
+        const mix = clamp(Number(p.mix ?? 1.0), 0, 1);
+
+        const copyL = left.slice(startFrame, endFrame);
+        const copyR = right.slice(startFrame, endFrame);
+        const lpAlpha = clamp((2 * Math.PI * highCutHz) / sampleRate, 0.04, 0.85);
+        const driveGain = 1 + drive * 1.4;
+
+        let lp1L = 0;
+        let lp2L = 0;
+        let lp1R = 0;
+        let lp2R = 0;
+
+        for (let i = 0; i < len; i++) {
+          const t = i / sampleRate;
+          const wowMod =
+            (0.5 +
+              0.35 * Math.sin(2 * Math.PI * wowHz * t) +
+              0.15 * Math.sin(2 * Math.PI * wowHz * 1.618 * t)) *
+            wowDepthSec *
+            sampleRate;
+          const flutterMod =
+            (0.5 + 0.5 * Math.sin(2 * Math.PI * flutterHz * t)) *
+            flutterDepthSec *
+            sampleRate;
+          const delaySamples = wowMod + flutterMod;
+          const readPos = Math.max(0, i - delaySamples);
+          const idx0 = Math.floor(readPos);
+          const idx1 = Math.min(len - 1, idx0 + 1);
+          const frac = readPos - idx0;
+
+          const rawL = copyL[idx0] + (copyL[idx1] - copyL[idx0]) * frac;
+          const rawR = copyR[idx0] + (copyR[idx1] - copyR[idx0]) * frac;
+
+          // Soft analog tape saturation (1-4 dB transient compression) + steep 2-stage high-cut
+          const satL = Math.tanh(rawL * driveGain);
+          const satR = Math.tanh(rawR * driveGain);
+
+          lp1L += lpAlpha * (satL - lp1L);
+          lp2L += lpAlpha * (lp1L - lp2L);
+          lp1R += lpAlpha * (satR - lp1R);
+          lp2R += lpAlpha * (lp1R - lp2R);
+
+          left[startFrame + i] = copyL[i] * (1 - mix) + lp2L * mix;
+          right[startFrame + i] = copyR[i] * (1 - mix) + lp2R * mix;
+        }
+        break;
+      }
+
+      case 'burl_mothership': {
+        // Burl B80/B16 Mothership BAD4M/BDA4M: Discrete Class-A BOPA14 + BX1/BX5 Nickel Transformer
+        const transformer = String(p.transformer ?? 'bx1').toLowerCase();
+        const drive = clamp(Number(p.drive ?? 0.45), 0, 1);
+        const filterMode = String(p.filter ?? 'classic').toLowerCase();
+        const mix = clamp(Number(p.mix ?? 1.0), 0, 1);
+        const driveScalar = transformer === 'bypass' ? 1.0 + drive * 0.35 : 1.15 + drive * 1.65;
+        const lpAlpha = filterMode === 'aggressive' ? 0.72 : 0.48;
+        let lowMidL = 0;
+        let lowMidR = 0;
+        let lpL = 0;
+        let lpR = 0;
+        const lowAlpha = clamp((2 * Math.PI * 220) / sampleRate, 0.01, 0.25);
+
+        for (let i = startFrame; i < endFrame; i++) {
+          const inL = left[i];
+          const inR = right[i];
+          lowMidL += lowAlpha * (inL - lowMidL);
+          lowMidR += lowAlpha * (inR - lowMidR);
+          const xL = (inL + (transformer !== 'bypass' ? lowMidL * 0.35 : 0)) * driveScalar;
+          const xR = (inR + (transformer !== 'bypass' ? lowMidR * 0.35 : 0)) * driveScalar;
+          // Nickel-core transformer soft saturation + even-order asymmetry
+          const satL = Math.tanh(xL + 0.08 * xL * xL);
+          const satR = Math.tanh(xR + 0.08 * xR * xR);
+          lpL += lpAlpha * (satL - lpL);
+          lpR += lpAlpha * (satR - lpR);
+          left[i] = inL * (1 - mix) + lpL * mix;
+          right[i] = inR * (1 - mix) + lpR * mix;
+        }
+        break;
+      }
+
+      case 'neve_5059': {
+        // Dual-Bus Harmonic Summing: low_iron/blue (low/low-mid weight), high_sheen/red (high-mid air), dual/super (both)
+        const silkMode = String(p.mode ?? p.silk ?? 'super').toLowerCase();
+        const texture = clamp(Number(p.texture ?? 0.65), 0, 1);
+        const mix = clamp(Number(p.mix ?? 1.0), 0, 1);
+        const lowAlpha = clamp((2 * Math.PI * 240) / sampleRate, 0.01, 0.25);
+        const highAlpha = clamp((2 * Math.PI * 2200) / sampleRate, 0.05, 0.65);
+        let lowL = 0;
+        let lowR = 0;
+        let highLpL = 0;
+        let highLpR = 0;
+
+        for (let i = startFrame; i < endFrame; i++) {
+          const inL = left[i];
+          const inR = right[i];
+          lowL += lowAlpha * (inL - lowL);
+          lowR += lowAlpha * (inR - lowR);
+          highLpL += highAlpha * (inL - highLpL);
+          highLpR += highAlpha * (inR - highLpR);
+          const highL = inL - highLpL;
+          const highR = inR - highLpR;
+
+          let outL = inL;
+          let outR = inR;
+          if (
+            silkMode === 'blue' ||
+            silkMode === 'low_iron' ||
+            silkMode === 'super' ||
+            silkMode === 'dual'
+          ) {
+            outL += Math.tanh(lowL * (1.8 + texture * 2.4)) * texture * 0.45;
+            outR += Math.tanh(lowR * (1.8 + texture * 2.4)) * texture * 0.45;
+          }
+          if (
+            silkMode === 'red' ||
+            silkMode === 'high_sheen' ||
+            silkMode === 'super' ||
+            silkMode === 'dual'
+          ) {
+            outL += Math.tanh(highL * (2.0 + texture * 2.8)) * texture * 0.42;
+            outR += Math.tanh(highR * (2.0 + texture * 2.8)) * texture * 0.42;
+          }
+          left[i] = inL * (1 - mix) + Math.tanh(outL) * mix;
+          right[i] = inR * (1 - mix) + Math.tanh(outR) * mix;
+        }
+        break;
+      }
+
+      case 'wes_mimas': {
+        // WesAudio _MIMAS ng500 1176 FET Compressor w/ Carnhill Transformers & All-Buttons-In / Saturation Mode
+        const satMode = Boolean(p.saturation_mode);
+        const rawRatio = String(p.ratio ?? 8).toLowerCase();
+        const isAllButtons = rawRatio === 'all_buttons' || rawRatio === 'all';
+        const ratio = isAllButtons ? 16 : clamp(Number(p.ratio ?? 8), 4, 20);
+        const drive = clamp(Number(p.drive ?? 0.5), 0, 1);
+        const mix = clamp(Number(p.mix ?? 1.0), 0, 1);
+        const threshLin = isAllButtons ? 0.14 : 0.24;
+        let env = 0;
+
+        for (let i = startFrame; i < endFrame; i++) {
+          const inL = left[i];
+          const inR = right[i];
+          const peak = Math.max(Math.abs(inL), Math.abs(inR));
+          env = peak > env ? 0.85 * env + 0.15 * peak : 0.996 * env + 0.004 * peak;
+
+          let gain = 1.0;
+          if (!satMode && env > threshLin && env > 1e-5) {
+            const overDb = 20 * Math.log10(env / threshLin);
+            gain = dbToLinear(overDb / ratio - overDb) * (isAllButtons ? 1.55 : 1.25);
+          }
+          const carnhillDrive = 1.15 + drive * (isAllButtons ? 2.6 : 1.8);
+          const wetL = Math.tanh(inL * gain * carnhillDrive);
+          const wetR = Math.tanh(inR * gain * carnhillDrive);
+          left[i] = inL * (1 - mix) + wetL * mix;
+          right[i] = inR * (1 - mix) + wetR * mix;
+        }
+        break;
+      }
+
+      case 'wes_rhea': {
+        // WesAudio _RHEA Vari-Mu Tube Compressor w/ Carnhill Interstage Transformers & 2-Stage THD
+        const threshLin = dbToLinear(clamp(Number(p.threshold ?? -14), -36, -2));
+        const thdMode = String(p.thd ?? 'medium').toLowerCase();
+        const thdDrive = thdMode === 'high' ? 2.1 : thdMode === 'off' ? 1.05 : 1.45;
+        const mix = clamp(Number(p.mix ?? 1.0), 0, 1);
+        let env = 0;
+
+        for (let i = startFrame; i < endFrame; i++) {
+          const inL = left[i];
+          const inR = right[i];
+          const peak = Math.max(Math.abs(inL), Math.abs(inR));
+          env = peak > env ? 0.985 * env + 0.015 * peak : 0.999 * env + 0.001 * peak;
+          // Vari-Mu program-dependent soft knee ratio
+          const dynRatio = 1.5 + Math.min(4.5, env * 4.0);
+          let gain = 1.18;
+          if (env > threshLin && env > 1e-5) {
+            const overDb = 20 * Math.log10(env / threshLin);
+            gain = dbToLinear(overDb / dynRatio - overDb) * 1.25;
+          }
+          const xL = inL * gain * thdDrive;
+          const xR = inR * gain * thdDrive;
+          const wetL = Math.tanh(xL + 0.09 * xL * xL);
+          const wetR = Math.tanh(xR + 0.09 * xR * xR);
+          left[i] = inL * (1 - mix) + wetL * mix;
+          right[i] = inR * (1 - mix) + wetR * mix;
+        }
+        break;
+      }
+
+      case 'bettermaker_limiter': {
+        // Bettermaker Mastering Limiter 2.0 (+27 dBu Headroom, IREL Intelligent Release, Odd/Even Harmonic Clipper)
+        const gainLin = dbToLinear(clamp(Number(p.gain_db ?? 2.5), -6, 18));
+        const ceilingLin = dbToLinear(clamp(Number(p.ceiling ?? -0.3), -12, 0));
+        const thdAmount = clamp(Number(p.odd_even_thd ?? 0.3), 0, 1);
+
+        for (let i = startFrame; i < endFrame; i++) {
+          const xL = left[i] * gainLin;
+          const xR = right[i] * gainLin;
+          const shapedL = xL + thdAmount * (0.08 * xL * xL - 0.06 * xL * xL * xL);
+          const shapedR = xR + thdAmount * (0.08 * xR * xR - 0.06 * xR * xR * xR);
+          left[i] = clamp(Math.tanh(shapedL / Math.max(0.05, ceilingLin)) * ceilingLin, -ceilingLin, ceilingLin);
+          right[i] = clamp(Math.tanh(shapedR / Math.max(0.05, ceilingLin)) * ceilingLin, -ceilingLin, ceilingLin);
+        }
+        break;
+      }
+
+      case 'eventide_h9000': {
+        // Eventide H9000 Gen2 SIFT Polyphonic Harmonizer & SP2016 Diffusion
+        const shift1St = clamp(Number(p.shift1_st ?? 7), -24, 24);
+        const shift2St = clamp(Number(p.shift2_st ?? -12), -24, 24);
+        const mix = clamp(Number(p.mix ?? 0.42), 0, 1);
+        const copyL = left.slice(startFrame, endFrame);
+        const copyR = right.slice(startFrame, endFrame);
+        const rate1 = Math.pow(2, shift1St / 12);
+        const rate2 = Math.pow(2, shift2St / 12);
+        const grainLen = Math.min(len, Math.max(256, Math.floor(0.042 * sampleRate)));
+        let pos1 = 0;
+        let pos2 = 0;
+
+        for (let i = 0; i < len; i++) {
+          const idx1 = Math.floor(pos1) % grainLen;
+          const idx2 = Math.floor(pos2) % grainLen;
+          const baseWin = Math.max(0, i - (i % grainLen));
+          const r1 = Math.min(len - 1, baseWin + idx1);
+          const r2 = Math.min(len - 1, baseWin + idx2);
+          const harmL = copyL[r1] * 0.55 + copyR[r2] * 0.45;
+          const harmR = copyR[r1] * 0.55 + copyL[r2] * 0.45;
+          left[startFrame + i] = copyL[i] * (1 - mix) + Math.tanh(harmL * 1.15) * mix;
+          right[startFrame + i] = copyR[i] * (1 - mix) + Math.tanh(harmR * 1.15) * mix;
+          pos1 += rate1;
+          pos2 += rate2;
+        }
+        break;
+      }
+
+      case 'bricasti_m7': {
+        // Bricasti Design M7 True-Stereo Algorithmic Reverb (6x Blackfin DSP Array Emulation)
+        const decaySec = clamp(Number(p.decay ?? 2.6), 0.3, 12.0);
+        const predelayMs = clamp(Number(p.predelay ?? 22), 0, 150);
+        const rolloffHz = clamp(Number(p.rolloff_hz ?? 6800), 1200, 16000);
+        const mix = clamp(Number(p.mix ?? 0.42), 0, 1);
+
+        const preFrames = Math.max(1, Math.floor((predelayMs / 1000) * sampleRate));
+        const t1 = preFrames + Math.floor(0.019 * sampleRate);
+        const t2 = preFrames + Math.floor(0.031 * sampleRate);
+        const t3 = preFrames + Math.floor(0.047 * sampleRate);
+        const t4 = preFrames + Math.floor(0.067 * sampleRate);
+        const fb = clamp(Math.pow(0.001, 0.035 / decaySec), 0.3, 0.93);
+        const dampAlpha = clamp((2 * Math.PI * rolloffHz) / sampleRate, 0.08, 0.88);
+
+        const bufL = new Float32Array(len + t4 + 4);
+        const bufR = new Float32Array(len + t4 + 4);
+        let lpL = 0;
+        let lpR = 0;
+
+        for (let i = 0; i < len; i++) {
+          const dryL = left[startFrame + i];
+          const dryR = right[startFrame + i];
+          // True-stereo cross-coupled early + late reflection network
+          const rawRevL =
+            (i >= t1 ? bufL[i - t1] * 0.42 : 0) +
+            (i >= t2 ? bufR[i - t2] * 0.34 : 0) +
+            (i >= t3 ? bufL[i - t3] * 0.26 : 0) +
+            (i >= t4 ? bufR[i - t4] * 0.18 : 0);
+          const rawRevR =
+            (i >= t1 ? bufR[i - t1] * 0.42 : 0) +
+            (i >= t2 ? bufL[i - t2] * 0.34 : 0) +
+            (i >= t3 ? bufR[i - t3] * 0.26 : 0) +
+            (i >= t4 ? bufL[i - t4] * 0.18 : 0);
+
+          lpL += dampAlpha * (rawRevL - lpL);
+          lpR += dampAlpha * (rawRevR - lpR);
+          bufL[i] = dryL + lpL * fb;
+          bufR[i] = dryR + lpR * fb;
+
+          left[startFrame + i] = dryL * (1 - mix) + (dryL * 0.45 + lpL * 0.92) * mix;
+          right[startFrame + i] = dryR * (1 - mix) + (dryR * 0.45 + lpR * 0.92) * mix;
         }
         break;
       }

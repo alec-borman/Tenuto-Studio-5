@@ -122,6 +122,28 @@ export interface EventPhysics {
     startWindow?: number;
     endWindow?: number;
   };
+  wowFlutter?: {
+    wowCents: number;
+    wowHz: number;
+    flutterCents: number;
+    flutterHz: number;
+  };
+  negativeHarmony?: boolean;
+  krellEvents?: number;
+  lpg?: {
+    mode: 'both' | 'vca' | 'lp';
+    decayMs: number;
+  };
+  metalizerAmount?: number;
+  metalizerMod?: WindowedModulationSpec;
+  bruteFactor?: number;
+  cp3Drive?: number;
+  binauralSpreadCents?: number;
+  spinRateHz?: number;
+  morphAmount?: number;
+  morphMod?: WindowedModulationSpec;
+  fullTouchMode?: 'at' | 'at_z' | 'pizz';
+  aliasingAmount?: number;
 }
 
 export interface AtomicEvent {
@@ -167,6 +189,28 @@ export interface AtomicEvent {
     startWindow?: number;
     endWindow?: number;
   };
+  wowFlutter?: {
+    wowCents: number;
+    wowHz: number;
+    flutterCents: number;
+    flutterHz: number;
+  };
+  negativeHarmony?: boolean;
+  krellEvents?: number;
+  lpg?: {
+    mode: 'both' | 'vca' | 'lp';
+    decayMs: number;
+  };
+  metalizerAmount?: number;
+  metalizerMod?: WindowedModulationSpec;
+  bruteFactor?: number;
+  cp3Drive?: number;
+  binauralSpreadCents?: number;
+  spinRateHz?: number;
+  morphAmount?: number;
+  morphMod?: WindowedModulationSpec;
+  fullTouchMode?: 'at' | 'at_z' | 'pizz';
+  aliasingAmount?: number;
   continuousSynth?: Record<string, any>;
 }
 
@@ -810,6 +854,92 @@ export class ASTSerializer {
           }
         }
         physics.voiceBend = { voiceIndex, cents, startWindow, endWindow };
+      } else if (mod.startsWith('wow_flutter(') && mod.endsWith(')')) {
+        const parts = mod
+          .slice(12, -1)
+          .split(',')
+          .map((s) => parseFloat(s.replace(/c|cents|hz|%/gi, '').trim()));
+        const wowCents = !isNaN(parts[0]) ? Math.max(0, Math.min(50, parts[0])) : 4.5;
+        const wowHz = !isNaN(parts[1]) ? Math.max(0.05, Math.min(4, parts[1])) : 0.42;
+        const flutterCents = !isNaN(parts[2]) ? Math.max(0, Math.min(30, parts[2])) : 2.5;
+        const flutterHz = !isNaN(parts[3]) ? Math.max(4, Math.min(25, parts[3])) : 9.5;
+        physics.wowFlutter = { wowCents, wowHz, flutterCents, flutterHz };
+      } else if (mod === 'wow_flutter') {
+        physics.wowFlutter = { wowCents: 4.5, wowHz: 0.42, flutterCents: 2.5, flutterHz: 9.5 };
+      } else if (mod === 'neg_harm' || mod === 'negative_harmony') {
+        physics.negativeHarmony = true;
+      } else if (
+        (mod.startsWith('eoc_cycle(') || mod.startsWith('krell(')) &&
+        mod.endsWith(')')
+      ) {
+        const prefixLen = mod.startsWith('eoc_cycle(') ? 10 : 6;
+        const count = parseInt(mod.slice(prefixLen, -1).trim(), 10);
+        physics.krellEvents = !isNaN(count) && count >= 2 ? Math.min(16, count) : 5;
+      } else if (mod === 'eoc_cycle' || mod === 'krell') {
+        physics.krellEvents = 5;
+      } else if (mod.startsWith('lpg(') && mod.endsWith(')')) {
+        const parts = mod.slice(4, -1).split(',').map((s) => s.trim());
+        const rawMode = (parts[0] || 'both').replace(/["']/g, '').toLowerCase();
+        const mode: 'both' | 'vca' | 'lp' =
+          rawMode === 'vca' ? 'vca' : rawMode === 'lp' || rawMode === 'filter' ? 'lp' : 'both';
+        const decayRaw = parts[1] ? parseFloat(parts[1].replace(/ms|s/gi, '')) : 420;
+        const decayMs =
+          !isNaN(decayRaw) && decayRaw > 0
+            ? parts[1]?.endsWith('s') && !parts[1]?.endsWith('ms')
+              ? decayRaw * 1000
+              : decayRaw
+            : 420;
+        physics.lpg = { mode, decayMs: Math.max(30, Math.min(4000, decayMs)) };
+      } else if (mod === 'lpg') {
+        physics.lpg = { mode: 'both', decayMs: 420 };
+      } else if (
+        (mod.startsWith('tri_fold(') || mod.startsWith('metalizer(')) &&
+        mod.endsWith(')')
+      ) {
+        const prefixLen = mod.startsWith('tri_fold(') ? 9 : 10;
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(prefixLen, -1), 100);
+        if (parsed) {
+          physics.metalizerAmount = Math.max(0, Math.min(100, parsed.scalar));
+          physics.metalizerMod = parsed.spec;
+        }
+      } else if (
+        (mod.startsWith('steiner_drive(') || mod.startsWith('brute_factor(')) &&
+        mod.endsWith(')')
+      ) {
+        const prefixLen = mod.startsWith('steiner_drive(') ? 14 : 13;
+        const v = parseFloat(mod.slice(prefixLen, -1).replace('%', ''));
+        if (!isNaN(v)) physics.bruteFactor = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (
+        (mod.startsWith('discrete_drive(') || mod.startsWith('cp3_drive(')) &&
+        mod.endsWith(')')
+      ) {
+        const prefixLen = mod.startsWith('discrete_drive(') ? 15 : 10;
+        const v = parseFloat(mod.slice(prefixLen, -1).replace('%', ''));
+        if (!isNaN(v)) physics.cp3Drive = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('binaural(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(9, -1).replace(/c|cents/gi, ''));
+        if (!isNaN(v)) physics.binauralSpreadCents = Math.max(0, Math.min(100, v));
+      } else if (mod === 'binaural') {
+        physics.binauralSpreadCents = 14;
+      } else if (mod.startsWith('spin(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(5, -1).replace(/hz/gi, ''));
+        if (!isNaN(v)) physics.spinRateHz = Math.max(0.05, Math.min(20, v));
+      } else if (mod.startsWith('morph(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(6, -1), 100);
+        if (parsed) {
+          physics.morphAmount = Math.max(0, Math.min(100, parsed.scalar));
+          physics.morphMod = parsed.spec;
+        }
+      } else if (
+        (mod.startsWith('touch_travel(') || mod.startsWith('fulltouch(')) &&
+        mod.endsWith(')')
+      ) {
+        const prefixLen = mod.startsWith('touch_travel(') ? 13 : 10;
+        const m = mod.slice(prefixLen, -1).replace(/["']/g, '').trim().toLowerCase();
+        physics.fullTouchMode = m === 'pizz' ? 'pizz' : m === 'at_z' ? 'at_z' : 'at';
+      } else if (mod.startsWith('aliasing(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(9, -1).replace('%', ''));
+        if (!isNaN(v)) physics.aliasingAmount = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
       }
     }
 
@@ -857,6 +987,60 @@ export class ASTSerializer {
         ...(ev.continuousSynth || {}),
         voiceBend: p.voiceBend,
       };
+    }
+    if (p.wowFlutter) {
+      ev.wowFlutter = p.wowFlutter;
+      ev.continuousSynth = {
+        ...(ev.continuousSynth || {}),
+        wowFlutter: p.wowFlutter,
+      };
+    }
+    if (p.negativeHarmony) {
+      ev.negativeHarmony = true;
+    }
+    if (p.krellEvents !== undefined) {
+      ev.krellEvents = p.krellEvents;
+    }
+    if (p.lpg) {
+      ev.lpg = p.lpg;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), lpg: p.lpg };
+    }
+    if (p.metalizerAmount !== undefined) {
+      ev.metalizerAmount = p.metalizerAmount;
+      ev.metalizerMod = p.metalizerMod;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), metalizerAmount: p.metalizerAmount };
+    }
+    if (p.bruteFactor !== undefined) {
+      ev.bruteFactor = p.bruteFactor;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), bruteFactor: p.bruteFactor };
+    }
+    if (p.cp3Drive !== undefined) {
+      ev.cp3Drive = p.cp3Drive;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), cp3Drive: p.cp3Drive };
+    }
+    if (p.binauralSpreadCents !== undefined) {
+      ev.binauralSpreadCents = p.binauralSpreadCents;
+      ev.continuousSynth = {
+        ...(ev.continuousSynth || {}),
+        binauralSpreadCents: p.binauralSpreadCents,
+      };
+    }
+    if (p.spinRateHz !== undefined) {
+      ev.spinRateHz = p.spinRateHz;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), spinRateHz: p.spinRateHz };
+    }
+    if (p.morphAmount !== undefined) {
+      ev.morphAmount = p.morphAmount;
+      ev.morphMod = p.morphMod;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), morphAmount: p.morphAmount };
+    }
+    if (p.fullTouchMode !== undefined) {
+      ev.fullTouchMode = p.fullTouchMode;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), fullTouchMode: p.fullTouchMode };
+    }
+    if (p.aliasingAmount !== undefined) {
+      ev.aliasingAmount = p.aliasingAmount;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), aliasingAmount: p.aliasingAmount };
     }
     return ev;
   }

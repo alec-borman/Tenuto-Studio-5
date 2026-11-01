@@ -16,9 +16,9 @@ export const PRESET_SCORES: PresetScore[] = [
 
   %% Phase 2: Instrument Definitions
   def lead "Analog Brass Lead" style=synth patch="saw_lead"
-  def pad "Juno Chorus Pad" style=synth patch="warm_pad"
+  def pad "Vintage Chorus Pad" style=synth patch="warm_pad"
   def bass "Rolling Arp Bass" style=synth patch="808_sub"
-  def drums "Linn 808 Kit" style=grid patch="tenuto_808_kit"
+  def drums "Vintage Electronic Kit" style=grid patch="tenuto_808_kit"
 
   %% Phase 3: Musical Timeline (Strictly 4 Beats / 1 Whole Note per Measure)
   measure 1 {
@@ -103,9 +103,9 @@ export const PRESET_SCORES: PresetScore[] = [
   meta @{ title: "Mahler Symphony No. 6 - Finale (The Three Hammer Blows)", tempo: 72, time: "4/4" }
 
   %% =========================================================================
-  %% 16-SECTION CONCERTGEBOUW ORCHESTRA + MAHLER WOODEN HAMMER
+  %% 16-SECTION SYMPHONIC ORCHESTRA + WOODEN BOX HAMMER
   %% =========================================================================
-  def ham  "Mahler Wooden Box Hammer"  style=grid     patch="timpani"
+  def ham  "Symphonic Wooden Box Hammer" style=grid     patch="timpani"
   def timp "2 Orchestral Timpanists"   style=grid     patch="timpani"
   def tpt  "6 Orchestral Trumpets"     style=standard patch="trumpet"
   def hn   "8 French Horns Section"    style=standard patch="french_horn"
@@ -655,6 +655,352 @@ export const PRESET_SCORES: PresetScore[] = [
     vla: [a3 c4 e4]:4.ff.pizz r:4 r:2 |
     vc: [a1 e2 a2]:4.ff.pizz r:4 r:2 |
     cb: a0:4.ff.pizz r:4 r:2 |
+  }
+}`,
+  },
+  {
+    id: 'voltage_and_gesture',
+    title: 'Architecture of Voltage & Gesture (Synth Research Suite)',
+    genre: '118 BPM',
+    code: `tenuto "6.0" {
+  meta @{
+    title: "Architecture of Voltage & Gesture",
+    tempo: 118,
+    time: "4/4",
+    key: "C",
+    scale: "minor",
+    temperament: "12tet",
+    master_tune: -18,
+    sidechain: "drums"
+  }
+
+  def seq   "Analog Step Sequencer"     style=synth patch="pluck_lead" cutoff=3400
+  def plan  "Parallel Chord Planing"    style=synth patch="flutter_pad" cutoff=2800
+  def haunt "Tape Nostalgia Pad"        style=synth patch="tape_nostalgia_pad" .fx(tape_degrade, @{ wow_hz: 0.42, flutter_hz: 9.5, high_cut: 5200, drive: 0.3 })
+  def swarm "8-Oscillator Ribbon Drone" style=synth patch="ribbon_cluster_8"
+  def krell "West Coast Wavefolder"     style=synth patch="cybernetic_eoc"
+  def drums "Gated Drum Kit"            style=grid  patch="tenuto_808_kit" .fx(gated_reverb, @{ decay: 3.2, gate_ms: 160, mix: 0.55 })
+
+  %% M1: Step Ratcheting + Minor 9th Rootless Planing over Static C Bass
+  measure 1 {
+    seq:   c2:8 c3:8 c2:8 c3:8.ratchet(2, "flat") c2:8 c3:8 c2:8 c3:8.ratchet(3, "up") |
+    plan:  b3:2.plane("m9").rootless d4:2.plane("m9").rootless |
+    haunt: [c4 eb4 g4 bb4]:1.p.vowel("oh", "ooh", 0.2).wow_flutter(5, 0.42, 2.5, 9.5) |
+    drums: <[ v1: k:4 r:4 k:4 r:4 | v2: r:4 s:4 r:4 s:4 | v3: h:8 h:8 h:8.ratchet(2, "up") h:8 h:8 h:8 h:8.ratchet(4, "up") oh:8 ]>
+  }
+
+  %% M2: 8-Oscillator Ribbon Cluster + Autonomous EOC Envelope + 3D MPE Pressure Squeeze
+  measure 2 {
+    seq:   c2:8 c3:8 c2:8 c3:8 c2:8 c3:8 c2:8 c3:8.ratchet(4, "down") |
+    plan:  e4:2.plane("quartal") f#4:2.plane("m9").rootless.neg_harm |
+    haunt: [c4 g4 bb4 d5]:1.mp.squeeze(90%).bend_voice(1, 50c, 0.2..0.8) |
+    swarm: c2:1.p.swarm([0.2, 3.2, 0.4]) |
+    krell: g4:1.mp.eoc_cycle(5).fold(75%) |
+    drums: <[ v1: k:4 r:4 k:4 r:4 | v2: r:4 s:4 r:4 s:4 ]>
+  }
+}`,
+  },
+  {
+    id: 'voltage_and_gesture_study',
+    title: 'Architecture of Voltage and Gesture (4-Voice Synth Study)',
+    genre: '72 BPM',
+    code: `tenuto "6.0" {
+  meta @{
+    title: "Architecture of Voltage and Gesture (4-Voice Synth Study)",
+    tempo: 72,
+    time: "4/4",
+    key: "E",
+    scale: "major",
+    scale_lock: false,
+    quantize_launch: "1/1"
+  }
+
+  return hall_bus "Macro-Time Shimmer Space"
+    .fx(hybrid_reverb, @{mode: "parallel", algorithm: "shimmer", decay: 5.8, predelay: 32, mix: 1.0})
+    .fx(glue_compressor, @{threshold: -15, ratio: 2.0, mix: 0.85})
+
+  return bbd_bus "Analog Bucket-Brigade Delay"
+    .fx(echo, @{time: 0.375, feedback: 0.48, stereo_mode: "ping_pong", mix: 1.0})
+    .fx(chorus, @{rate: 0.36, amount: 0.38, mix: 0.48})
+
+  %% VOICE 1: MPE Soloist & Formant Lead (3D Pressure & Ribbon Gesture)
+  def lead "MPE Soloist Lead" style=synth patch="saw_lead"
+    group="four_voice_bus" vol=88 detune=62 cutoff=3400 resonance=1.2 sub=20 air=38 width=130 slop=28
+    env=@{attack: 0.14, decay: 1.3, sustain: 0.90, release: 1.6}
+    sends=@{hall_bus: 0.68, bbd_bus: 0.52}
+    .fx(chorus, @{rate: 0.42, amount: 0.36, mix: 0.44})
+    .fx(glue_compressor, @{threshold: -15, ratio: 2.5, mix: 0.85})
+
+  %% VOICE 2: Open-Voiced Planing & Tape Nostalgia Pad (Spectral Inverse Proportionality)
+  def pad "Open-Voiced Planing Pad" style=synth patch="flutter_pad"
+    group="four_voice_bus" vol=84 detune=64 cutoff=2800 resonance=1.05 sub=20 air=32 width=152 slop=34
+    env=@{attack: 0.28, decay: 1.5, sustain: 0.92, release: 1.8}
+    sends=@{hall_bus: 0.72, bbd_bus: 0.38}
+    .fx(phaser, @{rate: 0.18, depth: 0.42, mix: 0.35})
+
+  %% VOICE 3: West Coast Wavefolder Ostinato (Wavefolder + Ratchet Engine)
+  def buchla "West Coast Wavefolder Arp" style=synth patch="pluck_lead"
+    group="four_voice_bus" vol=80 detune=48 cutoff=3200 resonance=1.18 sub=15 air=36 width=138 slop=20
+    env=@{attack: 0.015, decay: 0.65, sustain: 0.55, release: 0.95}
+    sends=@{hall_bus: 0.52, bbd_bus: 0.66}
+    .fx(chorus, @{rate: 0.35, amount: 0.34, mix: 0.38})
+
+  %% VOICE 4: Ladder & Reese Sub-Bass Foundation (Fundamental Anchor & Harmonic Gravity)
+  def bass "Reese Sub Anchor" style=synth patch="reese_bass"
+    group="four_voice_bus" vol=90 detune=54 cutoff=980 resonance=1.22 sub=92 air=14 width=112 slop=16
+    env=@{attack: 0.04, decay: 0.95, sustain: 0.88, release: 1.2}
+    sends=@{hall_bus: 0.24, bbd_bus: 0.18}
+    .fx(saturator, @{drive: 7.5, curve: "warm_tube", mix: 0.78})
+
+  group four_voice_bus "Four-Voice Synth Ensemble" tracks=[lead, pad, buchla, bass]
+    .fx(glue_compressor, @{threshold: -14, ratio: 2.0, mix: 0.80})
+
+  %% =========================================================================
+  %% SECTION I (Measures 1-8): E Aeolian Hauntology -> E Major Sunrise
+  %% =========================================================================
+
+  locator "I. Hauntological Dusk to Sunrise" at measure 1
+
+  measure 1 {
+    lead: e4:2.mp.legato.pre_swell.wow_flutter(24, 14).filter(900, 2600) g4:4.mp.legato f#4:4.mp.glide(160ms) |
+    pad: [e3 g3 b3 d4]:1.p.legato.open_voice.wow_flutter(26, 16).filter(650, 1850) |
+    buchla: e3:8.p.fold([1.0, 2.2]) b3:8 g4:8 e4:8.ratchet(2) b3:8 g4:8 f#4:8 b3:8 |
+    bass: e1:1.mp.legato.filter(220, 620).drive([0.15, 0.45]) |
+  }
+
+  measure 2 {
+    lead: b4:2.mp.legato.vib.filter(1200, 2900) a4:4.mp.legato g4:4.mp.glide(180ms) |
+    pad: [c3 g3 b3 e4]:1.p.legato.open_voice.wow_flutter(24, 14).filter(700, 1950) |
+    buchla: c3:8.p.fold([1.1, 2.4]) g3:8 e4:8 c4:8.ratchet(3) g3:8 e4:8 d4:8 g3:8 |
+    bass: c1:2.mp.legato.filter(240, 660) d1:2.mp.legato.glide(160ms) |
+  }
+
+  measure 3 {
+    lead: f#4:2.mp.legato.cresc(64, 92).filter(1100, 3200) a4:4.mf.legato b4:4.mf.glide(190ms) |
+    pad: [a2 e3 g3 b3]:2.mp.legato.open_voice [b2 f#3 a3 d4]:2.mp.legato.open_voice.cresc(62, 90) |
+    buchla: a2:8.mp.fold([1.2, 2.8]) e3:8 b3:8 g3:8 b2:8 f#3:8 d4:8.ratchet(2) a3:8 |
+    bass: a0:2.mp.legato.filter(250, 720) b0:2.mf.legato.glide(170ms) |
+  }
+
+  measure 4 {
+    lead: g#4:2.f.legato.vib.detune([20, 78, 32]).filter(1600, 4400) b4:2.f.legato.vib |
+    pad: [e3 g#3 b3 f#4]:1.mf.legato.open_voice.bend_voice(1, -1, 1).filter(950, 3100) |
+    buchla: e3:8.mf.fold([1.4, 3.2]) b3:8 g#4:8 e4:8.ratchet(3) b3:8 g#4:8 f#4:8 b3:8 |
+    bass: e1:1.f.legato.filter(320, 920).drive([0.25, 0.62]) |
+  }
+
+  measure 5 {
+    lead: e5:2.mf.legato.wow_flutter(18, 12).vowel(["a", "o", "u"]) d5:4.mf.legato b4:4.mf.glide(170ms) |
+    pad: [e3 g3 b3 d4]:1.mp.legato.open_voice.filter(800, 2200) |
+    buchla: e3:8.mp.fold([1.2, 2.5]) b3:8 g4:8 d4:8.ratchet(2) b3:8 g4:8 e4:8 b3:8 |
+    bass: e1:2.mp.legato.filter(260, 680) d1:2.mp.legato |
+  }
+
+  measure 6 {
+    lead: c5:2.mf.legato.vib.filter(1300, 3100) b4:4.mf.legato a4:4.mf.glide(175ms) |
+    pad: [c3 g3 b3 e4]:2.mp.legato.open_voice [a2 e3 g3 c4]:2.mp.legato.open_voice |
+    buchla: c3:8.mp.fold([1.1, 2.6]) g3:8 e4:8 b3:8 a2:8 e3:8 c4:8.ratchet(3) g3:8 |
+    bass: c1:2.mp.legato a0:2.mp.legato.glide(160ms) |
+  }
+
+  measure 7 {
+    lead: f#4:2.mf.legato.cresc(70, 102).filter(1400, 3800) b4:4.f.legato d#5:4.f.glide(200ms) |
+    pad: [f#3 a3 c#4 e4]:2.mf.legato.open_voice [b2 f#3 a3 d#4]:2.f.legato.open_voice.cresc(72, 102) |
+    buchla: f#3:8.mf.fold([1.5, 3.4]) c#4:8 a4:8 e4:8 b2:8 f#3:8 d#4:8.ratchet(4) a3:8 |
+    bass: f#1:2.mf.legato.filter(280, 780) b0:2.f.legato.glide(180ms) |
+  }
+
+  measure 8 {
+    lead: e5:1.f.legato.vib.detune([25, 84, 30]).filter(1800, 4800) |
+    pad: [e3 g#3 b3 d#4]:1.f.legato.open_voice.bend_voice(1, -1, 1).filter(1100, 3400) |
+    buchla: e3:8.mf.fold([1.3, 3.0]) b3:8 g#4:8 d#4:8.ratchet(2) b3:8 g#4:8 e4:8 b3:8 |
+    bass: e1:1.f.legato.filter(350, 960).drive([0.28, 0.68]) |
+  }
+
+  %% =========================================================================
+  %% SECTION II (Measures 9-16): C# Dorian Chromatic Planing -> C# Major Lift
+  %% =========================================================================
+
+  locator "II. Chromatic Planing & Formant Gesture" at measure 9
+
+  measure 9 {
+    lead: c#5:2.mf.legato.vowel(["i", "e", "a"]).filter(1400, 3400) e5:4.mf.legato b4:4.mf.glide(165ms) |
+    pad: [c#3 e3 g#3 b3]:2.mp.legato.open_voice [d#3 f#3 a#3 c#4]:2.mp.legato.open_voice |
+    buchla: c#3:8.mp.warp_wave("bend", [0.2, 0.72]) g#3:8 e4:8 b3:8.ratchet(2) d#3:8 a#3:8 f#4:8 c#4:8 |
+    bass: c#1:2.mf.legato.sub_harm(2, 3, 0.45) d#1:2.mf.legato |
+  }
+
+  measure 10 {
+    lead: a4:2.mf.legato.vib.filter(1300, 3200) g#4:4.mf.legato f#4:4.mf.glide(170ms) |
+    pad: [a2 c#3 e3 g#3]:2.mp.legato.open_voice [f#2 a2 c#3 e3]:2.mp.legato.open_voice |
+    buchla: a2:8.mp.warp_wave("mirror", [0.18, 0.65]) e3:8 c#4:8 g#3:8 f#2:8 c#3:8 a3:8.ratchet(3) e3:8 |
+    bass: a0:2.mf.legato.filter(240, 680) f#1:2.mf.legato.glide(160ms) |
+  }
+
+  measure 11 {
+    lead: g#4:2.mf.legato.cresc(68, 98).filter(1400, 3900) b4:4.f.legato c#5:4.f.glide(185ms) |
+    pad: [f#3 a3 c#4 e4]:2.mf.legato.rootless [g#3 c4 d#4 f#4]:2.f.legato.open_voice.cresc(72, 100) |
+    buchla: f#3:8.mf.fold([1.4, 3.3]) c#4:8 a4:8 e4:8 g#3:8 d#4:8 c5:8.ratchet(3) f#4:8 |
+    bass: f#1:2.mf.legato.filter(280, 760) g#1:2.f.legato.glide(175ms) |
+  }
+
+  measure 12 {
+    lead: f5:2.f.legato.vib.detune([22, 82, 28]).filter(1750, 4600) c#5:2.f.legato.vib |
+    pad: [c#3 f3 g#3 d#4]:1.f.legato.open_voice.bend_voice(1, -1, 1).filter(1050, 3300) |
+    buchla: c#3:8.mf.fold([1.5, 3.5]) g#3:8 f4:8 c#4:8.ratchet(2) g#3:8 f4:8 d#4:8 g#3:8 |
+    bass: c#1:1.f.legato.filter(340, 940).drive([0.26, 0.65]) |
+  }
+
+  measure 13 {
+    lead: g#5:2.mf.legato.vowel(["o", "a", "e"]).filter(1600, 3800) f#5:4.mf.legato e5:4.mf.glide(170ms) |
+    pad: [c#3 e3 g#3 b3]:2.mp.legato.open_voice [b2 d#3 f#3 a3]:2.mp.legato.open_voice |
+    buchla: c#3:8.mp.squeeze([0.2, 0.7]) g#3:8 e4:8 b3:8 b2:8 f#3:8 d#4:8.ratchet(2) a3:8 |
+    bass: c#1:2.mf.legato b0:2.mf.legato.glide(160ms) |
+  }
+
+  measure 14 {
+    lead: d#5:2.mf.legato.vib.filter(1450, 3500) c#5:4.mf.legato b4:4.mf.glide(175ms) |
+    pad: [a2 c#3 e3 g#3]:2.mp.legato.open_voice [g#2 b2 d#3 f#3]:2.mp.legato.open_voice |
+    buchla: a2:8.mp.fold([1.2, 2.7]) e3:8 c#4:8 g#3:8.ratchet(3) g#2:8 d#3:8 b3:8 f#3:8 |
+    bass: a0:2.mf.legato g#0:2.mf.legato |
+  }
+
+  measure 15 {
+    lead: a#4:2.mf.legato.cresc(72, 104).filter(1500, 4100) c#5:4.f.legato f5:4.f.glide(195ms) |
+    pad: [f#3 a#3 c#4 e4]:2.mf.legato.open_voice [g#3 c4 d#4 f#4]:2.f.legato.open_voice.cresc(74, 104) |
+    buchla: f#3:8.mf.fold([1.6, 3.6]) c#4:8 a#4:8 e4:8 g#3:8 d#4:8 c5:8.ratchet(4) f#4:8 |
+    bass: f#1:2.mf.legato.filter(300, 820) g#1:2.f.legato.glide(180ms) |
+  }
+
+  measure 16 {
+    lead: f5:2.f.legato.vib.detune([26, 86, 32]).filter(1850, 4900) g#5:2.f.legato.vib |
+    pad: [c#3 f3 g#3 c4]:1.f.legato.open_voice.bend_voice(1, -1, 1).filter(1150, 3500) |
+    buchla: c#3:8.mf.fold([1.4, 3.2]) g#3:8 f4:8 c4:8.ratchet(2) g#3:8 f4:8 c#4:8 g#3:8 |
+    bass: c#1:1.f.legato.filter(360, 980).drive([0.30, 0.70]) |
+  }
+
+  %% =========================================================================
+  %% SECTION III (Measures 17-24): A Lydian-Minor -> A Major Horizon
+  %% =========================================================================
+
+  locator "III. Negative Harmony & Golden Ratio Horizon" at measure 17
+
+  measure 17 {
+    lead: a4:2.mp.legato.pre_swell.filter(1050, 2900) c5:4.mp.legato e5:4.mp.glide(170ms) |
+    pad: [a2 c3 e3 g3]:1.p.legato.open_voice.wow_flutter(22, 14).filter(720, 2100) |
+    buchla: a2:8.p.ring_mod(220, [0.1, 0.45]) e3:8 c4:8 g3:8.ratchet(2) e3:8 c4:8 b3:8 e3:8 |
+    bass: a0:1.mp.legato.filter(230, 650).sub_harm(2, 3, 0.40) |
+  }
+
+  measure 18 {
+    lead: d5:2.mp.legato.vib.filter(1250, 3100) c5:4.mp.legato b4:4.mp.glide(175ms) |
+    pad: [f2 c3 e3 a3]:2.p.legato.open_voice [g2 d3 f3 b3]:2.mp.legato.open_voice |
+    buchla: f2:8.p.fold([1.1, 2.5]) c3:8 a3:8 e3:8 g2:8 d3:8 b3:8.ratchet(3) f3:8 |
+    bass: f1:2.mp.legato g1:2.mp.legato.glide(165ms) |
+  }
+
+  measure 19 {
+    lead: c5:2.mf.legato.cresc(68, 98).filter(1350, 3700) d5:4.f.legato e5:4.f.glide(190ms) |
+    pad: [d3 f3 a3 c4]:2.mp.legato.open_voice [e3 g#3 b3 d4]:2.f.legato.open_voice.cresc(70, 100) |
+    buchla: d3:8.mp.fold([1.3, 3.0]) a3:8 f4:8 c4:8 e3:8 b3:8 g#4:8.ratchet(3) d4:8 |
+    bass: d1:2.mf.legato.filter(260, 740) e1:2.f.legato.glide(175ms) |
+  }
+
+  measure 20 {
+    lead: c#5:2.f.legato.vib.detune([24, 82, 30]).filter(1700, 4600) e5:2.f.legato.vib |
+    pad: [a2 e3 a3 c#4]:1.f.legato.open_voice.bend_voice(1, -1, 1).filter(1050, 3400) |
+    buchla: a2:8.mf.fold([1.4, 3.3]) e3:8 c#4:8 a3:8.ratchet(2) e3:8 c#4:8 b3:8 e3:8 |
+    bass: a0:1.f.legato.filter(340, 940).drive([0.26, 0.66]) |
+  }
+
+  measure 21 {
+    lead: a5:2.mf.legato.vowel(["a", "e", "i"]).filter(1650, 4000) g5:4.mf.legato e5:4.mf.glide(170ms) |
+    pad: [a2 c3 e3 g3]:2.mp.legato.open_voice.neg_harm("E") [g2 b2 d3 f#3]:2.mp.legato.open_voice |
+    buchla: a2:8.mp.warp_wave("bend", [0.22, 0.74]) e3:8 c4:8 g3:8 g2:8 d3:8 b3:8.ratchet(2) f#3:8 |
+    bass: a0:2.mf.legato g0:2.mf.legato.glide(160ms) |
+  }
+
+  measure 22 {
+    lead: f5:2.mf.legato.vib.filter(1500, 3600) e5:4.mf.legato d5:4.mf.glide(175ms) |
+    pad: [f2 a2 c3 e3]:2.mp.legato.open_voice [d3 f3 a3 c4]:2.mp.legato.open_voice |
+    buchla: f2:8.mp.fold([1.2, 2.8]) c3:8 a3:8 e3:8.ratchet(3) d3:8 a3:8 f4:8 c4:8 |
+    bass: f1:2.mf.legato d1:2.mf.legato |
+  }
+
+  measure 23 {
+    lead: b4:2.mf.legato.cresc(74, 106).filter(1550, 4300) e5:4.f.legato g#5:4.f.glide(200ms) |
+    pad: [b2 d3 f#3 a3]:2.mf.legato.open_voice [e3 g#3 b3 d4]:2.f.legato.open_voice.cresc(76, 106) |
+    buchla: b2:8.mf.fold([1.6, 3.7]) f#3:8 d4:8 a3:8 e3:8 b3:8 g#4:8.ratchet(4) d4:8 |
+    bass: b0:2.mf.legato.filter(300, 840) e1:2.f.legato.glide(185ms) |
+  }
+
+  measure 24 {
+    lead: a5:1.f.legato.vib.detune([28, 88, 34]).filter(1950, 5100) |
+    pad: [a2 e3 b3 c#4]:1.f.legato.open_voice.bend_voice(1, -1, 1).filter(1200, 3650) |
+    buchla: a2:8.mf.fold([1.5, 3.4]) e3:8 c#4:8 b3:8.ratchet(2) e3:8 c#4:8 a3:8 e3:8 |
+    bass: a0:1.f.legato.filter(380, 1020).drive([0.32, 0.72]) |
+  }
+
+  %% =========================================================================
+  %% SECTION IV (Measures 25-32): F# Minor-Ninth -> E Major / B Major Apotheosis
+  %% =========================================================================
+
+  locator "IV. Four-Voice Apotheosis & Radiant Bloom" at measure 25
+
+  measure 25 {
+    lead: f#5:2.mf.legato.vowel(["u", "o", "a"]).filter(1500, 3800) a5:4.f.legato e5:4.f.glide(175ms) |
+    pad: [f#3 a3 c#4 e4]:2.mp.legato.open_voice [d3 f#3 a3 c#4]:2.mp.legato.open_voice |
+    buchla: f#3:8.mp.fold([1.3, 3.0]) c#4:8 a4:8 e4:8.ratchet(2) d3:8 a3:8 f#4:8 c#4:8 |
+    bass: f#1:2.mf.legato.filter(280, 760) d1:2.mf.legato.glide(165ms) |
+  }
+
+  measure 26 {
+    lead: d#5:2.f.legato.vib.filter(1650, 4200) f#5:4.f.legato b5:4.f.glide(190ms) |
+    pad: [b2 d3 f#3 a3]:2.mf.legato.open_voice [b2 d#3 f#3 a3]:2.f.legato.open_voice.cresc(74, 104) |
+    buchla: b2:8.mf.fold([1.5, 3.4]) f#3:8 d4:8 a3:8 b2:8 f#3:8 d#4:8.ratchet(3) a3:8 |
+    bass: b0:1.f.legato.filter(320, 880).drive([0.28, 0.66]) |
+  }
+
+  measure 27 {
+    lead: g#5:2.f.legato.vib.detune([26, 86, 32]).filter(1850, 4800) e5:4.f.legato b4:4.f.glide(180ms) |
+    pad: [e3 g#3 b3 d#4]:2.f.legato.open_voice [c#3 e3 g#3 b3]:2.mf.legato.open_voice |
+    buchla: e3:8.mf.fold([1.4, 3.2]) b3:8 g#4:8 d#4:8.ratchet(2) c#3:8 g#3:8 e4:8 b3:8 |
+    bass: e1:2.f.legato c#1:2.mf.legato.glide(170ms) |
+  }
+
+  measure 28 {
+    lead: c#5:2.mf.legato.cresc(76, 110).filter(1600, 4500) f#5:4.f.legato a#5:4.ff.glide(210ms) |
+    pad: [f#3 a3 c#4 e4]:2.mf.legato.open_voice [f#3 a#3 c#4 e4]:2.f.legato.open_voice.cresc(78, 110) |
+    buchla: f#3:8.mf.fold([1.6, 3.8]) c#4:8 a4:8 e4:8 f#3:8 c#4:8 a#4:8.ratchet(4) e4:8 |
+    bass: f#1:1.f.legato.filter(350, 980).drive([0.32, 0.74]) |
+  }
+
+  measure 29 {
+    lead: b5:2.ff.legato.vib.detune([30, 92, 36]).filter(2100, 5400) g#5:4.f.legato e5:4.f.glide(190ms) |
+    pad: [b2 d#3 f#3 b3]:2.f.legato.open_voice [e3 g#3 b3 d#4]:2.f.legato.open_voice |
+    buchla: b2:8.f.fold([1.7, 3.9]) f#3:8 d#4:8 b3:8.ratchet(3) e3:8 b3:8 g#4:8 d#4:8 |
+    bass: b0:2.f.legato.filter(380, 1040) e1:2.f.legato.glide(175ms) |
+  }
+
+  measure 30 {
+    lead: f#5:2.f.legato.vib.filter(1800, 4400) d#5:4.mf.legato b4:4.mf.glide(180ms) |
+    pad: [a2 c#3 e3 g#3]:2.mf.legato.open_voice [b2 d#3 f#3 a3]:2.mf.legato.open_voice |
+    buchla: a2:8.mf.fold([1.4, 3.1]) e3:8 c#4:8 g#3:8 b2:8 f#3:8 d#4:8.ratchet(2) a3:8 |
+    bass: a0:2.mf.legato b0:2.mf.legato.glide(170ms) |
+  }
+
+  measure 31 {
+    lead: g#5:2.f.legato.vib.detune([24, 78, 26]).filter(1750, 4200) f#5:4.mf.legato e5:4.mp.glide(200ms) |
+    pad: [e3 g#3 b3 d#4]:1.mf.legato.open_voice.bend_voice(1, -1, 1).filter(1100, 2900) |
+    buchla: e3:8.mp.fold([1.3, 2.6]) b3:8 g#4:8 d#4:8 b3:8 g#4:8 f#4:8 b3:8 |
+    bass: e1:1.mf.legato.filter(320, 780) |
+  }
+
+  measure 32 {
+    lead: e5:1.mp.legato.vib.dim(84, 36).filter(2200, 950).fermata |
+    pad: [e3 g#3 b3 f#4]:1.mp.legato.open_voice.dim(82, 34).filter(1800, 750).fermata |
+    buchla: e3:4.mp.fold([1.2, 1.8]) b3:4 g#4:4 e5:4.p.fermata |
+    bass: e1:1.mp.legato.dim(86, 36).filter(620, 220).fermata |
   }
 }`,
   },
