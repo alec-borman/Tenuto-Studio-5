@@ -168,5 +168,63 @@ describe('TDB-727 & TDB-728: Fix Windows Electron Piano Fallback, Prioritize Nat
       expect(rms).toBeGreaterThan(0.02);
     }
   });
+
+  it('TDB-752: folds multiline def declarations with group=/groove= attributes, folds group FX chains, infers :16 steps for (k):3/8 r:2, applies Vocoder FX to prebaked synth buffers, and compiles all 30 measures of Crucible of Voltage & Gesture with zero barline drift', async () => {
+    const { PRESET_SCORES } = await import('../src/presets/presetScores');
+    const { PlaybackOrchestrator } = await import('../src/audio/PlaybackOrchestrator');
+    const parser = new DocumentParser();
+    const engine = new StudioAudioEngine();
+
+    const cruciblePreset = PRESET_SCORES.find((p) => p.id === 'crucible_of_voltage_and_gesture');
+    expect(cruciblePreset).toBeDefined();
+
+    const score = parser.compile(cruciblePreset!.code);
+    expect(score.defs.length).toBeGreaterThanOrEqual(9);
+
+    // 1. Verify multiline def lines starting with group="synth_bus" groove="tape_pocket" folded properly
+    const seqDef = score.defs.find((d) => d.id === 'seq');
+    expect(seqDef?.groupId).toBe('synth_bus');
+    expect(seqDef?.groove).toBe('tape_pocket');
+    expect(seqDef?.volume).toBe(82);
+    expect(seqDef?.fx).toContain('fet_fast_limiter');
+
+    // 2. Verify multiline group synth_bus folded its .fx(...) chain
+    const synthGroup = score.groups?.find((g) => g.id === 'synth_bus');
+    expect(synthGroup).toBeDefined();
+    expect(synthGroup?.fx).toContain('dual_bus_silk_sum');
+    expect(synthGroup?.fx).toContain('glue_compressor');
+    expect(synthGroup?.fx).toContain('mastering_clip_limiter');
+
+    // 3. Verify all 30 measures align strictly to 1.0 whole note per measure (M30 starts at whole note 29.0)
+    const m30Events = score.events.filter((e) => e.measureNumber === 30);
+    expect(m30Events.length).toBeGreaterThan(0);
+    for (const ev of m30Events) {
+      const startWhole = ev.startTime!.numerator / ev.startTime!.denominator;
+      expect(startWhole).toBeCloseTo(29.0, 4);
+    }
+
+    // 4. Verify PlaybackOrchestrator does not throw on >255 events
+    const mockTcal = { requestAudioBuffer: () => Promise.resolve() } as any;
+    const mockAudioCtx = {
+      sampleRate: 48000,
+      allocateSharedMemory: (len: number) => new ArrayBuffer(8 + len * 32),
+    } as any;
+    const orchestrator = new PlaybackOrchestrator(mockTcal, mockAudioCtx);
+    await expect(orchestrator.compileAndPlay(score.events)).resolves.toBeUndefined();
+
+    // 5. Verify vox track with .fx(vocoder) and .lyric(...) is routed to ContinuousSynthEngine and baked with Vocoder FX
+    const voxEvents = (engine as any)
+      .buildScheduledTimeline(score)
+      .filter((t: any) => t.event.trackId === 'vox');
+    expect(voxEvents.length).toBeGreaterThan(0);
+    expect(
+      ContinuousSynthEngine.isContinuousSynthPatch(
+        voxEvents[0].patch,
+        voxEvents[0].style,
+        voxEvents[0].event.physics
+      )
+    ).toBe(true);
+  });
 });
+
 

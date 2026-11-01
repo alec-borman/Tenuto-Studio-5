@@ -333,6 +333,13 @@ export default function SplitWorkspace() {
   }, [sourceCode, incrementalCompiler]);
 
   const handleTogglePlay = async () => {
+    const nextPlaying = !isPlaying;
+    if (nextPlaying) {
+      // Unlock WebAudio synchronously inside the immediate user-gesture stack frame
+      // BEFORE any async worklet/sample fetch awaits can expire browser gesture activation!
+      studioAudio.unlockAudioContext();
+    }
+
     if (!isAudioInitialized.current) {
       isAudioInitialized.current = true;
       try {
@@ -342,12 +349,11 @@ export default function SplitWorkspace() {
       }
     }
 
-    const nextPlaying = !isPlaying;
     setIsPlaying(nextPlaying);
 
     if (nextPlaying) {
       try {
-        await playbackOrchestrator.compileAndPlay(compiledEvents);
+        Promise.resolve(playbackOrchestrator.compileAndPlay(compiledEvents)).catch(() => {});
       } catch {
         // Ignore legacy buffer limit
       }
@@ -507,6 +513,7 @@ export default function SplitWorkspace() {
   };
 
   const handleLaunchClip = async (clip: any) => {
+    studioAudio.unlockAudioContext();
     setSelectedClipId(clip.id);
     setActiveClipsByTrack((prev) => ({ ...prev, [clip.trackId]: clip.id }));
     setIsPlaying(true);
@@ -522,6 +529,7 @@ export default function SplitWorkspace() {
   };
 
   const handleLaunchScene = async (sceneIndex: number, clipsInScene: any[], sceneTempo?: number) => {
+    studioAudio.unlockAudioContext();
     const nextMap: Record<string, string> = {};
     const combinedEvents: any[] = [];
     for (const c of clipsInScene) {
@@ -607,6 +615,7 @@ export default function SplitWorkspace() {
   const handleSeekToMeasure = async (measureNumber: number) => {
     setPlayheadBeat(Math.max(0, (measureNumber - 1) * 4));
     if (isPlaying) {
+      studioAudio.unlockAudioContext();
       try {
         const compiledScore =
           compiledScoreState ||

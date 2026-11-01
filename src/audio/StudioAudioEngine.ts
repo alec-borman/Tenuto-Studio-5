@@ -81,6 +81,8 @@ export class StudioAudioEngine {
   private reverbWetGain: GainNode | null = null;
   private compressorNode: DynamicsCompressorNode | null = null;
   private activeVoices: Set<ActiveVoiceCleanup> = new Set();
+  private activeVoiceMeta: Map<ActiveVoiceCleanup, { startTime: number; endTime: number }> =
+    new Map();
   private activeChokeGroups: Map<string, ActiveVoiceCleanup> = new Map();
   private rafId: number | null = null;
   private schedulerIntervalId: number | null = null;
@@ -132,9 +134,43 @@ export class StudioAudioEngine {
     if (!this.ctx || (this.ctx.state as string) === 'closed') {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       this.ctx = new AudioCtx();
+      this.rebuildMasterChain(this.ctx);
+    } else if (!this.masterGain || !this.dryBus || !this.drumBus) {
+      this.rebuildMasterChain(this.ctx);
+    } else {
+      this.masterGain.gain.setValueAtTime(
+        1.35 * this.masterVolumeScalar,
+        this.ctx.currentTime || 0
+      );
     }
-    this.rebuildMasterChain(this.ctx);
     return this.ctx;
+  }
+
+  /**
+   * Synchronously creates and unlocks the WebAudio `AudioContext` inside the immediate
+   * DOM click/keydown user-gesture stack frame before any `await` boundary can expire
+   * Chrome/Safari/Electron user-activation permissions.
+   */
+  public unlockAudioContext(): AudioContext | null {
+    try {
+      const ctx = this.ensureContext();
+      if (ctx.state === 'suspended' || (ctx.state as string) === 'interrupted') {
+        const resumePromise = ctx.resume();
+        if (resumePromise && typeof resumePromise.catch === 'function') {
+          resumePromise.catch(() => {});
+        }
+      }
+      if (typeof ctx.createBuffer === 'function' && typeof ctx.createBufferSource === 'function') {
+        const silentBuf = ctx.createBuffer(1, 1, ctx.sampleRate || 44100);
+        const silentSrc = ctx.createBufferSource();
+        silentSrc.buffer = silentBuf;
+        silentSrc.connect(ctx.destination);
+        silentSrc.start(0);
+      }
+      return ctx;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -1127,8 +1163,8 @@ export class StudioAudioEngine {
     timeline: ScheduledNoteEvent[],
     tempoBpm: number,
     fromSec: number = 0,
-    toSec: number = Number.POSITIVE_INFINITY,
-    maxVoicesToBake: number = 28
+    toSec: number = 14.0,
+    maxVoicesToBake: number = 24
   ): void {
     if (typeof ctx.createBuffer !== 'function') return;
     const sr = ctx.sampleRate || 44100;
@@ -1177,6 +1213,13 @@ export class StudioAudioEngine {
         idx + 1,
         item
       );
+      const activeFxChain = AbletonAudioFxEngine.resolveActiveFxChain(item.def, item.event);
+      if (activeFxChain.length > 0) {
+        AbletonAudioFxEngine.applyFxChainToSlice(left, right, 0, frames, sr, activeFxChain, {
+          lyric: item.event.physics?.lyric,
+          carrierFreqHz: item.freq,
+        });
+      }
       item.prebakedBuffer = buf;
       bakedCount++;
       if (bakedCount >= maxVoicesToBake) break;
@@ -1379,12 +1422,26 @@ export class StudioAudioEngine {
   ): void {
     if (!this.dryBus || !this.drumBus) return;
 
-    // Soft-steal oldest voice with a 22ms de-clicking fade-out if active voices exceed 72
-    while (this.activeVoices.size >= 72) {
-      const oldest = this.activeVoices.values().next().value;
-      if (!oldest) break;
-      this.activeVoices.delete(oldest);
-      oldest.fadeOutAndStop(ctx.currentTime);
+    // Soft-steal the voice with the shortest remaining duration when active voices exceed 128
+    // so short 16th-note percussion/ratchet bursts never kill long sustained sub-bass or pad holds.
+    while (this.activeVoices.size >= 128) {
+      let victim: ActiveVoiceCleanup | undefined;
+      let earliestEndTime = Infinity;
+      for (const candidate of this.activeVoices) {
+        const meta = this.activeVoiceMeta.get(candidate);
+        const endTime = meta ? meta.endTime : 0;
+        if (endTime < earliestEndTime) {
+          earliestEndTime = endTime;
+          victim = candidate;
+        }
+      }
+      if (!victim) {
+        victim = this.activeVoices.values().next().value;
+      }
+      if (!victim) break;
+      this.activeVoices.delete(victim);
+      this.activeVoiceMeta.delete(victim);
+      victim.fadeOutAndStop(ctx.currentTime);
     }
 
     const safeStart = Math.max(ctx.currentTime + 0.008, absStartSec);
@@ -1479,6 +1536,10 @@ export class StudioAudioEngine {
         item.endAmp
       );
       this.activeVoices.add(cleanup);
+      this.activeVoiceMeta.set(cleanup, {
+        startTime: safeStart,
+        endTime: safeStart + durSec + 0.25,
+      });
       return;
     }
 
@@ -1502,6 +1563,21 @@ export class StudioAudioEngine {
             item.noteIndexInTrack ?? 0,
             item
           );
+          const activeFxChain = AbletonAudioFxEngine.resolveActiveFxChain(item.def, item.event);
+          if (activeFxChain.length > 0) {
+            AbletonAudioFxEngine.applyFxChainToSlice(
+              chL,
+              chR,
+              0,
+              voiceFrames,
+              sr,
+              activeFxChain,
+              {
+                lyric: item.event.physics?.lyric,
+                carrierFreqHz: item.freq,
+              }
+            );
+          }
           item.prebakedBuffer = buf;
         }
         const src = ctx.createBufferSource();
@@ -1523,6 +1599,7 @@ export class StudioAudioEngine {
             if (cleaned) return;
             cleaned = true;
             this.activeVoices.delete(cleanup);
+            this.activeVoiceMeta.delete(cleanup);
             try {
               envGain.gain.cancelScheduledValues?.(now);
               envGain.gain.setTargetAtTime?.(0.0001, now, 0.008);
@@ -1535,6 +1612,7 @@ export class StudioAudioEngine {
             if (cleaned) return;
             cleaned = true;
             this.activeVoices.delete(cleanup);
+            this.activeVoiceMeta.delete(cleanup);
             try {
               src.stop();
               src.disconnect();
@@ -1546,6 +1624,10 @@ export class StudioAudioEngine {
           },
         };
         this.activeVoices.add(cleanup);
+        this.activeVoiceMeta.set(cleanup, {
+          startTime: safeStart,
+          endTime: safeStart + durSec + 0.28,
+        });
         src.onended = () => cleanup.stopAndDisconnect();
         return;
       }
@@ -1576,6 +1658,10 @@ export class StudioAudioEngine {
         item.event.physics
       );
       this.activeVoices.add(cleanup);
+      this.activeVoiceMeta.set(cleanup, {
+        startTime: safeStart,
+        endTime: safeStart + durSec + 0.35,
+      });
       return;
     }
 
@@ -1601,6 +1687,10 @@ export class StudioAudioEngine {
         item.event.physics
       );
       this.activeVoices.add(cleanup);
+      this.activeVoiceMeta.set(cleanup, {
+        startTime: safeStart,
+        endTime: safeStart + durSec + 0.35,
+      });
       return;
     }
 
@@ -1852,6 +1942,7 @@ export class StudioAudioEngine {
         if (cleaned) return;
         cleaned = true;
         this.activeVoices.delete(cleanup);
+        this.activeVoiceMeta.delete(cleanup);
         try {
           env.gain.cancelScheduledValues?.(now);
           env.gain.setTargetAtTime?.(0.0001, now, 0.006);
@@ -1864,6 +1955,7 @@ export class StudioAudioEngine {
         if (cleaned) return;
         cleaned = true;
         this.activeVoices.delete(cleanup);
+        this.activeVoiceMeta.delete(cleanup);
         try {
           src.stop();
         } catch {
@@ -1881,6 +1973,7 @@ export class StudioAudioEngine {
     };
 
     this.activeVoices.add(cleanup);
+    this.activeVoiceMeta.set(cleanup, { startTime: t0, endTime: stopAt });
     src.onended = () => cleanup.stopAndDisconnect();
   }
 
@@ -2054,6 +2147,7 @@ export class StudioAudioEngine {
         if (cleaned) return;
         cleaned = true;
         this.activeVoices.delete(cleanup);
+        this.activeVoiceMeta.delete(cleanup);
         ornFund.stopExtra();
         try {
           oscFund.stop();
@@ -2076,6 +2170,7 @@ export class StudioAudioEngine {
     };
 
     this.activeVoices.add(cleanup);
+    this.activeVoiceMeta.set(cleanup, { startTime: t0, endTime: stopAt });
     oscFund.onended = () => cleanup.stopAndDisconnect();
   }
 
@@ -2198,6 +2293,7 @@ export class StudioAudioEngine {
         if (cleaned) return;
         cleaned = true;
         this.activeVoices.delete(cleanup);
+        this.activeVoiceMeta.delete(cleanup);
         orn1.stopExtra();
         orn2.stopExtra();
         try {
@@ -2221,6 +2317,7 @@ export class StudioAudioEngine {
     };
 
     this.activeVoices.add(cleanup);
+    this.activeVoiceMeta.set(cleanup, { startTime: t0, endTime: stopAt });
     osc1.onended = () => cleanup.stopAndDisconnect();
   }
 
@@ -2624,13 +2721,25 @@ export class StudioAudioEngine {
 
     let cleaned = false;
     const cleanup: ActiveVoiceCleanup = {
-      fadeOutAndStop: (_now: number) => {
+      fadeOutAndStop: (stopAtSec: number) => {
+        if (cleaned) return;
+        try {
+          const nowTime = (ctx as AudioContext).currentTime || 0;
+          if (stopAtSec > nowTime + 0.01) {
+            gain.gain.setTargetAtTime?.(0.0001, stopAtSec, 0.006);
+            src.stop(stopAtSec + 0.025);
+            return;
+          }
+        } catch {
+          // Fall through to immediate cleanup
+        }
         cleanup.stopAndDisconnect();
       },
       stopAndDisconnect: () => {
         if (cleaned) return;
         cleaned = true;
         this.activeVoices.delete(cleanup);
+        this.activeVoiceMeta.delete(cleanup);
         try {
           src.stop();
         } catch {
@@ -2647,6 +2756,7 @@ export class StudioAudioEngine {
       },
     };
     this.activeVoices.add(cleanup);
+    this.activeVoiceMeta.set(cleanup, { startTime: startSec, endTime: startSec + dur });
     src.onended = () => cleanup.stopAndDisconnect();
     return cleanup;
   }
@@ -2805,9 +2915,9 @@ export class StudioAudioEngine {
     await this.soundfontLoader.prewarmScoreSamples(ctx, score);
     if (!this.isPlaying) return;
 
-    // Rolling JIT Prebake: pre-render only the first 4.0 seconds before starting the clock
-    // so Play starts instantaneously without freezing the browser on 16-to-60 measure synth scores
-    this.prebakeTimelineWindow(ctx, this.scheduledTimeline, this.tempoBpm, 0, 4.0, 24);
+    // Rolling JIT Prebake: pre-render only a compact 2.5s window (max 10 voices) before starting
+    // the clock so Play starts in <15ms while the 25ms lookahead scheduler bakes the rest ahead.
+    this.prebakeTimelineWindow(ctx, this.scheduledTimeline, this.tempoBpm, 0, 2.5, 10);
 
     const baseStart = ctx.currentTime + 0.06;
     this.startContextTime = baseStart;
@@ -2856,10 +2966,13 @@ export class StudioAudioEngine {
         const latenessSec = elapsed - item.startSec;
         if (latenessSec <= 0.04) {
           this.triggerRealtimeVoice(this.ctx, item, this.startContextTime + item.startSec, 0);
-        } else if (item.durSec - latenessSec > 0.06) {
+        } else {
           // If a main-thread GC or UI frame spike delayed the timer past item.startSec,
-          // recover the sustained note immediately from its in-note offset instead of dropping the measure!
-          this.triggerRealtimeVoice(this.ctx, item, now + 0.008, latenessSec);
+          // recover both short drum/ratchet hits and sustained notes immediately instead of dropping them!
+          const recoverOffset = item.style === 'grid' || item.gridKey ? 0 : latenessSec;
+          if (item.durSec - recoverOffset >= 0.02) {
+            this.triggerRealtimeVoice(this.ctx, item, now + 0.006, recoverOffset);
+          }
         }
         this.nextScheduleIndex++;
       }
@@ -2879,27 +2992,34 @@ export class StudioAudioEngine {
 
     const baseTempo = this.tempoBpm;
     const tempoMap = score.meta?.tempoMap;
+    let lastVisualUpdateSec = -1;
 
     const tickVisualProgress = () => {
       if (!this.isPlaying || !this.ctx) return;
-      const hwLatencySec =
-        Number((this.ctx as any).outputLatency) ||
-        Number((this.ctx as any).baseLatency) ||
-        0;
-      const rawElapsed = Math.max(0, this.ctx.currentTime - this.startContextTime - hwLatencySec);
-      const audibleScoreSec = Math.max(0, rawElapsed - countInSec);
-      const currentWhole = this.secondsToWholeNote(audibleScoreSec, baseTempo, tempoMap);
-      const currentBeat = Math.min(this.totalQuarterBeats, currentWhole * 4);
-      const activeTempo = this.getTempoAtWholeNote(currentWhole, baseTempo, tempoMap);
+      const now = this.ctx.currentTime;
+      // Throttle React playhead state updates to ~30fps (32ms) so 1,000+ node SVG/Canvas views
+      // never starve the 25ms WebAudio scheduler on the main thread.
+      if (now - lastVisualUpdateSec >= 0.032) {
+        lastVisualUpdateSec = now;
+        const hwLatencySec =
+          Number((this.ctx as any).outputLatency) ||
+          Number((this.ctx as any).baseLatency) ||
+          0;
+        const rawElapsed = Math.max(0, now - this.startContextTime - hwLatencySec);
+        const audibleScoreSec = Math.max(0, rawElapsed - countInSec);
+        const currentWhole = this.secondsToWholeNote(audibleScoreSec, baseTempo, tempoMap);
+        const currentBeat = Math.min(this.totalQuarterBeats, currentWhole * 4);
+        const activeTempo = this.getTempoAtWholeNote(currentWhole, baseTempo, tempoMap);
 
-      this.onProgress?.({
-        isPlaying: true,
-        currentQuarterBeat: currentBeat,
-        totalQuarterBeats: this.totalQuarterBeats,
-        currentTimeSec: rawElapsed,
-        totalDurationSec: this.scoreDurationSec,
-        currentTempoBpm: activeTempo,
-      });
+        this.onProgress?.({
+          isPlaying: true,
+          currentQuarterBeat: currentBeat,
+          totalQuarterBeats: this.totalQuarterBeats,
+          currentTimeSec: rawElapsed,
+          totalDurationSec: this.scoreDurationSec,
+          currentTempoBpm: activeTempo,
+        });
+      }
 
       this.rafId = requestAnimationFrame(tickVisualProgress);
     };
@@ -2922,6 +3042,7 @@ export class StudioAudioEngine {
       voice.stopAndDisconnect();
     }
     this.activeVoices.clear();
+    this.activeVoiceMeta.clear();
     this.activeChokeGroups.clear();
 
     if (notify) {

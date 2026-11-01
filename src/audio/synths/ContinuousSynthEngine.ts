@@ -304,6 +304,13 @@ export class ContinuousSynthEngine {
       return true;
     }
     if (s === 'grid') return false;
+    if (
+      s === 'synth' &&
+      (physics?.lyric !== undefined ||
+        physics?.fx?.some((f) => f.type.toLowerCase() === 'vocoder'))
+    ) {
+      return true;
+    }
     return Boolean(
       physics?.detuneMod ||
         physics?.lpg ||
@@ -609,6 +616,7 @@ export class ContinuousSynthEngine {
     const aliasStepHold = aliasingPct > 0 ? Math.max(2, Math.floor(1 + (aliasingPct / 100) * 14)) : 1;
     const chordAmpAvg =
       chordNotes.reduce((acc, n) => acc + n.amp, 0) / Math.max(1, numNotes);
+    const dspState = new Float64Array(5);
 
     // Process in 128-sample Control-Rate (k-rate) blocks
     for (let blockStart = 0; blockStart < len; blockStart += CONTROL_BLOCK_SIZE) {
@@ -934,6 +942,49 @@ export class ContinuousSynthEngine {
 
       const isTriangleCore = isHauntologyPad || isBuchlaKrell || isBuchla200e || isPolyBrute;
       const isFastOscLoop = !hasPwm && fmPhaseInc === 0;
+      const isFastSawPath =
+        isFastOscLoop &&
+        !isTriangleCore &&
+        !hasWaveMirror &&
+        !hasWaveBend &&
+        !(hasBuchlaFold && foldDrive > 1.01) &&
+        aliasStepHold <= 1 &&
+        ringPhaseInc === 0 &&
+        activeNoise <= 0.005 &&
+        !combBufL &&
+        driveScalar <= 1.01;
+
+      if (isFastSawPath) {
+        dspState[0] = subPhase;
+        dspState[1] = lpL;
+        dspState[2] = bpL;
+        dspState[3] = lpR;
+        dspState[4] = bpR;
+        this.renderFastSawBlock(
+          trackLeft,
+          trackRight,
+          startFrame + blockStart,
+          blockEnd - blockStart,
+          totalOscs,
+          oscPhases,
+          oscPhaseIncs,
+          oscGainL,
+          oscGainR,
+          subLevel,
+          subPhaseInc,
+          qDamp,
+          svfHalfF,
+          airPct * 0.42,
+          blockFinalGain,
+          dspState
+        );
+        subPhase = dspState[0];
+        lpL = dspState[1];
+        bpL = dspState[2];
+        lpR = dspState[3];
+        bpR = dspState[4];
+        continue;
+      }
 
       // 4. Tight Branchless Inner Sample Loop (128 samples)
       for (let i = blockStart; i < blockEnd; i++) {
@@ -1114,6 +1165,91 @@ export class ContinuousSynthEngine {
         trackRight[startFrame + i] = copyR[i - delayFrames];
       }
     }
+  }
+
+  private static renderFastSawBlock(
+    trackLeft: Float32Array,
+    trackRight: Float32Array,
+    absStart: number,
+    blockLen: number,
+    totalOscs: number,
+    oscPhases: Float32Array,
+    oscPhaseIncs: Float32Array,
+    oscGainL: Float32Array,
+    oscGainR: Float32Array,
+    subLevel: number,
+    subPhaseInc: number,
+    qDamp: number,
+    svfHalfF: number,
+    airScale: number,
+    blockFinalGain: number,
+    dspState: Float64Array
+  ): void {
+    let subPhase = dspState[0];
+    let lpL = dspState[1];
+    let bpL = dspState[2];
+    let lpR = dspState[3];
+    let bpR = dspState[4];
+    const subAmp = subLevel * 0.52;
+
+    for (let k = 0; k < blockLen; k++) {
+      let sigL = 0;
+      let sigR = 0;
+      for (let o = 0; o < totalOscs; o++) {
+        let ph = oscPhases[o] + oscPhaseIncs[o];
+        if (ph >= 1) ph -= 1;
+        oscPhases[o] = ph;
+        const oscSample = 2 * ph - 1;
+        sigL += oscSample * oscGainL[o];
+        sigR += oscSample * oscGainR[o];
+      }
+
+      if (subAmp > 0.005) {
+        subPhase += subPhaseInc;
+        if (subPhase >= 1) subPhase -= 1;
+        const sp = subPhase * 2 - 1;
+        const subSample = 4 * sp * (1 - Math.abs(sp)) * subAmp;
+        sigL += subSample;
+        sigR += subSample;
+      }
+
+      let hpL = sigL - lpL - qDamp * bpL;
+      bpL += svfHalfF * hpL;
+      lpL += svfHalfF * bpL;
+      hpL = sigL - lpL - qDamp * bpL;
+      bpL += svfHalfF * hpL;
+      lpL += svfHalfF * bpL;
+      if (bpL > 4.0) bpL = 4.0;
+      else if (bpL < -4.0) bpL = -4.0;
+
+      let hpR = sigR - lpR - qDamp * bpR;
+      bpR += svfHalfF * hpR;
+      lpR += svfHalfF * bpR;
+      hpR = sigR - lpR - qDamp * bpR;
+      bpR += svfHalfF * hpR;
+      lpR += svfHalfF * bpR;
+      if (bpR > 4.0) bpR = 4.0;
+      else if (bpR < -4.0) bpR = -4.0;
+
+      let outL = lpL;
+      let outR = lpR;
+      if (airScale > 0.004) {
+        const aL = hpL * 2.2;
+        const aR = hpR * 2.2;
+        outL += (aL / (1 + Math.abs(aL))) * airScale;
+        outR += (aR / (1 + Math.abs(aR))) * airScale;
+      }
+
+      const absIdx = absStart + k;
+      trackLeft[absIdx] += outL * blockFinalGain;
+      trackRight[absIdx] += outR * blockFinalGain;
+    }
+
+    dspState[0] = subPhase;
+    dspState[1] = lpL;
+    dspState[2] = bpL;
+    dspState[3] = lpR;
+    dspState[4] = bpR;
   }
 
   public static applyTrackBassMonoCrossover(

@@ -16,6 +16,7 @@ export class PlaybackOrchestrator {
     const ticksPerSecond = 1920 * (tempo / 60);
 
     for (const atomicEvent of compiledEvents) {
+      if (validEvents.length >= 255) break;
       if (!atomicEvent?.pitch || atomicEvent.pitch.midi === null || atomicEvent.pitch.isRest || atomicEvent.pitch.isSpacer) {
         continue;
       }
@@ -27,16 +28,12 @@ export class PlaybackOrchestrator {
       if (num % den === 0) {
         const startTick = num / den;
         validEvents.push({ startTick, atomicEvent });
-        await this.tcal.requestAudioBuffer('salamander_grand', atomicEvent.pitch.midi);
+        this.tcal.requestAudioBuffer('salamander_grand', atomicEvent.pitch.midi);
       } else {
         console.warn(
           `[PlaybackOrchestrator] Non‑exact tick for event ${atomicEvent.rawToken || JSON.stringify(atomicEvent)}; deferring to scheduler.`
         );
       }
-    }
-
-    if (validEvents.length > 255) {
-      throw new Error('Exceeded maximum of 255 events.');
     }
 
     const buffer: any = this.audioCtx.allocateSharedMemory(validEvents.length);

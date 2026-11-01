@@ -213,13 +213,13 @@ export class DocumentParser {
 
   /**
    * Folds indented continuation lines (e.g. wrapped `vol=`, `detune=`, `sends=`, `.fx(...)` lines)
-   * onto their parent `def`, `def_return`, or `return` declaration line.
+   * onto their parent `def`, `def_return`, `return`, or `group` declaration line.
    */
   private foldMultilineDeclarations(cleanSource: string): string[] {
     const rawLines = cleanSource.replace(/\r\n?/g, '\n').split('\n');
     const folded: string[] = [];
     const topLevelStartRegex =
-      /^(?:tenuto|meta|def|def_return|return|group|groove|locator|measure|scene|clip|macro|var|\$[a-zA-Z0-9_]+|\})\b/i;
+      /^(?:tenuto|meta|def|def_return|return|group|groove|locator|measure|scene|clip|macro|var|\$[a-zA-Z0-9_]+)(?=\s+(?!=)|\{|$)|^\}/i;
 
     for (const rawLine of rawLines) {
       const trimmed = rawLine.trim();
@@ -229,7 +229,7 @@ export class DocumentParser {
       const withoutInlineDicts = trimmed.replace(/@\{[^}]*\}/g, '');
       if (
         prevIdx >= 0 &&
-        /^(?:def|def_return|return)\s+/i.test(folded[prevIdx]) &&
+        /^(?:def|def_return|return|group)\s+/i.test(folded[prevIdx]) &&
         !topLevelStartRegex.test(trimmed) &&
         !withoutInlineDicts.includes('{') &&
         !/^[a-zA-Z0-9_]+\s*:/.test(withoutInlineDicts)
@@ -515,7 +515,9 @@ export class DocumentParser {
           const pitchToken = m[1];
           const hits = parseInt(m[2], 10);
           const steps = parseInt(m[3], 10);
-          const stepDenom = m[4] ? m[4] : String(steps);
+          const defaultStepDenom =
+            !m[4] && steps === 8 && expandedTokens.length > 1 ? '16' : String(steps);
+          const stepDenom = m[4] ? m[4] : defaultStepDenom;
           const modSuffix = m[5] || '';
 
           const pattern = this.expandEuclideanPattern(hits, steps);
@@ -1366,7 +1368,7 @@ export class DocumentParser {
     }
 
     // 5b. Extract group definitions (both single-line tracks=[...] and block group { ... })
-    for (const rawLine of lines) {
+    for (const rawLine of declarationLines) {
       const line = rawLine.trim();
       const singleGroupMatch = line.match(
         /^group\s+([a-zA-Z0-9_]+)\s*(?:"([^"]*)")?\s*tracks\s*=\s*\[([^\]]*)\]\s*(.*)$/i

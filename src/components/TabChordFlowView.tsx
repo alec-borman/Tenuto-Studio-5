@@ -2269,12 +2269,16 @@ export default function TabChordFlowView({
                               stroke={activePalette.playedLineColor}
                               strokeWidth={3.4}
                               strokeLinecap="butt"
-                              style={{
-                                clipPath: `inset(0px ${Math.max(
-                                  0,
-                                  timelineWidthPx - playheadX
-                                )}px 0px 0px)`,
-                              }}
+                              style={
+                                playheadX < xStart + wPx
+                                  ? {
+                                      clipPath: `inset(0px ${Math.max(
+                                        0,
+                                        timelineWidthPx - playheadX
+                                      )}px 0px 0px)`,
+                                    }
+                                  : undefined
+                              }
                             />
                           )}
 

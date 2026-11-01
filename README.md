@@ -6,7 +6,7 @@
 
   [![Live Web Studio](https://img.shields.io/badge/Try_Live_Web_Studio-tenuto--studio--5--production.up.railway.app-10b981?style=for-the-badge)](https://tenuto-studio-5-production.up.railway.app/)
 
-  [![Release: v5.4.2](https://img.shields.io/badge/Release-v5.4.2-2563eb.svg)](./SPEC.md)
+  [![Release: v5.4.4](https://img.shields.io/badge/Release-v5.4.4-2563eb.svg)](./SPEC.md)
   [![Grammar Guide: TENUTO_GRAMMAR.md](https://img.shields.io/badge/Grammar_Guide-TENUTO__GRAMMAR.md-10b981.svg)](./TENUTO_GRAMMAR.md)
   [![Platform: macOS .pkg | Windows .exe | Web](https://img.shields.io/badge/Platform-macOS_.pkg_%7C_Windows_.exe_%7C_Web-8b5cf6.svg)](#installation--desktop-packaging)
   [![License: MIT](https://img.shields.io/badge/License-MIT-64748b.svg)](LICENSE)
@@ -24,7 +24,7 @@ Launch **Tenuto Studio 5** immediately in your browser with zero installation:
 
 ## Overview
 
-**Tenuto Studio 5** (`v5.4.2`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
+**Tenuto Studio 5** (`v5.4.4`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
 
 In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of Truth**:
 * **Code Projects the Entire Studio:** Writing or pasting `.ten` code (including raw Markdown blocks straight from Gemini, Claude, or ChatGPT) immediately compiles into four synchronized visual views (**Scrolling Piano Roll**, **Tab / Chord Flow**, **Session View Clip Matrix**, and **Arrangement View Timeline**), three interactive bottom studio docks (**Console Mixer**, **Device Chain & 8-Macro Rack**, and **Context Note/Score Inspector**), and a real-time WebAudio / PCM DSP engine.
@@ -171,7 +171,7 @@ npm install
 npm run electron:build:mac
 
 # 3. Run the macOS installer
-open release/"Tenuto Studio 5-5.4.2-arm64.pkg"
+open release/"Tenuto Studio 5-5.4.4-arm64.pkg"
 ```
 
 ### Option 1B: Windows Desktop App (`.exe` NSIS Setup Installer)
@@ -188,7 +188,7 @@ npm install
 npm run electron:build:win
 
 # 3. Launch the generated Setup .exe inside the release/ folder
-start "" "release\Tenuto Studio 5 Setup 5.4.2.exe"
+start "" "release\Tenuto Studio 5 Setup 5.4.4.exe"
 ```
 
 ### Option 2: Local Web Development
@@ -344,8 +344,9 @@ npx repomix
 
 ---
 
-## Release Notes (`v5.4.2`)
+## Release Notes (`v5.4.4`)
 
+* **`v5.4.4`:** Fixed web and desktop real-time playback dropouts across simple sketches and the 30-measure *"Crucible of Voltage & Gesture"* stress test: added synchronous `unlockAudioContext()` user-gesture unlocking before async worklet/sample initialization, guarded `ensureContext()` so `rebuildMasterChain()` only builds the master bus and impulse response once per `AudioContext`, fixed `foldMultilineDeclarations` in `DocumentParser.ts` when continuation lines begin with `group=` or `groove=` and folded multi-line `.fx(...)` chains onto `group` buses, capped `PlaybackOrchestrator` at 255 events without throwing or yielding per-note microtasks, applied track/event `.fx(...)` chains (including the 20-Band Talking Vocoder) to real-time prebaked synth buffers, upgraded polyphony management to a 128-voice duration-aware pool, fixed lookahead Drum Rack hi-hat choke timing (`oh` -> `ch`), and throttled visual playhead updates to 30fps while restricting `TabChordFlowView` `clipPath` updates to playhead-straddling notes.
 * **`v5.4.2`:** Standardized all user-facing UI labels, synth engine display specifications, preset scores, `TENUTO_GRAMMAR.md`, and `README.md` onto vendor-neutral acoustic and electrical-engineering terminology (`morph_analog_12`, `vintage_ladder_8`, `hybrid_motor_12`, `binaural_hybrid_20`, `state_variable_8`, `vintage_poly_10`, `stepped_wavetable_24`, `spectral_hybrid_16`, `granular_workstation_80`, `west_coast_200`, `ribbon_cluster_8`, `tape_nostalgia_pad`, `cybernetic_eoc`, `.tri_fold()`, `.steiner_drive()`, `.discrete_drive()`, `.touch_travel()`, `.eoc_cycle()`, `non_octave_alpha/beta/gamma`, `transformer_color_adc`, `dual_bus_silk_sum`, `fet_fast_limiter`, `vari_mu_tube_comp`, `mastering_clip_limiter`, `spectral_pitch_harmonizer`, `true_stereo_hall_reverb`) while preserving backwards-compatible parser and DSP aliases.
 * **`v5.4.0`:** Added 10 Virtual Analog, Hybrid & West Coast Synthesizer Topologies (`morph_analog_12`, `vintage_ladder_8`, `hybrid_motor_12`, `binaural_hybrid_20`, `state_variable_8`, `vintage_poly_10`, `stepped_wavetable_24`, `spectral_hybrid_16`, `granular_workstation_80`, `west_coast_200`), 9 circuit & 3D MPE modifiers (`.lpg("both" | "vca" | "lp", decayMs)` vactrol low-pass gate, `.tri_fold(pct)`, `.steiner_drive(pct)`, `.discrete_drive(pct)`, `.binaural(cents)`, `.spin(rateHz)` $360^\circ$ 4-quadrant VCA rotation, `.morph()`, `.touch_travel()`, and `.aliasing()`), and 7 digitally controlled analog studio outboard FX processors (`transformer_color_adc`, `dual_bus_silk_sum`, `fet_fast_limiter`, `vari_mu_tube_comp`, `mastering_clip_limiter`, `spectral_pitch_harmonizer`, `true_stereo_hall_reverb`), alongside inner-loop waveshaper hoisting in `ContinuousSynthEngine.ts` and rolling `AudioBuffer` eviction behind the playhead in `prebakeContinuousSynthTimeline` (`StudioAudioEngine.ts`).
 * **`v5.3.8`:** Completed the *Architecture of Voltage & Gesture* synthesis and compositional research suite and resolved multi-measure synth playback dropouts: added asymmetric Golden-Ratio unison detune offsets (`ASYM_3` / `ASYM_7`) with center-fundamental weighting to eliminate $180^\circ$ phase-cancellation nulls on long pad/Reese holds, pre-humanization polyphonic chord coalescing, rolling lookahead JIT `AudioBuffer` prebaking (`prebakeContinuousSynthTimeline`), 450ms scheduler lookahead with in-buffer offset recovery for late sustained notes, explicit note-filter keytrack bypass on sub-bass sweeps, horizontal-whitespace track-label parsing in `DocumentParser.ts`, span-gated Monaco karaoke decorations, dual-LFO `.wow_flutter` + `.fx(tape_degrade)`, Negative Harmony (`.neg_harm`), EOC cybernetic cycling (`.eoc_cycle(N)`), and the `"Architecture of Voltage & Gesture"` showcase preset scores.

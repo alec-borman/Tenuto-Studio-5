@@ -1005,6 +1005,339 @@ export const PRESET_SCORES: PresetScore[] = [
 }`,
   },
   {
+    id: 'crucible_of_voltage_and_gesture',
+    title: 'The Crucible of Voltage & Gesture (30-Measure System Stress Study)',
+    genre: '68-136 BPM',
+    code: `tenuto "6.0" {
+  meta @{
+    title: "The Crucible of Voltage & Gesture (30-Measure System Stress Study)",
+    tempo: 118,
+    time: "4/4",
+    key: "C",
+    scale: "minor",
+    scale_lock: false,
+    temperament: "12tet",
+    master_tune: -18,
+    sidechain: "drums",
+    sidechain_tap: "post_fx",
+    quantize_launch: "1/1"
+  }
+
+  groove tape_pocket "Downtempo Pocket" @{ base: "1/16", quantize: 88%, timing: 36%, random: 8%, velocity: 35% }
+  macro seq_cell = { c2:16 c3:16 g2:16 eb3:16 }
+
+  return hall_bus "Symphonic Shimmer Space"
+    .fx(true_stereo_hall_reverb, @{ decay: 4.8, predelay: 26, rolloff_hz: 6400, mix: 1.0 })
+    .fx(glue_compressor, @{ threshold: -15, ratio: 2.0, mix: 0.85 })
+
+  return bbd_bus "Bucket-Brigade Stereo Echo"
+    .fx(echo, @{ time: 0.375, feedback: 0.46, mix: 1.0 })
+    .fx(chorus, @{ rate: 0.38, amount: 0.35, mix: 0.45 })
+
+  def lead "Morphing Analog Soloist" style=synth patch="morph_analog_12"
+    group="synth_bus" vol=90 pan=-0.12 detune=58 cutoff=3400 resonance=1.25 sub=25 air=42 width=135 slop=24
+    env=@{ attack: 0.04, decay: 0.85, sustain: 0.86, release: 0.9 }
+    sends=@{ hall_bus: 0.62, bbd_bus: 0.48 }
+    .fx(transformer_color_adc, @{ transformer: "bx1", drive: 0.42, filter: "classic", mix: 1.0 })
+    .fx(chorus, @{ rate: 0.42, amount: 0.36, mix: 0.42 })
+
+  def pad "Tape & Binaural Planing Pad" style=synth patch="tape_nostalgia_pad"
+    group="synth_bus" vol=84 pan=0.10 detune=64 cutoff=2400 resonance=1.05 sub=22 air=30 width=148 slop=32
+    env=@{ attack: 0.25, decay: 1.4, sustain: 0.90, release: 1.5 }
+    sends=@{ hall_bus: 0.72, bbd_bus: 0.34 }
+    .fx(tape_degrade, @{ wow_hz: 0.42, wow_depth_ms: 1.8, flutter_hz: 9.5, high_cut: 5200, drive: 0.30, mix: 1.0 })
+    .fx(vari_mu_tube_comp, @{ threshold: -14, thd: "medium", mix: 0.85 })
+
+  def seq "Berlin Micro-Time Sequencer" style=synth patch="pluck_lead"
+    group="synth_bus" groove="tape_pocket" vol=82 pan=-0.18 detune=44 cutoff=3200 resonance=1.8 sub=15 air=35 width=128 slop=18
+    sends=@{ hall_bus: 0.40, bbd_bus: 0.64 }
+    .fx(fet_fast_limiter, @{ ratio: "all_buttons", saturation_mode: true, drive: 0.45, mix: 0.75 })
+
+  def swarm "8-Oscillator Ribbon Cluster" style=synth patch="ribbon_cluster_8"
+    group="synth_bus" vol=76 pan=0.18 cutoff=2200 resonance=1.15
+    sends=@{ hall_bus: 0.75 }
+    .fx(spectral_pitch_harmonizer, @{ shift1_st: 7, shift2_st: -12, mix: 0.35 })
+
+  def krell "West Coast EOC & Vactrol LPG" style=synth patch="west_coast_200"
+    group="synth_bus" vol=80 pan=-0.22 cutoff=2900 resonance=1.35
+    sends=@{ hall_bus: 0.55, bbd_bus: 0.58 }
+
+  def vox "20-Band Klatt Talking Vocoder" style=synth patch="supersaw"
+    group="synth_bus" vol=88 pan=0.0 detune=72 cutoff=4200
+    sends=@{ hall_bus: 0.50 }
+    .fx(vocoder, @{ bands: 20, depth: 1.15, formant_shift: 0, mix: 0.96 })
+
+  def pno "Concertgebouw Felt Grand" style=standard patch="salamander_grand"
+    vol=86 pan=0.08
+    sends=@{ hall_bus: 0.58 }
+    .fx(true_stereo_hall_reverb, @{ decay: 3.2, predelay: 20, rolloff_hz: 6800, mix: 0.36 })
+
+  def sub "Discrete Ladder & Reese Sub Anchor" style=synth patch="reese_bass"
+    group="synth_bus" vol=92 pan=0.0 detune=48 cutoff=820 resonance=1.2 sub=92 air=14 width=108 slop=14
+    .fx(saturator, @{ drive: 6.5, mix: 0.75 })
+
+  def drums "Gated Studio Drum Rack" style=grid patch="tenuto_808_kit"
+    groove="tape_pocket" vol=94
+    .fx(drum_buss, @{ drive: 0.35, crunch: 0.25, boom_amount: 0.45 })
+    .fx(gated_reverb, @{ decay: 3.2, gate_ms: 160, threshold: -24, mix: 0.52 })
+
+  group synth_bus "Master Synthesizer Bus" tracks=[lead, pad, seq, swarm, krell, vox, sub]
+    .fx(dual_bus_silk_sum, @{ silk: "super", texture: 0.58, mix: 1.0 })
+    .fx(glue_compressor, @{ threshold: -12, ratio: 2.5, mix: 0.82 })
+    .fx(mastering_clip_limiter, @{ ceiling: -0.5, gain_db: 1.8, odd_even_thd: 0.25 })
+
+  locator "I. Hauntological Awakening & Tape Drift" at measure 1
+
+  measure 1 {
+    meta @{ tempo: 68 }
+    lead:  r:4 c5:2.mp.legato.vowel("oh", "ooh", 0.2).wow_flutter(4.8, 0.42, 2.2, 8.8).glide(220ms) g4:4.p.legato |
+    pad:   [c3 g3 eb4 bb4]:1.p.open_voice.warp_wave("bend", 30%).detune(22%, 0.15..0.90).filter(780, 1250).wow_flutter(5.2, 0.38, 2.6, 9.2).glide(260ms) |
+    pno:   [c3 g3 eb4]:2.p.ped [bb2 f3 d4]:2.p.ped |
+    sub:   c1:1.mp.legato.filter(160, 420)~ |
+  }
+
+  measure 2 {
+    lead:  ab4:2..mp.legato.vowel("ooh", "ah", 0.25).filter(1100, 2600).glide(200ms) f4:4.p.dim |
+    pad:   [ab2 eb3 c4 g4]:1.p.open_voice.warp_wave("bend", 30%).detune(26%, 0.15..0.90).filter(820, 1450).wow_flutter(5.0, 0.40, 2.4, 9.0) |
+    pno:   [ab2 eb3 c4]:2.p.ped [g2 d3 b3]:2.pp.ped |
+    sub:   c1:2.mp.legato g0:2.mp.legato.glide(180ms) |
+  }
+
+  measure 3 {
+    lead:  eb4:2.mp.cresc(58, 96).legato.tri_fold(42%).steiner_drive(35%).filter(1200, 3200) g4:4.mf.legato c5:4.f.glide(180ms) |
+    pad:   [f2 c3 ab3 eb4]:2.mp.open_voice [g2 d3 b3 f4]:2.mf.open_voice.cresc(64, 98) |
+    swarm: c2:1.p.cresc.swarm([0.15, 2.8, 0.35]).filter(450, 1850) |
+    sub:   f0:2.mp.legato g0:2.mf.legato.discrete_drive(50%) |
+  }
+
+  measure 4 {
+    lead:  d5:2.f.legato.vib.detune([20, 82, 28]).filter(1600, 4200) b4:2.mf.legato.vib |
+    pad:   [c3 g3 d4 eb4]:1.mf.open_voice.squeeze(88%).bend_voice(1, 50c, 0.2..0.8).filter(950, 2800) |
+    krell: g4:1.mp.eoc_cycle(5).fold(72%).lpg("both", 380ms) |
+    sub:   c1:1.f.legato.filter(220, 680).drive([0.2, 0.6]) |
+  }
+
+  measure 5 {
+    lead:  e5:2.mf.legato.binaural(14c).morph([15, 85, 25]).filter(1500, 3800) d5:4.mf.legato c5:4.mf.glide(175ms) |
+    pad:   b3:2.mp.plane("m9").rootless.glide(180ms) d4:2.mf.plane("m9").rootless.glide(180ms) |
+    pno:   c4:8.p g4:8 eb5:8 d5:8 c5:4 b4:4 |
+    sub:   c1:1.mf.legato.filter(180, 520) |
+  }
+
+  measure 6 {
+    lead:  g5:2.f.legato.spin(0.75).touch_travel("at_z").filter(1800, 4600) eb5:2.mf.legato.vib |
+    pad:   e4:2.mf.plane("quartal").glide(180ms) f#4:2.f.plane("m9").rootless.neg_harm |
+    krell: c5:1.mp.eoc_cycle(6).fold(78%).lpg("both", 340ms) |
+    sub:   c1:2.f.legato bb0:2.f.legato.glide(160ms) |
+  }
+
+  locator "II. Berlin Micro-Time & Step Ratcheting" at measure 7
+
+  measure 7 {
+    meta @{ tempo: 124 }
+    lead:  c5:4.f.legato.vib d5:4.f.legato eb5:2.ff.legato.detune(75%, 0.2..0.85).glide(160ms) |
+    seq:   repeat 2 { $seq_cell } c2:16 c3:16 g2:16 eb3:16.ratchet(2, "flat") c2:16 c3:16 g2:16 g3:16.ratchet(3, "up") |
+    pad:   [c3 g3 eb4 bb4]:1.mp.open_voice.filter(1200, 3400) |
+    sub:   c1:4.f.stacc.discrete_drive(55%) c2:4.stacc c1:4.stacc c2:4.stacc |
+    drums: <[ v1: k:4 k:4 k:4 k:4 | v2: r:4 s:4 r:4 s:4 | v3: h:8 h:8 h:8.ratchet(2, "up") h:8 h:8 h:8 oh:8 ch:8 ]>
+  }
+
+  measure 8 {
+    lead:  g5:2.ff.legato.vib.filter(2200, 5200) f5:4.f.legato eb5:4.f.glide(160ms) |
+    seq:   repeat 2 { $seq_cell } ab1:16 ab2:16 eb2:16 c3:16.ratchet(3, "up") g1:16 g2:16 d2:16 b2:16.ratchet(4, "down") |
+    pad:   [ab2 eb3 c4 g4]:2.mf.open_voice [g2 d3 b3 f4]:2.f.open_voice |
+    sub:   ab0:2.f.legato.filter(240, 740) g0:2.f.legato.glide(150ms) |
+    drums: <[ v1: (k):3/8 r:2 | v2: r:4 cp:4 r:4 cp:4 | v3: h:8 h:8 oh:8 ch:8 h:8 h:8 h:8.ratchet(4, "up") oh:8 ]>
+  }
+
+  measure 9 {
+    lead:  d5:4.f.legato eb5:4.f.legato f5:2.ff.legato.tri_fold(55%).filter(1800, 4800) |
+    seq:   f2:16 c3:16 f3:16 ab3:16.ratchet(2, "flat") f2:16 c3:16 f3:16 ab3:16 g2:16 d3:16 g3:16 b3:16.ratchet(3, "up") g2:16 d3:16 g3:16 b3:16 |
+    vox:   [c4 eb4 g4 bb4]:2.f.lyric("Harder") [d4 f4 a4 c5]:2.f.lyric("Better") |
+    sub:   f0:2.f.legato g0:2.f.legato.drive([0.25, 0.70]) |
+    drums: <[ v1: k:4 k:4 k:4 k:4 | v2: r:4 s:4 r:4 s:4 | v3: h:8 h:8 h:8 h:8 oh:8 ch:8 h:8 oh:8 ]>
+  }
+
+  measure 10 {
+    lead:  g5:2.ff.legato.vib.detune([25, 90, 30]) c6:2.ff.legato.vib |
+    seq:   repeat 3 { $seq_cell } c2:16 c3:16 eb3:16 g3:16.ratchet(4, "up") |
+    vox:   [eb4 g4 bb4 d5]:2.f.lyric("Faster") [c4 eb4 g4 c5]:2.ff.lyric("Stronger") |
+    sub:   c1:1.ff.legato.filter(280, 920) |
+    drums: <[ v1: k:4 r:8 k:8 k:4 k:4 | v2: r:4 s:4 r:4 s:8 s:8 | v3: ch:8 h:8 h:8 h:8 oh:8 ch:8 lt:16 mt:16 ht:8 ]>
+  }
+
+  measure 11 {
+    lead:  <[ v1: bb5:2.f.legato ab5:4.f.legato g5:4.mf.glide(160ms) | v2: s:1.automate("cutoff", [800, 5600, 1400], "s_curve") ]>
+    seq:   eb2:16 bb2:16 eb3:16 g3:16.ratchet(2, "up") eb2:16 bb2:16 eb3:16 g3:16 d2:16 a2:16 d3:16 f#3:16.ratchet(3, "down") d2:16 a2:16 d3:16 f#3:16 |
+    pad:   eb3:2.mf.plane("maj9").open_voice d3:2.mf.plane("dom9").neg_harm |
+    sub:   eb1:2.f.legato d1:2.f.legato.glide(150ms) |
+    drums: <[ v1: k:4 k:4 k:4 k:4 | v2: r:4 cp:4 r:4 cp:4 | v3: h:8 h:8 oh:8 ch:8 h:8 h:8 oh:8 ch:8 ]>
+  }
+
+  measure 12 {
+    lead:  f#5:2.f.legato.vib g5:2.ff.legato.pitch_dip(-7) |
+    seq:   g2:4.mf.dim r:4 r:2 |
+    pad:   [g2 d3 bb3 f4]:1.f.dim.open_voice.filter(3600, 1100) |
+    sub:   g0:1.f.dim(98, 42).filter(640, 210) |
+    drums: <[ v1: k:4 k:4 k:4 k:8 k:8 | v2: r:4 s:4 r:4 s:4.ratchet(4, "up") | v3: cr:4 h:8 h:8 oh:8 ch:8 h:8 oh:8 ]>
+  }
+
+  locator "III. Non-Octave Alpha & West Coast Cybernetics" at measure 13
+
+  measure 13 {
+    meta @{ tempo: 96 }
+    lead:  c5:4.mp.legato.binaural(16c).aliasing(32%) eb5:4.mp.legato g5:2.mf.legato.spin(0.85).vib |
+    krell: c4:1.mp.eoc_cycle(5).fold(75%).lpg("both", 400ms) |
+    swarm: c2:1.p.swarm([0.2, 3.4, 0.5]).filter(500, 2200) |
+    sub:   c1:1.mp.legato.filter(180, 480) |
+  }
+
+  measure 14 {
+    lead:  f5:2.mf.legato.warp_wave("mirror", 45%).filter(1400, 3800) eb5:4.mp.legato d5:4.mp.glide(190ms) |
+    krell: g4:1.mp.eoc_cycle(6).fold(82%).lpg("both", 360ms) |
+    pad:   [f3 c4 ab4]:2.p.open_voice.spin(0.6) [g3 d4 b4]:2.mp.open_voice.morph([20, 88, 30]) |
+    sub:   f0:2.mp.legato g0:2.mp.legato |
+  }
+
+  measure 15 {
+    lead:  (c5:8.mf d5:8 eb5:8):3/2 (f5:8.f g5:8 ab5:8):3/2 g5:2.f.legato.vib |
+    pno:   [c3 g3 eb4]:2.mp.arp.ped [ab2 eb3 c4]:2.mp.arp.ped |
+    krell: eb4:1.mp.eoc_cycle(5).fold(68%).lpg("both", 390ms) |
+    sub:   c1:2.mp.legato ab0:2.mp.legato.glide(170ms) |
+  }
+
+  measure 16 {
+    lead:  b4:2.f.legato.cresc(72, 112).filter(1600, 4800) d5:2.ff.legato.vib |
+    pad:   [g2 d3 b3 f4]:1.f.open_voice.cresc(70, 110).bend_voice(1, -50c, 0.2..0.8) |
+    swarm: g1:1.mp.cresc.swarm([0.3, 3.6, 0.2]).filter(600, 2800) |
+    sub:   g0:1.f.legato.cresc(75, 115).filter(220, 820) |
+  }
+
+  locator "IV. Detroit Planing & Talking Vocoder Choir" at measure 17
+
+  measure 17 {
+    meta @{ tempo: 128 }
+    lead:  c5:4.f.zap g5:4.f.zap eb5:2.ff.legato.detune(82%, 0.2..0.9).haas(12ms) |
+    pad:   b3:2.mf.plane("m9").rootless.filter(1400, 3600).glide(160ms) d4:2.f.plane("m9").rootless.filter(1600, 4000).glide(160ms) |
+    vox:   [c4 eb4 g4 bb4]:2.f.lyric("Voltage") [d4 f4 a4 c5]:2.f.lyric("Gesture") |
+    sub:   c1:2.f.legato.filter(190, 320) c2:2.mf.legato |
+    drums: <[ v1: k:4 k:4 k:4 k:4 | v2: r:4 cp:4 r:4 cp:4 | v3: r:8 oh:8 ch:8 oh:8 r:8 oh:8 ch:8 oh:8 ]>
+  }
+
+  measure 18 {
+    lead:  f5:2.f.legato.comb(440, 0.65).filter(1800, 4400) d5:2.mf.legato.vib |
+    pad:   e4:2.f.plane("m9").rootless.glide(160ms) f#4:2.f.plane("m9").rootless.neg_harm |
+    vox:   [eb4 g4 bb4 d5]:2.f.lyric("Cyber") [f4 ab4 c5 eb5]:2.ff.lyric("Matrix") |
+    sub:   c1:1.f.legato.filter(180, 280).duck(75%) |
+    drums: <[ v1: k:4 k:4 k:4 k:4 | v2: r:4 s:4 r:4 s:4 | v3: h:8 h:8 h:8.ratchet(3, "up") h:8 oh:8 ch:8 h:8 oh:8 ]>
+  }
+
+  measure 19 {
+    lead:  g5:2.ff.legato.fm(45%, 2.0).filter(2000, 5200) eb5:4.f.legato c5:4.f.glide(150ms) |
+    seq:   repeat 4 { $seq_cell } |
+    pad:   g3:2.mf.plane("sus4").open_voice ab3:2.f.plane("maj9").open_voice |
+    sub:   g0:2.f.legato ab0:2.f.legato.glide(150ms) |
+    drums: <[ v1: (k):3/8 r:2 | v2: r:4 cp:4 r:4 cp:4 | v3: ch:8 h:8 oh:8 ch:8 h:8 h:8.ratchet(2, "up") oh:8 ch:8 ]>
+  }
+
+  measure 20 {
+    lead:  d5:1.ff.legato.ring(38%, 220).gate([1, 0, 1, 1, 0, 1, 1, 1]).filter(1800, 4900) |
+    seq:   g1:16 g2:16 d2:16 b2:16.ratchet(2, "up") g1:16 g2:16 d2:16 b2:16.ratchet(3, "up") g1:16 g2:16 d2:16 b2:16.ratchet(4, "up") g1:16 g2:16 d2:16 g3:16.ratchet(4, "up") |
+    pad:   [g2 d3 b3 f4]:1.ff.open_voice.cresc(80, 120) |
+    sub:   g0:1.ff.legato.filter(260, 880).drive([0.3, 0.78]) |
+    drums: <[ v1: k:4 k:4 k:8 k:8 k:8 k:8 | v2: r:4 s:4 s:8 s:8 s:4.ratchet(4, "up") | v3: oh:8 ch:8 oh:8 ch:8 cr:2 ]>
+  }
+
+  locator "V. Full-Ensemble Polyphonic Crucible (136 BPM)" at measure 21
+
+  measure 21 {
+    meta @{ tempo: 136 }
+    lead:  c6:2.ff.legato.vib.stack("octaves").detune(85%, 0.15..0.90).filter(2400, 6200) g5:4.ff.legato eb5:4.f.glide(140ms) |
+    pad:   [c3 g3 eb4 bb4 d5]:1.ff.open_voice.detune(74%, 0.15..0.85).filter(1600, 4400) |
+    seq:   repeat 2 { $seq_cell } c2:16 c3:16 g2:16 eb3:16.ratchet(3, "up") c2:16 c3:16 g2:16 c4:16.ratchet(4, "up") |
+    vox:   [c4 eb4 g4 c5]:1.ff.lyric("Crucible") |
+    pno:   [c3 g3 eb4 c5]:2.f.arp.ped [g2 d3 b3 g4]:2.f.arp.ped |
+    sub:   c1:2.ff.legato.filter(300, 920) g0:2.ff.legato.glide(140ms) |
+    drums: <[ v1: k:4 k:4 k:4 k:4 | v2: r:4 s:4 r:4 s:4 | v3: ch:8 oh:8 ch:8 oh:8 ch:8 h:8.ratchet(3, "up") oh:8 ch:8 ]>
+  }
+
+  measure 22 {
+    lead:  ab5:2.ff.legato.vib.tri_fold(52%).filter(2200, 5800) f5:4.f.legato d5:4.f.glide(145ms) |
+    pad:   [ab2 eb3 c4 g4 b4]:2.f.open_voice [f2 c3 ab3 eb4 a4]:2.ff.open_voice |
+    seq:   ab1:16 eb2:16 ab2:16 c3:16.ratchet(2, "flat") ab1:16 eb2:16 ab2:16 c3:16 f1:16 c2:16 f2:16 ab2:16.ratchet(3, "up") f1:16 c2:16 f2:16 c3:16 |
+    krell: f4:1.f.eoc_cycle(5).fold(80%).lpg("both", 320ms) |
+    sub:   ab0:2.ff.legato f0:2.ff.legato.glide(140ms) |
+    drums: <[ v1: k:4 r:8 k:8 k:4 k:4 | v2: r:4 cp:4 r:4 s:4 | v3: h:8 h:8 oh:8 ch:8 h:8 h:8 oh:8 ch:8 ]>
+  }
+
+  measure 23 {
+    lead:  eb5:2.f.legato.binaural(18c).spin(0.9) g5:4.ff.legato c6:4.ff.glide(150ms) |
+    pad:   eb3:2.f.plane("maj9").open_voice d3:2.ff.plane("dom9").neg_harm |
+    swarm: g1:1.mf.swarm([0.4, 3.8, 0.3]).filter(700, 3100) |
+    pno:   eb4:8.f g4:8 bb4:8 d5:8 c5:4.marc b4:4.marc |
+    sub:   eb1:2.f.legato d1:2.ff.legato.discrete_drive(65%) |
+    drums: <[ v1: (k):3/8 r:2 | v2: r:4 s:4 r:4 s:4 | v3: ch:8 h:8 h:8.ratchet(2, "up") h:8 oh:8 ch:8 lt:8 mt:8 ]>
+  }
+
+  measure 24 {
+    lead:  b5:2.ff.legato.vib.detune([30, 94, 35]).filter(2600, 6400) g5:2.ff.legato.vib |
+    pad:   [g2 d3 b3 f4 a4]:1.ff.open_voice.squeeze(94%).bend_voice(2, 50c, 0.2..0.8) |
+    seq:   g1:16 d2:16 g2:16 b2:16.ratchet(2, "up") g1:16 d2:16 g2:16 d3:16.ratchet(3, "up") g1:16 d2:16 g2:16 f3:16.ratchet(4, "up") g1:16 d2:16 g2:16 g3:16.ratchet(4, "up") |
+    vox:   [g3 b3 d4 f4]:1.ff.lyric("Ascend") |
+    sub:   g0:1.ff.legato.filter(320, 980).drive([0.35, 0.82]) |
+    drums: <[ v1: k:4 k:4 k:4 k:4 | v2: r:4 s:4 r:4 s:4.ratchet(4, "up") | v3: cr:4 oh:8 ch:8 oh:8 ch:8 h:8.ratchet(4, "up") oh:8 ]>
+  }
+
+  measure 25 {
+    lead:  c6:2.ff.legato.vib.stack("super").filter(2800, 6800) bb5:4.f.legato ab5:4.f.glide(145ms) |
+    pad:   [c3 g3 eb4 bb4 d5]:2.ff.open_voice [bb2 f3 d4 ab4]:2.f.open_voice |
+    seq:   repeat 4 { $seq_cell } |
+    pno:   [c4 eb4 g4 c5]:2.ff.ped [bb3 d4 f4 bb4]:2.f.ped |
+    sub:   c1:2.ff.legato bb0:2.f.legato.glide(140ms) |
+    drums: <[ v1: k:4 k:4 k:4 k:4 | v2: r:4 cp:4 r:4 cp:4 | v3: ch:8 oh:8 ch:8 oh:8 ch:8 oh:8 ch:8 oh:8 ]>
+  }
+
+  measure 26 {
+    lead:  g5:2.f.legato.vowel("a", "e", 0.35).filter(2000, 4800) f5:4.f.legato eb5:4.f.glide(150ms) |
+    pad:   ab2:2.f.plane("maj9").open_voice g2:2.f.plane("dom9") |
+    krell: c5:1.f.eoc_cycle(6).fold(85%).lpg("both", 310ms) |
+    sub:   ab0:2.f.legato g0:2.f.legato.glide(145ms) |
+    drums: <[ v1: k:4 r:8 k:8 k:4 k:4 | v2: r:4 s:4 r:4 s:8 s:8 | v3: h:8 h:8 h:8.ratchet(3, "up") h:8 oh:8 ch:8 mt:8 ht:8 ]>
+  }
+
+  locator "VI. Climax by Subtraction & C Major Picardy Resolution" at measure 27
+
+  measure 27 {
+    meta @{ tempo: 84 }
+    lead:  e5:2.f.dim(105, 68).legato.vib.filter(3600, 1800) g5:2.mf.legato.vib.glide(200ms) |
+    pad:   [c3 g3 e4 b4 d5]:1.f.dim(100, 64).open_voice.filter(3200, 1600).glide(240ms) |
+    pno:   c3:8.mf g3:8 e4:8 g4:8 b4:4.ped g4:4.ped |
+    sub:   c1:1.f.dim(102, 66).legato.filter(520, 260) |
+  }
+
+  measure 28 {
+    lead:  a5:2.mp.legato.vowel("oh", "ooh", 0.22).wow_flutter(4.2, 0.38, 2.0, 8.5) g5:4.mp.legato e5:4.p.glide(220ms) |
+    pad:   [f2 c3 a3 e4]:2.mp.open_voice [g2 d3 b3 f#4]:2.mp.open_voice.dim(72, 48) |
+    pno:   [f3 a3 c4 e4]:2.mp.arp.ped [g3 b3 d4 f#4]:2.p.arp.ped |
+    sub:   f0:2.mp.legato g0:2.p.legato.glide(190ms) |
+  }
+
+  measure 29 {
+    lead:  d5:2.p.legato.vib.filter(1600, 1050) e5:2.p.legato.vib |
+    pad:   [c3 g3 e4 b4]:1.p.open_voice.wow_flutter(4.5, 0.36, 2.1, 8.8).filter(1400, 900) |
+    krell: e4:1.p.eoc_cycle(4).fold(45%).lpg("both", 480ms) |
+    sub:   c1:1.p.legato.filter(260, 180)~ |
+  }
+
+  measure 30 {
+    lead:  c5:1.p.dim(60, 22).legato.vib.filter(1400, 680).fermata |
+    pad:   [c3 g3 e4 b4 d5]:1.p.dim(58, 20).open_voice.filter(1200, 620).fermata |
+    pno:   [c2 g2 e3 b3 e4 g4 c5]:1.p.arp.ped.fermata |
+    sub:   c1:1.p.dim(62, 20).legato.filter(220, 110).fermata |
+  }
+}`,
+  },
+  {
     id: 'minimal_sketch',
     title: 'Minimal Piano Sketch (Default)',
     genre: '120 BPM',
