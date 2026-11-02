@@ -1849,8 +1849,12 @@ export class StudioAudioEngine {
   ): void {
     if (!this.dryBus || !this.drumBus) return;
     const playheadSec = Math.max(0, ctx.currentTime - this.startContextTime);
-    const evMeasure = (item.event as any).measure || 1;
-    const evBeat = (item.event as any).beat || 1;
+    const evMeasure = (item.event as any).measureNumber || (item.event as any).measure || 1;
+    const evBeat =
+      (item.event as any).beat ||
+      (item.event.startTime
+        ? Number((((item.event.startTime.numerator / item.event.startTime.denominator) % 1) * 4 + 1).toFixed(2))
+        : 1);
     const evTrackId = item.event.trackId || 'pno';
     const chordVoicesCount = item.chordVoices ? item.chordVoices.length : 1;
 
@@ -2078,14 +2082,30 @@ export class StudioAudioEngine {
             const pool = this.getBakePool();
 
             if (pool !== null) {
-              // Worker pool is available! Promote to urgent (or dispatch urgently) and await without freezing main thread
+              // Worker pool is available! Promote to urgent (or dispatch urgently)
               if (this.pendingBakes.has(item)) {
                 pool.promoteUrgentBySeed(voiceSeed);
               } else {
                 this.bakeItemInWorker(ctx, pool, item, tempo, voiceSeed, cacheKey, true);
               }
 
-              this.voicesAwaitingBake.add(item);
+              // Sound immediate realtime synth voice so playback never has gaps or silences!
+              this.scheduleSynthVoice(
+                ctx,
+                voiceOut,
+                pannerNode,
+                item.freq,
+                item.patch,
+                safeStart,
+                durSec,
+                item.amp,
+                item.swell,
+                item.startAmp,
+                item.endAmp,
+                item.event.physics,
+                item.cutoffHzOverride
+              );
+
               playbackDiag.recordVoiceEvent({
                 playheadSec,
                 measure: evMeasure,
@@ -2094,16 +2114,15 @@ export class StudioAudioEngine {
                 style: item.style,
                 patch: item.patch,
                 startSec: item.startSec,
-                durSec: item.durSec,
+                durSec,
                 offsetSec: inNoteOffsetSec,
                 freqHz: item.freq,
                 amp: item.amp,
                 chordVoices: chordVoicesCount,
-                path: 'deferred_await',
+                path: 'osc_fallback',
                 activeVoices: this.activeVoices.size,
-                note: 'worker actively rendering',
+                note: 'worker rendering in background; immediate realtime synth fallback sounding',
               });
-              pannerNode?.disconnect();
               return;
             }
 
@@ -3942,8 +3961,12 @@ export class StudioAudioEngine {
           patch: it.patch,
         },
         event: {
-          measure: (it.event as any).measure || 1,
-          beat: (it.event as any).beat || 1,
+          measure: (it.event as any).measureNumber || (it.event as any).measure || 1,
+          beat:
+            (it.event as any).beat ||
+            (it.event.startTime
+              ? Number((((it.event.startTime.numerator / it.event.startTime.denominator) % 1) * 4 + 1).toFixed(2))
+              : 1),
           type: (it.event as any).type || 'note',
         },
       })),
@@ -3951,7 +3974,7 @@ export class StudioAudioEngine {
       beatsPerBar
     );
 
-    // Dispatch opening notes to workers and await up to 140ms so the first several measures
+    // Dispatch opening notes to workers and await up to 350ms so the first several measures
     // are 100% prebaked in the ring buffer before the audio clock starts ticking!
     if (pool) {
       const startupBakes = this.requestWorkerBakes(
@@ -3959,12 +3982,12 @@ export class StudioAudioEngine {
         this.scheduledTimeline,
         this.tempoBpm,
         0,
-        4.0
+        8.0
       );
       if (startupBakes.length > 0) {
         await Promise.race([
           Promise.all(startupBakes),
-          new Promise((resolve) => setTimeout(resolve, 140)),
+          new Promise((resolve) => setTimeout(resolve, 350)),
         ]);
       }
     } else {
@@ -4013,7 +4036,7 @@ export class StudioAudioEngine {
             this.scheduledTimeline,
             this.tempoBpm,
             elapsed,
-            elapsed + 6.0
+            elapsed + 8.0
           );
         } else {
           // Fallback when Web Workers are unavailable (e.g. unit test environments)

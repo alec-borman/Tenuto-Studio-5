@@ -62,7 +62,7 @@ export class VoiceBakePool {
     try {
       const pool = new VoiceBakePool();
       const cores = Number((navigator as unknown as { hardwareConcurrency?: number })?.hardwareConcurrency) || 4;
-      const count = Math.max(2, Math.min(4, cores - 1));
+      const count = Math.max(3, Math.min(6, cores || 4));
       for (let i = 0; i < count; i++) {
         const w = pool.spawnWorker();
         if (w) {
@@ -161,8 +161,8 @@ export class VoiceBakePool {
       const q = this.queue[i];
       const startSec = q.item.startSec ?? 0;
       const durSec = q.item.durSec ?? 0.25;
-      // Drop queued jobs whose entire duration (or >85% of duration) is already behind the playhead
-      if (startSec + durSec * 0.85 <= playheadSec) {
+      // Drop queued jobs whose entire duration plus release tail is already completely behind the playhead
+      if (startSec + durSec + 0.4 <= playheadSec) {
         cancelledCount++;
         playbackDiag.recordWorkerEvent({
           jobId: q.jobId,

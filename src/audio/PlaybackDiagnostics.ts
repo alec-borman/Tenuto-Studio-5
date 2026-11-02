@@ -396,7 +396,7 @@ export class PlaybackDiagnostics {
       startSec: number;
       durSec: number;
       track: { id: string; style: string; patch?: string };
-      event: { measure: number; beat: number; type: string };
+      event: { measureNumber?: number; measure?: number; beat?: number; type?: string };
     }>,
     tempoBpm: number,
     beatsPerBar: number = 4
@@ -412,7 +412,8 @@ export class PlaybackDiagnostics {
     const secPerBar = (60 / Math.max(20, tempoBpm)) * beatsPerBar;
     let maxMeasure = 1;
     for (const item of timeline) {
-      if (item.event.measure > maxMeasure) maxMeasure = item.event.measure;
+      const m = Math.max(1, item.event.measureNumber || item.event.measure || 1);
+      if (m > maxMeasure) maxMeasure = m;
     }
 
     const byMeasure = new Map<number, MeasureCoverageInfo>();
@@ -431,7 +432,7 @@ export class PlaybackDiagnostics {
     const trackTotals: Record<string, { style: string; patch: string; count: number; minSec: number; maxSec: number }> = {};
 
     for (const item of timeline) {
-      const m = Math.max(1, item.event.measure || 1);
+      const m = Math.max(1, item.event.measureNumber || item.event.measure || 1);
       let info = byMeasure.get(m);
       if (!info) {
         info = {
@@ -578,7 +579,7 @@ export class PlaybackDiagnostics {
             }`
           : '';
 
-      console.debug(
+      console.log(
         `%c[TenutoDiag:Voice] [${ev.path}] M${ev.measure}:B${ev.beat.toFixed(2)} (t=${ev.playheadSec.toFixed(2)}s) | track="${ev.trackId}" patch="${ev.patch}" style=${ev.style} | start=${ev.startSec.toFixed(2)}s dur=${ev.durSec.toFixed(2)}s off=${ev.offsetSec.toFixed(3)}s | freq=${ev.freqHz.toFixed(1)}Hz (${ev.chordVoices}v) amp=${ev.amp.toFixed(2)}${pcmStr} | active=${ev.activeVoices}${ev.note ? ` | ${ev.note}` : ''}`,
         pathColor
       );
@@ -594,7 +595,7 @@ export class PlaybackDiagnostics {
     this.ringHitsSec++;
     this.totalRingHits++;
     if (this.canLog('trace') && key && (this.totalRingHits <= 20 || this.totalRingHits % 25 === 0)) {
-      console.debug(
+      console.log(
         `%c[TenutoDiag:Ring] HIT slot=${slotIdx ?? '?'} frames=${frames ?? '?'} totalHits=${this.totalRingHits} key="${key.slice(0, 64)}"`,
         'color:#2dd4bf'
       );
@@ -605,7 +606,7 @@ export class PlaybackDiagnostics {
     this.ringMissesSec++;
     this.totalRingMisses++;
     if (this.canLog('trace') && key && (this.totalRingMisses <= 20 || this.totalRingMisses % 25 === 0)) {
-      console.debug(
+      console.log(
         `%c[TenutoDiag:Ring] MISS totalMisses=${this.totalRingMisses} key="${key.slice(0, 64)}"`,
         'color:#fb923c'
       );
@@ -624,7 +625,7 @@ export class PlaybackDiagnostics {
   ): void {
     if (this.canLog('trace') && (evictedCount > 0 || slotsUsed % 20 === 0)) {
       const mbUsed = ((framesUsed * 2 * 4) / (1024 * 1024)).toFixed(1);
-      console.debug(
+      console.log(
         `%c[TenutoDiag:Ring] WRITE slot=${slotIdx} frames=${frames} | slots=${slotsUsed}/${maxSlots} (${mbUsed}MB)${
           evictedCount > 0 ? ` | EVICTED=${evictedCount} old slots` : ''
         } | key="${key.slice(0, 56)}"`,
@@ -636,7 +637,7 @@ export class PlaybackDiagnostics {
   public recordTimelineWindowEviction(evictedCount: number, playheadSec: number): void {
     this.timelineEvictionsSec += evictedCount;
     if (evictedCount > 0 && this.canLog('trace')) {
-      console.debug(
+      console.log(
         `%c[TenutoDiag:Ring] Evicted ${evictedCount} finished AudioBuffer refs behind playhead=${playheadSec.toFixed(2)}s`,
         'color:#64748b'
       );
@@ -695,7 +696,7 @@ export class PlaybackDiagnostics {
         this.workerQueueWaitMaxMsSec = ev.queueWaitMs ?? 0;
       }
       if (this.canLog('trace')) {
-        console.debug(
+        console.log(
           `%c[TenutoDiag:Worker] ✓ Job #${ev.jobId} DONE | track="${ev.trackId || '?'}" patch="${ev.patch || '?'}" noteStart=${(ev.noteStartSec ?? 0).toFixed(2)}s dur=${(ev.durSec ?? 0).toFixed(2)}s | wait=${(ev.queueWaitMs ?? 0).toFixed(0)}ms bake=${(ev.bakeMs ?? 0).toFixed(1)}ms | peak=${(ev.pcmPeak ?? 0).toFixed(3)} rms=${(ev.pcmRms ?? 0).toFixed(3)} | active=${ev.activeWorkers} queued=${ev.queuedJobs}`,
           'color:#a3e635'
         );
@@ -704,7 +705,7 @@ export class PlaybackDiagnostics {
       this.workerCancelledStaleSec++;
       this.totalWorkerCancelledStale++;
       if (this.canLog('verbose')) {
-        console.debug(
+        console.log(
           `%c[TenutoDiag:Worker] ✂ Cancelled stale queued Job #${ev.jobId} (track="${ev.trackId}" noteStart=${(ev.noteStartSec ?? 0).toFixed(2)}s already passed playhead)`,
           'color:#fb923c'
         );
@@ -741,7 +742,7 @@ export class PlaybackDiagnostics {
   public recordVoiceStolen(trackId?: string, playheadSec?: number): void {
     this.totalVoicesStolen++;
     if (this.canLog('verbose')) {
-      console.debug(
+      console.log(
         `%c[TenutoDiag:AudioCtx] Voice stolen (polyphony cap) on track="${trackId || '?'}" at t=${(playheadSec ?? 0).toFixed(2)}s (totalStolen=${this.totalVoicesStolen})`,
         'color:#f472b6'
       );
@@ -801,7 +802,7 @@ export class PlaybackDiagnostics {
           ? 'color:#ef4444;font-weight:bold'
           : 'color:#64748b';
 
-      console.debug(
+      console.log(
         `%c[TenutoDiag:Signal] M${sample.measure}:B${sample.beat.toFixed(2)} (t=${sample.playheadSec.toFixed(2)}s) [${barVisual}] master=${sample.masterDb.toFixed(1)}dB (peak=${sample.masterPeak.toFixed(4)} rms=${sample.masterRms.toFixed(4)}) | dryPeak=${sample.dryPeak.toFixed(4)} drumPeak=${sample.drumPeak.toFixed(4)} compRed=${sample.compReductionDb.toFixed(1)}dB | activeVoices=${sample.activeVoices} (audibleNow=${sample.audibleVoices})`,
         sigColor
       );
@@ -842,7 +843,7 @@ export class PlaybackDiagnostics {
     if (params.measure !== this.lastMeasureLogged) {
       this.lastMeasureLogged = params.measure;
       const mInfo = this.measureCoverage.find((m) => m.measure === params.measure);
-      if (this.canLog('verbose')) {
+      if (this.canLog('normal')) {
         console.info(
           `%c[TenutoDiag] 🎼 Entering Measure ${params.measure} (t=${params.playheadSec.toFixed(2)}s) | Scheduled in M${params.measure}: ${
             mInfo ? `${mInfo.totalEvents} events (synth=${mInfo.synthEvents}, drums=${mInfo.drumEvents}) ${JSON.stringify(mInfo.byTrack)}` : 'n/a'
@@ -1029,7 +1030,7 @@ export class PlaybackDiagnostics {
         .map(([k, v]) => `${k}:${v}`)
         .join(',');
 
-      console.debug(
+      console.log(
         `%c[TenutoDiag t=${snap.playheadSec.toFixed(2)}s | M${snap.measure}:B${snap.beat.toFixed(1)}]${statusBanner}%c ` +
           `out=${snap.masterDb}dB (pk=${snap.masterPeak} rms=${snap.masterRms} comp=${snap.compReductionDb}dB) | ` +
           `voices=${snap.activeVoices} (trig=${snap.voicesTriggeredThisSec}/s [${pathsStr || 'none'}], cursor=${snap.timelineCursor}/${snap.totalTimelineEvents}) | ` +
