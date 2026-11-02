@@ -1,5 +1,5 @@
 # The Definitive Guide to Music Creation in Tenuto Studio 5 (`.ten`)
-### Complete Grammar Specification, Synthesis Physics, Compositional Theory & Studio Engineering Manual (`v5.5.4`)
+### Complete Grammar Specification, Synthesis Physics, Compositional Theory & Studio Engineering Manual (`v5.5.6`)
 
 > **Self-Contained Reference:** This manual contains the complete **Tenuto 6.0 (`.ten`)** formal grammar, compiler rules, instrument & patch catalog, continuous synthesizer modifiers, outboard DSP effects, psychoacoustic voicing laws, and stylistic blueprints. A human composer or AI agent reading **only this document** has 100% of the knowledge required to write studio-mastered, multi-track `.ten` compositions from scratch.
 
@@ -194,6 +194,7 @@ groove tape_pocket "Downtempo Pocket" @{ base: "1/16", quantize: 85%, timing: 42
 | `"meld"` / `"drift"` / `"analog"` | **Bi-Timbral Macro & Organic Drift Subtractive Synths:** Scale-aware harmonic swarms and slow analog pitch/cutoff walk. | Organic electronic leads, warm lo-fi basslines. |
 | `"collision"` / `"tension"` / `"electric"` | **Physical Modeling Suite:** Euler-Bernoulli modal mallet bars (`collision`), Karplus-Strong string waveguides (`tension`), and tine-bell electric pianos (`electric`). | Expressive mallets, plucked/bowed physical strings, barky tine electric pianos. |
 | `"granulator"` | **Granulator III Cloud Synthesizer:** Configurable via `macros=@{ grain_size: 64, density: 24, spray: 28, pitch_jitter: 14, scan: 0.65 }`. | Textural grain clouds, evolving ambient washes. |
+| `"sc:default"`, `"sc:prophet"`, `"sc:tb303"`, `"sc:jp8000"`, `"sc:modal_bell"`, `"sc:klank_resonator"`, `"sc:dx7_brass"`, `"sc:formant_choir"`, `"sc:karplus_pluck"`, `"sc:gendy_stochastic"`, `"sc:pulsar_train"`, `"sc:hoover"` | **SuperCollider (`scsynth`) UGen-Graph Synthesizer Suite (`style=synth` or `style=scsynth`):** 100% MIT-licensed UGen-Graph synthesis topologies (`VarSaw`, `Pulse`/`RLPF`, `RLPFD` 303 diode, `Splay.ar` 7-saw, `Klank.ar` 6-mode bell, `DynKlank.ar` 8-mode resonator, `PMOsc.ar` 6-op FM brass, `Formant.ar` 3-vowel choir, `Pluck.ar` Karplus-Strong waveguide, `Gendy1.ar` Xenakis dynamic stochastic oscillator, `Blip.ar` pulsar train, and Alpha Juno Hoover) with binary OSC 1.1 `/s_new` bundle encoding and `.scd` (`SynthDef` + `Pbind`) score export. | Live-coding UGen synthesis, modal/resonator percussion, dynamic stochastic drones, and direct SuperCollider `.scd` export. |
 
 ### 5.2 Multi-Sampled Acoustic & Orchestral Instruments (`style=standard`)
 * **Pianos & Keyboards:** `"salamander_grand"`, `"acoustic_grand_piano"`, `"bright_piano"`, `"electric_piano_1"`, `"electric_piano_2"`, `"harpsichord"`, `"clavinet"`, `"celesta"`, `"church_organ"`, `"drawbar_organ"`, `"reed_organ"`, `"accordion"`

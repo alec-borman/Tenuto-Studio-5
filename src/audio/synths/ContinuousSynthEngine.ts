@@ -1,5 +1,6 @@
 import { AtomicEvent, WindowedModulationSpec } from '../../parser/ASTSerializer';
 import { TrackDefinition } from '../../parser/DocumentParser';
+import { SuperColliderEngine } from '../scsynth/SuperColliderEngine';
 
 export interface ContinuousVoiceNote {
   event: AtomicEvent;
@@ -266,6 +267,9 @@ export class ContinuousSynthEngine {
     style?: string,
     physics?: AtomicEvent['physics']
   ): boolean {
+    if (SuperColliderEngine.isSuperColliderPatch(patch, style)) {
+      return true;
+    }
     const p = (patch || '').trim().toLowerCase();
     const s = (style || '').trim().toLowerCase();
     if (
@@ -391,6 +395,19 @@ export class ContinuousSynthEngine {
     const phys = item.event.physics;
     const macros = item.def?.macros || {};
     const patch = (item.event.patch || item.def?.patch || 'supersaw').toLowerCase();
+    if (SuperColliderEngine.isSuperColliderPatch(patch, item.def?.style)) {
+      SuperColliderEngine.renderUGenVoiceIntoStereo(
+        trackLeft,
+        trackRight,
+        startFrame,
+        noteFrames,
+        sampleRate,
+        tempoBpm,
+        voiceSeed,
+        item
+      );
+      return;
+    }
 
     const isReese = patch.includes('reese');
     const isRiser = patch.includes('riser');

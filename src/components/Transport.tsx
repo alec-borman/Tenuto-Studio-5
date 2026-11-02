@@ -22,6 +22,7 @@ interface TransportProps {
   onMasterVolumeChange?: (newVolume: number) => void;
   onSelectPreset?: (code: string) => void;
   onExportWav?: () => void;
+  onExportScd?: () => void;
   activeMainView?: MainStudioView;
   onMainViewChange?: (view: MainStudioView) => void;
   activeBottomDock?: BottomDockTab;
@@ -64,6 +65,7 @@ export default function Transport({
   onMasterVolumeChange,
   onSelectPreset,
   onExportWav,
+  onExportScd,
   activeMainView = 'piano_roll',
   onMainViewChange,
   activeBottomDock = null,
@@ -307,6 +309,18 @@ export default function Transport({
               className="bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/50 text-emerald-300 text-xs font-semibold py-1 px-3 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               Export WAV
+            </button>
+          )}
+
+          {onExportScd && (
+            <button
+              type="button"
+              data-testid="export-scd-btn"
+              onClick={onExportScd}
+              title="Export score as a standalone SuperCollider (.scd) SynthDef + Pbind script"
+              className="bg-fuchsia-600/20 hover:bg-fuchsia-600/30 border border-fuchsia-500/50 text-fuchsia-300 text-xs font-semibold py-1 px-3 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              Export .scd
             </button>
           )}
 

@@ -18,6 +18,7 @@ import { IncrementalCompiler } from '../parser/IncrementalCompiler';
 import { TopologicalMutator } from '../mutator/TopologicalMutator';
 import { StudioAudioEngine } from '../audio/StudioAudioEngine';
 import { MetronomeAndCaptureEngine } from '../audio/MetronomeAndCaptureEngine';
+import { SuperColliderEngine } from '../audio/scsynth/SuperColliderEngine';
 import {
   MidiTransformAndGeneratorEngine,
   MidiTransformType,
@@ -501,6 +502,27 @@ export default function SplitWorkspace() {
       URL.revokeObjectURL(url);
     } catch (e) {
       console.error('WAV Export failed:', e);
+    }
+  };
+
+  const handleExportScd = () => {
+    try {
+      const compiledScore =
+        compiledScoreState ||
+        incrementalCompiler.getLastCompiledScore() ||
+        incrementalCompiler.compileDocument(sourceCode);
+      const scdSource = SuperColliderEngine.exportSuperColliderScd(compiledScore);
+      const scdBlob = new Blob([scdSource], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(scdBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${(scoreMeta.title || 'tenuto_score').toLowerCase().replace(/\s+/g, '_')}.scd`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('SuperCollider .scd Export failed:', e);
     }
   };
 
@@ -1167,6 +1189,7 @@ export default function SplitWorkspace() {
               onPredownloadScore={handlePredownloadScore}
               predownloadState={predownloadState}
               onExportWav={handleExportWav}
+              onExportScd={handleExportScd}
               masterVolume={masterVolume}
               onMasterVolumeChange={handleMasterVolumeChange}
               activeMainView={activeMainView}

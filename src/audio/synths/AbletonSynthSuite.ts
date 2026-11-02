@@ -1,5 +1,6 @@
 import { TrackDefinition } from '../../parser/DocumentParser';
 import { AtomicEvent } from '../../parser/ASTSerializer';
+import { SuperColliderEngine } from '../scsynth/SuperColliderEngine';
 
 export type AbletonSynthEngineType =
   | 'operator'
@@ -65,6 +66,9 @@ export class AbletonSynthSuite {
 
   public static getEngineDisplaySpec(patch?: string): SynthEngineDisplaySpec {
     const clean = (patch || '').trim().toLowerCase();
+    if (SuperColliderEngine.isSuperColliderPatch(clean)) {
+      return SuperColliderEngine.getEngineDisplaySpec(clean);
+    }
     switch (clean) {
       case 'operator':
         return {

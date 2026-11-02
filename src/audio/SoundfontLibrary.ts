@@ -247,7 +247,17 @@ export function resolveSoundfontInstrument(
     return 'timpani';
   }
 
-  if (cleanStyle === 'grid') return null;
+  if (
+    cleanStyle === 'grid' ||
+    cleanStyle === 'scsynth' ||
+    cleanStyle === 'supercollider' ||
+    cleanStyle === 'superdirt' ||
+    cleanPatch.startsWith('sc:') ||
+    cleanPatch.startsWith('sc_') ||
+    cleanPatch.startsWith('sonic-pi-')
+  ) {
+    return null;
+  }
 
   if (isPizz) return 'pizzicato_strings';
 

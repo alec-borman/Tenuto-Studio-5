@@ -88,6 +88,23 @@ const PATCH_CATALOG = [
       'voice_oohs',
     ],
   },
+  {
+    group: 'SuperCollider UGen Synths (scsynth)',
+    options: [
+      'sc:default',
+      'sc:prophet',
+      'sc:tb303',
+      'sc:jp8000',
+      'sc:modal_bell',
+      'sc:klank_resonator',
+      'sc:dx7_brass',
+      'sc:formant_choir',
+      'sc:karplus_pluck',
+      'sc:gendy_stochastic',
+      'sc:pulsar_train',
+      'sc:hoover',
+    ],
+  },
   { group: 'Drums & Percussion', options: ['tenuto_808_kit', 'taiko_drum'] },
 ];
 
