@@ -23,6 +23,8 @@ interface TransportProps {
   onSelectPreset?: (code: string) => void;
   onExportWav?: () => void;
   onExportScd?: () => void;
+  onExportStrudel?: () => void;
+  onExportMusicXml?: () => void;
   activeMainView?: MainStudioView;
   onMainViewChange?: (view: MainStudioView) => void;
   activeBottomDock?: BottomDockTab;
@@ -66,6 +68,8 @@ export default function Transport({
   onSelectPreset,
   onExportWav,
   onExportScd,
+  onExportStrudel,
+  onExportMusicXml,
   activeMainView = 'piano_roll',
   onMainViewChange,
   activeBottomDock = null,
@@ -321,6 +325,30 @@ export default function Transport({
               className="bg-fuchsia-600/20 hover:bg-fuchsia-600/30 border border-fuchsia-500/50 text-fuchsia-300 text-xs font-semibold py-1 px-3 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               Export .scd
+            </button>
+          )}
+
+          {onExportStrudel && (
+            <button
+              type="button"
+              data-testid="export-strudel-btn"
+              onClick={onExportStrudel}
+              title="Export score as a Strudel / TidalCycles (.strudel) live-coding pattern script"
+              className="bg-teal-600/20 hover:bg-teal-600/30 border border-teal-500/50 text-teal-300 text-xs font-semibold py-1 px-3 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              Export .strudel
+            </button>
+          )}
+
+          {onExportMusicXml && (
+            <button
+              type="button"
+              data-testid="export-musicxml-btn"
+              onClick={onExportMusicXml}
+              title="Export score as a MusicXML 4.0 (.musicxml) engraving document for MuseScore / Dorico / Finale"
+              className="bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/50 text-amber-300 text-xs font-semibold py-1 px-3 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              Export .musicxml
             </button>
           )}
 

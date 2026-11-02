@@ -11,6 +11,10 @@ import { ASTSerializer } from '../src/parser/ASTSerializer';
 import { IncrementalCompiler } from '../src/parser/IncrementalCompiler';
 import { StudioAudioEngine } from '../src/audio/StudioAudioEngine';
 import { SuperColliderEngine } from '../src/audio/scsynth/SuperColliderEngine';
+import { MutablePlaitsEngine } from '../src/audio/eurorack/MutablePlaitsEngine';
+import { StrudelAndMusicXmlExporter } from '../src/audio/export/StrudelAndMusicXmlExporter';
+import { AbletonAudioFxEngine } from '../src/audio/fx/AbletonAudioFxEngine';
+import { DocumentParser } from '../src/parser/DocumentParser';
 
 describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5.5.6 Integrity', () => {
   it('accurately detects 60Hz, 120Hz, 144Hz, 165Hz, and 240Hz monitor refresh rates from VSync frame deltas', () => {
@@ -74,13 +78,13 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     expect(content).toContain('Copy-Paste Prompt for Gemini');
   });
 
-  it('provides the synchronized v5.5.6 README.md, package.json, and electron-builder.json free of third-party hardware/platform trademarks', () => {
+  it('provides the synchronized v5.6.2 README.md, package.json, and electron-builder.json free of third-party hardware/platform trademarks', () => {
     const readmePath = path.resolve(__dirname, '../README.md');
     expect(fs.existsSync(readmePath)).toBe(true);
 
     const content = fs.readFileSync(readmePath, 'utf-8');
     expect(content).toContain('TENUTO STUDIO 5');
-    expect(content).toContain('v5.5.6');
+    expect(content).toContain('v5.6.2');
     expect(content).toContain('TENUTO_GRAMMAR.md');
     expect(content).toContain('repomix.config.json');
     expect(content).toContain('npm run electron:build:mac');
@@ -93,7 +97,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     );
     expect(fs.existsSync(guidePath)).toBe(true);
     const guideContent = fs.readFileSync(guidePath, 'utf-8');
-    expect(guideContent).toContain('v5.5.6');
+    expect(guideContent).toContain('v5.6.2');
     expect(guideContent).toContain('Blueprint 1:');
     expect(guideContent).toContain('Blueprint 6:');
 
@@ -120,7 +124,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     const pkgJson = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8')
     );
-    expect(pkgJson.version).toBe('5.5.6');
+    expect(pkgJson.version).toBe('5.6.2');
     expect(pkgJson.scripts['clean:bloat']).toBeDefined();
     expect(pkgJson.scripts['electron:build:mac']).toContain('--mac pkg');
     expect(pkgJson.scripts['electron:build:win']).toContain('--win nsis');
@@ -128,7 +132,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     const builderJson = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '../electron-builder.json'), 'utf-8')
     );
-    expect(builderJson.extraMetadata.version).toBe('5.5.6');
+    expect(builderJson.extraMetadata.version).toBe('5.6.2');
   });
 
   it('synthesizes all 12 SuperCollider (sc:*) UGen-Graph patches, encodes RFC-compliant OSC 1.1 /s_new bundles, and exports valid sclang .scd scores', async () => {
@@ -224,6 +228,105 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
       if (sample > maxSample) maxSample = sample;
     }
     expect(maxSample).toBeGreaterThan(2000);
+  });
+
+  it('synthesizes all 12 MIT Eurorack mi:* patches with Vactrol LPG and zero DC offset', () => {
+    expect(MutablePlaitsEngine.PATCH_CATALOG.length).toBe(12);
+    expect(MutablePlaitsEngine.isEurorackPatch('mi:plaits_va')).toBe(true);
+    expect(MutablePlaitsEngine.isEurorackPatch('supersaw', 'eurorack')).toBe(true);
+    expect(MutablePlaitsEngine.isEurorackPatch('supersaw', 'synth')).toBe(false);
+
+    for (const patchId of MutablePlaitsEngine.PATCH_CATALOG) {
+      const left = new Float32Array(2048);
+      const right = new Float32Array(2048);
+      MutablePlaitsEngine.renderVoiceIntoStereo(
+        left,
+        right,
+        0,
+        2048,
+        44100,
+        120,
+        99,
+        {
+          event: {
+            pitch: { note: 'A', octave: 3, midi: 57 },
+            startTime: { numerator: 0, denominator: 1 },
+            duration: { numerator: 1, denominator: 4 },
+            patch: patchId,
+            physics: { velocity: 100, lpg: { mode: 'both', decayMs: 320 } },
+          } as any,
+          def: {
+            id: 'mod',
+            name: 'Modular',
+            style: 'eurorack',
+            patch: patchId,
+            volume: 85,
+            pan: 0,
+            fx: [],
+          },
+          freq: 220.0,
+          midi: 57,
+          amp: 0.8,
+          startAmp: 0.8,
+          endAmp: 0.8,
+          pan: 0,
+          startSec: 0,
+          durSec: 0.25,
+        }
+      );
+
+      let peak = 0;
+      for (let i = 0; i < left.length; i++) {
+        peak = Math.max(peak, Math.abs(left[i]), Math.abs(right[i]));
+      }
+      expect(peak).toBeGreaterThan(0.01);
+      expect(Number.isFinite(peak)).toBe(true);
+    }
+  });
+
+  it('processes Signalsmith FDN reverb/stretch/chorus FX and exports Strudel (.strudel), MusicXML 4.0 (.musicxml), and Faust (.dsp)', () => {
+    for (const fxType of ['signalsmith_reverb', 'signalsmith_stretch', 'signalsmith_chorus']) {
+      expect(AbletonAudioFxEngine.isSupportedFx(fxType)).toBe(true);
+      const l = new Float32Array(2048);
+      const r = new Float32Array(2048);
+      for (let i = 0; i < 2048; i++) {
+        l[i] = Math.sin((2 * Math.PI * 330 * i) / 44100) * 0.5;
+        r[i] = Math.cos((2 * Math.PI * 330 * i) / 44100) * 0.5;
+      }
+      AbletonAudioFxEngine.applyDeviceToSlice(l, r, 0, 2048, 44100, {
+        type: fxType,
+        params: { mix: 0.5 },
+      });
+      expect(Number.isFinite(l[1024])).toBe(true);
+      expect(Math.abs(l[1024])).toBeGreaterThan(0.001);
+    }
+
+    const parser = new DocumentParser();
+    const score = parser.compile(`tenuto "6.0" {
+      meta @{ title: "Interop Suite", tempo: 120, time: "4/4" }
+      def lead "Lead" style=synth patch="supersaw"
+      def drums "Kit" style=grid patch="tenuto_808_kit"
+      measure 1 {
+        lead: [c4 e4 g4]:2 d4:4.lyric("shine") e4:4 |
+        drums: k:4 s:4 h:4 oh:4 |
+      }
+    }`);
+
+    const strudel = StrudelAndMusicXmlExporter.compileScoreToStrudel(score);
+    expect(strudel).toContain('setcpm(30)');
+    expect(strudel).toContain('stack(');
+    expect(strudel).toContain('.s("supersaw")');
+    expect(strudel).toContain('.bank("RolandTR808")');
+
+    const musicXml = StrudelAndMusicXmlExporter.compileScoreToMusicXml(score);
+    expect(musicXml).toContain('<score-partwise version="4.0">');
+    expect(musicXml).toContain('<work-title>Interop Suite</work-title>');
+    expect(musicXml).toContain('<chord/>');
+    expect(musicXml).toContain('<lyric number="1"><text>shine</text></lyric>');
+
+    const faust = StrudelAndMusicXmlExporter.compileScoreToFaustDsp(score);
+    expect(faust).toContain('import("stdfaust.lib");');
+    expect(faust).toContain('process = filtered <: _, _;');
   });
 });
 

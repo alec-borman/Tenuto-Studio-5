@@ -1,6 +1,7 @@
 import { AtomicEvent, WindowedModulationSpec } from '../../parser/ASTSerializer';
 import { TrackDefinition } from '../../parser/DocumentParser';
 import { SuperColliderEngine } from '../scsynth/SuperColliderEngine';
+import { MutablePlaitsEngine } from '../eurorack/MutablePlaitsEngine';
 
 export interface ContinuousVoiceNote {
   event: AtomicEvent;
@@ -270,6 +271,9 @@ export class ContinuousSynthEngine {
     if (SuperColliderEngine.isSuperColliderPatch(patch, style)) {
       return true;
     }
+    if (MutablePlaitsEngine.isEurorackPatch(patch, style)) {
+      return true;
+    }
     const p = (patch || '').trim().toLowerCase();
     const s = (style || '').trim().toLowerCase();
     if (
@@ -397,6 +401,19 @@ export class ContinuousSynthEngine {
     const patch = (item.event.patch || item.def?.patch || 'supersaw').toLowerCase();
     if (SuperColliderEngine.isSuperColliderPatch(patch, item.def?.style)) {
       SuperColliderEngine.renderUGenVoiceIntoStereo(
+        trackLeft,
+        trackRight,
+        startFrame,
+        noteFrames,
+        sampleRate,
+        tempoBpm,
+        voiceSeed,
+        item
+      );
+      return;
+    }
+    if (MutablePlaitsEngine.isEurorackPatch(patch, item.def?.style)) {
+      MutablePlaitsEngine.renderVoiceIntoStereo(
         trackLeft,
         trackRight,
         startFrame,

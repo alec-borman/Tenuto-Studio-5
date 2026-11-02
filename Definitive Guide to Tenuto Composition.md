@@ -1,5 +1,5 @@
 # The Definitive Guide to Music Creation in Tenuto Studio 5 (`.ten`)
-### Complete Grammar Specification, Synthesis Physics, Compositional Theory & Studio Engineering Manual (`v5.5.6`)
+### Complete Grammar Specification, Synthesis Physics, Compositional Theory & Studio Engineering Manual (`v5.6.2`)
 
 > **Self-Contained Reference:** This manual contains the complete **Tenuto 6.0 (`.ten`)** formal grammar, compiler rules, instrument & patch catalog, continuous synthesizer modifiers, outboard DSP effects, psychoacoustic voicing laws, and stylistic blueprints. A human composer or AI agent reading **only this document** has 100% of the knowledge required to write studio-mastered, multi-track `.ten` compositions from scratch.
 
@@ -195,6 +195,7 @@ groove tape_pocket "Downtempo Pocket" @{ base: "1/16", quantize: 85%, timing: 42
 | `"collision"` / `"tension"` / `"electric"` | **Physical Modeling Suite:** Euler-Bernoulli modal mallet bars (`collision`), Karplus-Strong string waveguides (`tension`), and tine-bell electric pianos (`electric`). | Expressive mallets, plucked/bowed physical strings, barky tine electric pianos. |
 | `"granulator"` | **Granulator III Cloud Synthesizer:** Configurable via `macros=@{ grain_size: 64, density: 24, spray: 28, pitch_jitter: 14, scan: 0.65 }`. | Textural grain clouds, evolving ambient washes. |
 | `"sc:default"`, `"sc:prophet"`, `"sc:tb303"`, `"sc:jp8000"`, `"sc:modal_bell"`, `"sc:klank_resonator"`, `"sc:dx7_brass"`, `"sc:formant_choir"`, `"sc:karplus_pluck"`, `"sc:gendy_stochastic"`, `"sc:pulsar_train"`, `"sc:hoover"` | **SuperCollider (`scsynth`) UGen-Graph Synthesizer Suite (`style=synth` or `style=scsynth`):** 100% MIT-licensed UGen-Graph synthesis topologies (`VarSaw`, `Pulse`/`RLPF`, `RLPFD` 303 diode, `Splay.ar` 7-saw, `Klank.ar` 6-mode bell, `DynKlank.ar` 8-mode resonator, `PMOsc.ar` 6-op FM brass, `Formant.ar` 3-vowel choir, `Pluck.ar` Karplus-Strong waveguide, `Gendy1.ar` Xenakis dynamic stochastic oscillator, `Blip.ar` pulsar train, and Alpha Juno Hoover) with binary OSC 1.1 `/s_new` bundle encoding and `.scd` (`SynthDef` + `Pbind`) score export. | Live-coding UGen synthesis, modal/resonator percussion, dynamic stochastic drones, and direct SuperCollider `.scd` export. |
+| `"mi:plaits_va"`, `"mi:plaits_waveshaper"`, `"mi:plaits_fm"`, `"mi:plaits_grain"`, `"mi:plaits_additive"`, `"mi:plaits_swarm"`, `"mi:plaits_chord"`, `"mi:plaits_speech"`, `"mi:plaits_karplus"`, `"mi:plaits_modal"`, `"mi:rings_sympathetic"`, `"mi:clouds_texture"` | **Eurorack Macro-Oscillator & Modal Resonator Suite (`style=eurorack` or `style=synth`):** 100% MIT-licensed Eurorack synthesis models (`Plaits` Green/Red banks, `Rings` sympathetic coupled strings, and `Clouds` overlapping Hann-windowed granular diffuser) with internal Vactrol Low-Pass Gate (`LPG`), `HARMONICS` / `TIMBRE` / `MORPH` macro routing, `PhonemeEngine` formant integration, and 1st-order `R = 0.998` DC blocking. | West Coast wavefolded plucks, sympathetic string/mallet resonators, divide-down chord organs, formant speech, and diffused granular clouds. |
 
 ### 5.2 Multi-Sampled Acoustic & Orchestral Instruments (`style=standard`)
 * **Pianos & Keyboards:** `"salamander_grand"`, `"acoustic_grand_piano"`, `"bright_piano"`, `"electric_piano_1"`, `"electric_piano_2"`, `"harpsichord"`, `"clavinet"`, `"celesta"`, `"church_organ"`, `"drawbar_organ"`, `"reed_organ"`, `"accordion"`
@@ -478,6 +479,7 @@ Attach `.fx(<type>, @{ <params> })` to any `def` track, `group` bus, `return` bu
 | `vocoder` | `@{ bands: 20, depth: 1.1, formant_shift: 0, mix: 0.95 }` — 20-Band ($90\text{ Hz}–9600\text{ Hz}$) Klatt Formant Talking Vocoder driven by `.lyric("...")`. |
 | `spectral_resonator` / `auto_shift` | `@{ freq: 220, decay: 1.4, mix: 0.35 }` / `@{ semitones: 0, formant_shift: 2, vibrato: 0.15 }` — Tuned comb resonator and formant pitch shifter. |
 | `utility` / `limiter` | `@{ width: 130, gain_db: 0, pan: 0 }` / `@{ ceiling: -0.3, gain_db: 2.0 }` — Mid/Side stereo width tool and brickwall lookahead limiter. |
+| `signalsmith_reverb` / `signalsmith_stretch` / `signalsmith_chorus` | `@{ decay: 3.4, damp_hz: 5600, mod_depth: 0.35, mix: 0.45 }` / `@{ semitones: 7, tonality_hz: 3200, mix: 0.35 }` / `@{ rate: 0.55, depth_ms: 6.5, mix: 0.45 }` — MIT Signalsmith 4x4 Hadamard FDN stereo diffuser, formant-preserving dual-grain spectral pitch shifter, and quadrature 4-tap detuned chorus. |
 
 ### 12.2 Virtual Studio Outboard & Mastering Hardware Stack
 

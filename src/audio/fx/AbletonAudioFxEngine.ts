@@ -101,7 +101,10 @@ export class AbletonAudioFxEngine {
       norm === 'wes_rhea' ||
       norm === 'bettermaker_limiter' ||
       norm === 'eventide_h9000' ||
-      norm === 'bricasti_m7'
+      norm === 'bricasti_m7' ||
+      norm === 'signalsmith_reverb' ||
+      norm === 'signalsmith_stretch' ||
+      norm === 'signalsmith_chorus'
     );
   }
 
@@ -1332,6 +1335,145 @@ export class AbletonAudioFxEngine {
           const amplifiedR = right[i] * gainLin;
           left[i] = clamp(fastTanh(amplifiedL * invCeil) * ceilingLin, -ceilingLin, ceilingLin);
           right[i] = clamp(fastTanh(amplifiedR * invCeil) * ceilingLin, -ceilingLin, ceilingLin);
+        }
+        break;
+      }
+
+      case 'signalsmith_reverb': {
+        // MIT Signalsmith DSP 4x4 Hadamard Feedback Delay Network (FDN) Stereo Diffuser
+        const decaySec = clamp(Number(p.decay ?? 3.4), 0.25, 16.0);
+        const dampHz = clamp(Number(p.damp_hz ?? p.rolloff_hz ?? 5600), 800, 16000);
+        const modDepth = clamp(Number(p.mod_depth ?? 0.35), 0, 1);
+        const mix = clamp(Number(p.mix ?? 0.45), 0, 1);
+
+        const d0 = Math.max(4, Math.floor(0.0173 * sampleRate));
+        const d1 = Math.max(8, Math.floor(0.0241 * sampleRate));
+        const d2 = Math.max(12, Math.floor(0.0317 * sampleRate));
+        const d3 = Math.max(16, Math.floor(0.0439 * sampleRate));
+        const fb = clamp(Math.pow(0.001, 0.029 / decaySec), 0.25, 0.91);
+        const dampAlpha = clamp((2 * Math.PI * dampHz) / sampleRate, 0.05, 0.88);
+
+        const ringAB = new StereoDelayRingBuffer(d1 + 32);
+        const ringCD = new StereoDelayRingBuffer(d3 + 32);
+        const maskAB = ringAB.mask;
+        const maskCD = ringCD.mask;
+        let lp0 = 0;
+        let lp1 = 0;
+        let lp2 = 0;
+        let lp3 = 0;
+
+        for (let i = 0; i < len; i++) {
+          const dryL = left[startFrame + i];
+          const dryR = right[startFrame + i];
+          const wAB = i & maskAB;
+          const wCD = i & maskCD;
+          const lfo = Math.sin(i * 0.00045) * modDepth * 6;
+          const modOff = Math.round(lfo);
+
+          const x0 = i >= d0 ? ringAB.left[(wAB - d0 + modOff) & maskAB] : 0;
+          const x1 = i >= d1 ? ringAB.right[(wAB - d1 - modOff) & maskAB] : 0;
+          const x2 = i >= d2 ? ringCD.left[(wCD - d2 + modOff) & maskCD] : 0;
+          const x3 = i >= d3 ? ringCD.right[(wCD - d3 - modOff) & maskCD] : 0;
+
+          // Orthogonal 4x4 Hadamard matrix (0.5 * H4)
+          const s01 = x0 + x1;
+          const d01 = x0 - x1;
+          const s23 = x2 + x3;
+          const d23 = x2 - x3;
+
+          const h0 = 0.5 * (s01 + s23);
+          const h1 = 0.5 * (d01 + d23);
+          const h2 = 0.5 * (s01 - s23);
+          const h3 = 0.5 * (d01 - d23);
+
+          lp0 += dampAlpha * (h0 - lp0);
+          lp1 += dampAlpha * (h1 - lp1);
+          lp2 += dampAlpha * (h2 - lp2);
+          lp3 += dampAlpha * (h3 - lp3);
+
+          ringAB.left[wAB] = fastTanh(dryL * 0.7 + lp0 * fb);
+          ringAB.right[wAB] = fastTanh(dryR * 0.7 + lp1 * fb);
+          ringCD.left[wCD] = fastTanh((dryL - dryR) * 0.5 + lp2 * fb);
+          ringCD.right[wCD] = fastTanh((dryL + dryR) * 0.5 + lp3 * fb);
+
+          const wetL = (lp0 + lp2) * 0.65;
+          const wetR = (lp1 + lp3) * 0.65;
+          left[startFrame + i] = dryL * (1 - mix) + wetL * mix;
+          right[startFrame + i] = dryR * (1 - mix) + wetR * mix;
+        }
+        break;
+      }
+
+      case 'signalsmith_stretch': {
+        // MIT Signalsmith Stretch Formant-Preserving Dual-Grain Spectral Pitch Shifter
+        const pitchSt = clamp(Number(p.semitones ?? p.pitch_st ?? 7), -24, 24);
+        const tonalityLimit = clamp(Number(p.tonality_hz ?? 3200), 400, 12000);
+        const mix = clamp(Number(p.mix ?? 0.35), 0, 1);
+
+        const copyL = left.slice(startFrame, endFrame);
+        const copyR = right.slice(startFrame, endFrame);
+        const ratio = Math.pow(2, pitchSt / 12);
+        const dRate = ratio - 1.0;
+        const grainLen = Math.max(256, Math.floor(0.036 * sampleRate));
+        const invGrain = 1.0 / grainLen;
+        const halfGrain = grainLen * 0.5;
+        const maxIdx = Math.max(0, len - 2);
+        const lpAlpha = clamp((2 * Math.PI * tonalityLimit) / sampleRate, 0.05, 0.88);
+        let lpL = 0;
+        let lpR = 0;
+
+        for (let i = 0; i < len; i++) {
+          const drift = dRate * i;
+          const phA = drift - Math.floor(drift * invGrain) * grainLen;
+          const phB = phA >= halfGrain ? phA - halfGrain : phA + halfGrain;
+          const u = phA * invGrain;
+          const w = 0.5 - 0.5 * Math.cos(2 * Math.PI * u);
+          const wB = 1.0 - w;
+
+          const rA = clamp(i - phA, 0, maxIdx);
+          const iA = rA | 0;
+          const fA = rA - iA;
+          const rB = clamp(i - phB, 0, maxIdx);
+          const iB = rB | 0;
+          const fB = rB - iB;
+
+          const rawL =
+            (copyL[iA] + (copyL[iA + 1] - copyL[iA]) * fA) * w +
+            (copyL[iB] + (copyL[iB + 1] - copyL[iB]) * fB) * wB;
+          const rawR =
+            (copyR[iA] + (copyR[iA + 1] - copyR[iA]) * fA) * w +
+            (copyR[iB] + (copyR[iB + 1] - copyR[iB]) * fB) * wB;
+
+          lpL += lpAlpha * (rawL - lpL);
+          lpR += lpAlpha * (rawR - lpR);
+          left[startFrame + i] = copyL[i] * (1 - mix) + lpL * mix;
+          right[startFrame + i] = copyR[i] * (1 - mix) + lpR * mix;
+        }
+        break;
+      }
+
+      case 'signalsmith_chorus': {
+        // MIT Signalsmith Quadrature 4-Tap Detuned Stereo Chorus
+        const rateHz = clamp(Number(p.rate ?? 0.55), 0.05, 6.0);
+        const depthMs = clamp(Number(p.depth_ms ?? 6.5), 0.5, 18.0);
+        const mix = clamp(Number(p.mix ?? 0.45), 0, 1);
+        const copyL = left.slice(startFrame, endFrame);
+        const copyR = right.slice(startFrame, endFrame);
+        const baseSamples = 0.011 * sampleRate;
+        const depthSamples = (depthMs / 1000) * sampleRate;
+        const phaseInc = (2 * Math.PI * rateHz) / sampleRate;
+
+        for (let i = 0; i < len; i++) {
+          const ph = i * phaseInc;
+          const dL1 = Math.max(0, Math.floor(i - (baseSamples + Math.sin(ph) * depthSamples)));
+          const dL2 = Math.max(0, Math.floor(i - (baseSamples * 1.3 + Math.cos(ph * 1.17) * depthSamples)));
+          const dR1 = Math.max(0, Math.floor(i - (baseSamples + Math.cos(ph) * depthSamples)));
+          const dR2 = Math.max(0, Math.floor(i - (baseSamples * 1.3 - Math.sin(ph * 1.17) * depthSamples)));
+
+          const wetL = (copyL[dL1] + copyR[dL2]) * 0.5;
+          const wetR = (copyR[dR1] + copyL[dR2]) * 0.5;
+          left[startFrame + i] = copyL[i] * (1 - mix) + wetL * mix;
+          right[startFrame + i] = copyR[i] * (1 - mix) + wetR * mix;
         }
         break;
       }

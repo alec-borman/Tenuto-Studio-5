@@ -19,6 +19,7 @@ import { TopologicalMutator } from '../mutator/TopologicalMutator';
 import { StudioAudioEngine } from '../audio/StudioAudioEngine';
 import { MetronomeAndCaptureEngine } from '../audio/MetronomeAndCaptureEngine';
 import { SuperColliderEngine } from '../audio/scsynth/SuperColliderEngine';
+import { StrudelAndMusicXmlExporter } from '../audio/export/StrudelAndMusicXmlExporter';
 import {
   MidiTransformAndGeneratorEngine,
   MidiTransformType,
@@ -523,6 +524,48 @@ export default function SplitWorkspace() {
       URL.revokeObjectURL(url);
     } catch (e) {
       console.error('SuperCollider .scd Export failed:', e);
+    }
+  };
+
+  const handleExportStrudel = () => {
+    try {
+      const compiledScore =
+        compiledScoreState ||
+        incrementalCompiler.getLastCompiledScore() ||
+        incrementalCompiler.compileDocument(sourceCode);
+      const strudelCode = StrudelAndMusicXmlExporter.compileScoreToStrudel(compiledScore);
+      const blob = new Blob([strudelCode], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${(scoreMeta.title || 'tenuto_score').toLowerCase().replace(/\s+/g, '_')}.strudel`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('Strudel .strudel Export failed:', e);
+    }
+  };
+
+  const handleExportMusicXml = () => {
+    try {
+      const compiledScore =
+        compiledScoreState ||
+        incrementalCompiler.getLastCompiledScore() ||
+        incrementalCompiler.compileDocument(sourceCode);
+      const xmlCode = StrudelAndMusicXmlExporter.compileScoreToMusicXml(compiledScore);
+      const blob = new Blob([xmlCode], { type: 'application/vnd.recordare.musicxml+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${(scoreMeta.title || 'tenuto_score').toLowerCase().replace(/\s+/g, '_')}.musicxml`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('MusicXML .musicxml Export failed:', e);
     }
   };
 
@@ -1190,6 +1233,8 @@ export default function SplitWorkspace() {
               predownloadState={predownloadState}
               onExportWav={handleExportWav}
               onExportScd={handleExportScd}
+              onExportStrudel={handleExportStrudel}
+              onExportMusicXml={handleExportMusicXml}
               masterVolume={masterVolume}
               onMasterVolumeChange={handleMasterVolumeChange}
               activeMainView={activeMainView}

@@ -1,6 +1,7 @@
 import { TrackDefinition } from '../../parser/DocumentParser';
 import { AtomicEvent } from '../../parser/ASTSerializer';
 import { SuperColliderEngine } from '../scsynth/SuperColliderEngine';
+import { MutablePlaitsEngine } from '../eurorack/MutablePlaitsEngine';
 
 export type AbletonSynthEngineType =
   | 'operator'
@@ -68,6 +69,9 @@ export class AbletonSynthSuite {
     const clean = (patch || '').trim().toLowerCase();
     if (SuperColliderEngine.isSuperColliderPatch(clean)) {
       return SuperColliderEngine.getEngineDisplaySpec(clean);
+    }
+    if (MutablePlaitsEngine.isEurorackPatch(clean)) {
+      return MutablePlaitsEngine.getTopologySpec(clean);
     }
     switch (clean) {
       case 'operator':

@@ -712,6 +712,12 @@ export class SuperColliderEngine {
     let svfLowR = 0;
     let svfBandR = 0;
 
+    // 1st-order DC blocker state (R = 0.998)
+    let dcInL = 0;
+    let dcOutL = 0;
+    let dcInR = 0;
+    let dcOutR = 0;
+
     const glideSec = (phys?.glideMs ?? 0) / 1000;
     const glideStartU =
       glideSec > 0 ? Math.max(0.65, 1.0 - glideSec / Math.max(0.05, durSec)) : 1.0;
@@ -993,18 +999,29 @@ export class SuperColliderEngine {
       const highR = sigR - svfLowR - qDamp * svfBandR;
       svfBandR += fCoeff * highR;
 
-      const outL =
+      const rawOutL =
         patchId === 'sc:modal_bell' || patchId === 'sc:klank_resonator'
           ? sigL * 0.65 + svfLowL * 0.35
           : svfLowL;
-      const outR =
+      const rawOutR =
         patchId === 'sc:modal_bell' || patchId === 'sc:klank_resonator'
           ? sigR * 0.65 + svfLowR * 0.35
           : svfLowR;
 
+      const sampleL = rawOutL * env;
+      const sampleR = rawOutR * env;
+
+      const cleanL = sampleL - dcInL + 0.998 * dcOutL;
+      dcInL = sampleL;
+      dcOutL = cleanL;
+
+      const cleanR = sampleR - dcInR + 0.998 * dcOutR;
+      dcInR = sampleR;
+      dcOutR = cleanR;
+
       const idx = startFrame + i;
-      trackLeft[idx] += outL * env * gainL;
-      trackRight[idx] += outR * env * gainR;
+      trackLeft[idx] += cleanL * gainL;
+      trackRight[idx] += cleanR * gainR;
     }
   }
 }

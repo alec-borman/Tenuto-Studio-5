@@ -252,9 +252,14 @@ export function resolveSoundfontInstrument(
     cleanStyle === 'scsynth' ||
     cleanStyle === 'supercollider' ||
     cleanStyle === 'superdirt' ||
+    cleanStyle === 'eurorack' ||
+    cleanStyle === 'modular' ||
+    cleanStyle === 'plaits' ||
     cleanPatch.startsWith('sc:') ||
     cleanPatch.startsWith('sc_') ||
-    cleanPatch.startsWith('sonic-pi-')
+    cleanPatch.startsWith('sonic-pi-') ||
+    cleanPatch.startsWith('mi:') ||
+    cleanPatch.startsWith('mi_')
   ) {
     return null;
   }

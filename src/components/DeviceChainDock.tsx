@@ -105,6 +105,23 @@ const PATCH_CATALOG = [
       'sc:hoover',
     ],
   },
+  {
+    group: 'Eurorack Macro & Modal Synths (mi:*)',
+    options: [
+      'mi:plaits_va',
+      'mi:plaits_waveshaper',
+      'mi:plaits_fm',
+      'mi:plaits_grain',
+      'mi:plaits_additive',
+      'mi:plaits_swarm',
+      'mi:plaits_chord',
+      'mi:plaits_speech',
+      'mi:plaits_karplus',
+      'mi:plaits_modal',
+      'mi:rings_sympathetic',
+      'mi:clouds_texture',
+    ],
+  },
   { group: 'Drums & Percussion', options: ['tenuto_808_kit', 'taiko_drum'] },
 ];
 
@@ -157,6 +174,9 @@ const FX_DEVICE_DEFAULTS: Record<string, Record<string, number | string>> = {
   spectral_resonator: { decay: 1.4, mix: 0.35 },
   utility: { width: 100, gain_db: 0 },
   limiter: { ceiling: -0.3, gain_db: 2.0 },
+  signalsmith_reverb: { decay: 3.4, damp_hz: 5600, mod_depth: 0.35, mix: 0.45 },
+  signalsmith_stretch: { semitones: 7, tonality_hz: 3200, mix: 0.35 },
+  signalsmith_chorus: { rate: 0.55, depth_ms: 6.5, mix: 0.45 },
 };
 
 function renderDeviceDspCurvePath(fxType: string, params: Record<string, any>): string {
