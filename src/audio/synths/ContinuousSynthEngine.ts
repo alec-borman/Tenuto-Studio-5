@@ -706,8 +706,8 @@ export class ContinuousSynthEngine {
       if (lpgSpec) {
         const tau = Math.max(0.03, lpgSpec.decayMs / 1000);
         const cycleHz =
-          phys?.eocCycleHz && phys.eocCycleHz > 0
-            ? phys.eocCycleHz
+          (phys as any)?.eocCycleHz && (phys as any).eocCycleHz > 0
+            ? (phys as any).eocCycleHz
             : isBuchlaKrell
               ? 1.8
               : 0;
@@ -1219,15 +1219,39 @@ export class ContinuousSynthEngine {
       }
     }
 
-    if (phys?.haasDelayMs && phys.haasDelayMs > 0) {
+    if (phys?.haasDelayMs && phys.haasDelayMs > 0 && len > 32) {
       const delayFrames = Math.min(
         1500,
         Math.max(1, Math.floor((phys.haasDelayMs / 1000) * sampleRate))
       );
-      const copyR = trackRight.slice(startFrame, endFrame);
-      for (let i = delayFrames; i < len; i++) {
-        trackRight[startFrame + i] = copyR[i - delayFrames];
+      if (delayFrames < len) {
+        // Shift right channel in-place without zeroing or corrupting track polyphony
+        for (let i = len - 1; i >= delayFrames; i--) {
+          trackRight[startFrame + i] = trackRight[startFrame + i - delayFrames];
+        }
+        for (let i = 0; i < delayFrames; i++) {
+          trackRight[startFrame + i] *= 0.15;
+        }
       }
+    }
+
+    // 1st-order DC blocker (R=0.998 => ~14 Hz cutoff at 44.1kHz):
+    // Strips rectification / wavewarp DC offsets before they hit master buses or compressors
+    const R = 0.998;
+    let prevXL = 0, prevYL = 0, prevXR = 0, prevYR = 0;
+    for (let i = 0; i < len; i++) {
+      const absIdx = startFrame + i;
+      const xL = trackLeft[absIdx];
+      const yL = xL - prevXL + R * prevYL;
+      prevXL = xL;
+      prevYL = yL;
+      trackLeft[absIdx] = yL;
+
+      const xR = trackRight[absIdx];
+      const yR = xR - prevXR + R * prevYR;
+      prevXR = xR;
+      prevYR = yR;
+      trackRight[absIdx] = yR;
     }
   }
 

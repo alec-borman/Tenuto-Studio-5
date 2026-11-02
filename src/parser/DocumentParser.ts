@@ -465,6 +465,19 @@ export class DocumentParser {
     let cursorTime = { ...measureStartTime };
     let voiceDuration = { numerator: 0, denominator: 1 };
 
+    const expandMacroToken = (token: string, visited: Set<string> = new Set()): string[] => {
+      if (token.startsWith('$')) {
+        const macroName = token.slice(1).replace(/\(.*\)$/, '');
+        if (visited.has(macroName)) return [];
+        visited.add(macroName);
+        const macroBody = macros.get(macroName) || macros.get('$' + macroName);
+        if (macroBody) {
+          return macroBody.flatMap((t) => expandMacroToken(t, new Set(visited)));
+        }
+      }
+      return [token];
+    };
+
     const expandedTokens: string[] = [];
     for (let idx = 0; idx < rawTokens.length; idx++) {
       const tok = rawTokens[idx];
@@ -474,7 +487,9 @@ export class DocumentParser {
         const count = parseInt(rawTokens[idx + 1], 10);
         const block = rawTokens[idx + 2];
         if (!isNaN(count) && count > 0 && block.startsWith('{') && block.endsWith('}')) {
-          const innerTokens = this.tokenizeVoiceStream(block.slice(1, -1));
+          const innerTokens = this.tokenizeVoiceStream(block.slice(1, -1)).flatMap((t) =>
+            expandMacroToken(t)
+          );
           for (let r = 0; r < Math.min(32, count); r++) {
             expandedTokens.push(...innerTokens);
           }
@@ -484,12 +499,8 @@ export class DocumentParser {
       }
 
       if (tok.startsWith('$')) {
-        const macroName = tok.slice(1).replace(/\(.*\)$/, '');
-        const macroBody = macros.get(macroName) || macros.get('$' + macroName);
-        if (macroBody) {
-          expandedTokens.push(...macroBody);
-          continue;
-        }
+        expandedTokens.push(...expandMacroToken(tok));
+        continue;
       }
 
       const modRepeatMatch = tok.match(/^(.+\.[a-zA-Z_][^*]*)\*(\d+)$/);
@@ -506,9 +517,9 @@ export class DocumentParser {
     }
 
     if (expandedTokens.length >= 2 && !expandedTokens[0].includes(':')) {
-      const lastDur = serializer.temporalEngine.lastDuration;
+      const lastDur = (serializer as any).temporalEngine?.lastDuration;
       if (lastDur && lastDur.numerator / Math.max(1, lastDur.denominator) >= 0.75) {
-        serializer.temporalEngine.lastDuration = { numerator: 1, denominator: 4 };
+        (serializer as any).temporalEngine.lastDuration = { numerator: 1, denominator: 4 };
       }
     }
 

@@ -184,6 +184,19 @@ export class VoiceBakePool {
   }
 
   /**
+   * Promotes a queued job with matching voiceSeed to urgent priority and immediately
+   * dispatches it to any available worker.
+   */
+  public promoteUrgentBySeed(voiceSeed: number): boolean {
+    const job = this.queue.find((q) => q.voiceSeed === voiceSeed);
+    if (!job) return false;
+    job.urgent = true;
+    this.sortQueueByUrgencyAndStartSec();
+    this.dispatchNext();
+    return true;
+  }
+
+  /**
    * If the main thread decides to synchronously render an imminent voice because its
    * start time has arrived while it was still sitting in `this.queue`, remove it from
    * `this.queue` so a worker doesn't waste time re-rendering it.

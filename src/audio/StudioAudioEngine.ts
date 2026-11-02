@@ -71,6 +71,7 @@ interface ScheduledNoteEvent {
   pcmStats?: { peak: number; rms: number; nanCount: number };
   cacheKey?: string;
   isBaked?: boolean;
+  voiceSeed?: number;
 }
 
 interface ActiveVoiceCleanup {
@@ -81,6 +82,7 @@ interface ActiveVoiceCleanup {
 export class StudioAudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
+  private masterDcFilter: BiquadFilterNode | null = null;
   private dryBus: GainNode | null = null;
   private drumBus: GainNode | null = null;
   private reverbSendBus: GainNode | null = null;
@@ -212,6 +214,7 @@ export class StudioAudioEngine {
       this.reverbNode?.disconnect();
       this.reverbWetGain?.disconnect();
       this.masterGain?.disconnect();
+      this.masterDcFilter?.disconnect();
       this.compressorNode?.disconnect();
       this.masterAnalyser?.disconnect();
       this.dryAnalyser?.disconnect();
@@ -223,6 +226,20 @@ export class StudioAudioEngine {
     this.masterGain = ctx.createGain();
     this.masterGain.gain.value = 0.92 * this.masterVolumeScalar;
 
+    let masterOutputNode: AudioNode = this.masterGain;
+    if (typeof ctx.createBiquadFilter === 'function') {
+      const dcFilter = ctx.createBiquadFilter();
+      dcFilter.type = 'highpass';
+      const now = ctx.currentTime || 0;
+      dcFilter.frequency?.setValueAtTime?.(22, now);
+      dcFilter.Q?.setValueAtTime?.(0.707, now);
+      this.masterGain.connect(dcFilter);
+      masterOutputNode = dcFilter;
+      this.masterDcFilter = dcFilter;
+    } else {
+      this.masterDcFilter = null;
+    }
+
     if (typeof (ctx as unknown as { createDynamicsCompressor?: unknown }).createDynamicsCompressor === 'function') {
       const comp = ctx.createDynamicsCompressor();
       const now = ctx.currentTime || 0;
@@ -232,10 +249,10 @@ export class StudioAudioEngine {
       comp.attack?.setValueAtTime?.(0.012, now);
       comp.release?.setValueAtTime?.(0.22, now);
       comp.connect(ctx.destination);
-      this.masterGain.connect(comp);
+      masterOutputNode.connect(comp);
       this.compressorNode = comp;
     } else {
-      this.masterGain.connect(ctx.destination);
+      masterOutputNode.connect(ctx.destination);
       this.compressorNode = null;
     }
 
@@ -1288,6 +1305,9 @@ export class StudioAudioEngine {
     coalescedList.sort((a, b) => a.startSec - b.startSec);
 
     SamplerAndDrumRackEngine.applyDrumRackChokeGroups(coalescedList);
+    for (let idx = 0; idx < coalescedList.length; idx++) {
+      coalescedList[idx].voiceSeed = idx + 1;
+    }
     return coalescedList;
   }
 
@@ -1357,7 +1377,7 @@ export class StudioAudioEngine {
     this.voiceRingBuffer.evictTimelineWindow(
       timeline,
       fromSec,
-      1.5,
+      0.6,
       Math.max(30.0, toSec - fromSec + 10.0),
       this.isLooping
     );
@@ -1493,7 +1513,8 @@ export class StudioAudioEngine {
 
       if (pool.pendingCount >= StudioAudioEngine.MAX_BAKES_IN_FLIGHT) break;
       const isUrgent = item.startSec <= fromSec + 0.5;
-      queued.push(this.bakeItemInWorker(ctx, pool, item, tempoBpm, idx + 1, cacheKey, isUrgent));
+      const seed = item.voiceSeed ?? (idx + 1);
+      queued.push(this.bakeItemInWorker(ctx, pool, item, tempoBpm, seed, cacheKey, isUrgent));
     }
     return queued;
   }
@@ -1558,8 +1579,8 @@ export class StudioAudioEngine {
     if (rawLateSec >= item.durSec + 0.4) {
       playbackDiag.recordVoiceEvent({
         playheadSec,
-        measure: item.event.measure || 1,
-        beat: item.event.beat || 1,
+        measure: (item.event as any).measure || 1,
+        beat: (item.event as any).beat || 1,
         trackId: item.event.trackId || 'synth',
         style: item.style,
         patch: item.patch,
@@ -1587,8 +1608,8 @@ export class StudioAudioEngine {
 
     playbackDiag.recordVoiceEvent({
       playheadSec,
-      measure: item.event.measure || 1,
-      beat: item.event.beat || 1,
+      measure: (item.event as any).measure || 1,
+      beat: (item.event as any).beat || 1,
       trackId: item.event.trackId || 'synth',
       style: item.style,
       patch: item.patch,
@@ -1828,8 +1849,8 @@ export class StudioAudioEngine {
   ): void {
     if (!this.dryBus || !this.drumBus) return;
     const playheadSec = Math.max(0, ctx.currentTime - this.startContextTime);
-    const evMeasure = item.event.measure || 1;
-    const evBeat = item.event.beat || 1;
+    const evMeasure = (item.event as any).measure || 1;
+    const evBeat = (item.event as any).beat || 1;
     const evTrackId = item.event.trackId || 'pno';
     const chordVoicesCount = item.chordVoices ? item.chordVoices.length : 1;
 
@@ -2053,13 +2074,17 @@ export class StudioAudioEngine {
             };
             triggerPath = isDeferredJoin ? 'deferred_join' : 'ring_hit';
           } else {
-            const voiceSeed = (item.noteIndexInTrack ?? 0) + 1;
+            const voiceSeed = item.voiceSeed ?? (item.noteIndexInTrack ?? 0) + 1;
             const pool = this.getBakePool();
-            const isActivelyOnWorker =
-              this.pendingBakes.has(item) && pool !== null && pool.isActivelyRenderingSeed(voiceSeed);
 
-            if (isActivelyOnWorker) {
-              // A worker is actively mid-render on this exact voice right now; await its completion
+            if (pool !== null) {
+              // Worker pool is available! Promote to urgent (or dispatch urgently) and await without freezing main thread
+              if (this.pendingBakes.has(item)) {
+                pool.promoteUrgentBySeed(voiceSeed);
+              } else {
+                this.bakeItemInWorker(ctx, pool, item, tempo, voiceSeed, cacheKey, true);
+              }
+
               this.voicesAwaitingBake.add(item);
               playbackDiag.recordVoiceEvent({
                 playheadSec,
@@ -2082,17 +2107,8 @@ export class StudioAudioEngine {
               return;
             }
 
-            // If it was sitting unstarted in the worker queue, cancel the queued job so we don't duplicate work
-            if (this.pendingBakes.has(item)) {
-              pool?.cancelQueuedBySeed(voiceSeed);
-              this.pendingBakes.delete(item);
-              this.pendingBakeKeys.delete(cacheKey);
-              triggerPath = 'sync_urgent';
-            } else {
-              triggerPath = 'sync_fallback';
-            }
-
-            // Render synchronously on main thread so audio NEVER drops out!
+            // Fallback ONLY when Web Workers are completely unavailable (e.g. headless unit tests)
+            triggerPath = 'sync_fallback';
             const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
             const { left: chL, right: chR, peak, rms, nanCount } = renderContinuousVoicePcm(
               item,
@@ -3555,7 +3571,7 @@ export class StudioAudioEngine {
     };
     for (const d of score.defs) {
       mixHash(
-        `${d.id}:${d.patch}:${d.style}:${d.volume ?? ''}:${d.pan ?? ''}:${d.group ?? ''}:${JSON.stringify(d.fxChain ?? d.fx ?? '')}:${JSON.stringify(d.sends ?? '')}|`
+        `${d.id}:${d.patch}:${d.style}:${d.volume ?? ''}:${d.pan ?? ''}:${d.groupId ?? (d as any).group ?? ''}:${JSON.stringify(d.fxChain ?? d.fx ?? '')}:${JSON.stringify(d.sends ?? '')}|`
       );
     }
     for (const ev of score.events) {
@@ -3926,34 +3942,40 @@ export class StudioAudioEngine {
           patch: it.patch,
         },
         event: {
-          measure: it.event.measure || 1,
-          beat: it.event.beat || 1,
-          type: it.event.type || 'note',
+          measure: (it.event as any).measure || 1,
+          beat: (it.event as any).beat || 1,
+          type: (it.event as any).type || 'note',
         },
       })),
       this.tempoBpm,
       beatsPerBar
     );
 
-    // Synchronously pre-bake the opening 2.2s window (capped at 55ms) before starting the clock,
-    // and dispatch the rolling lookahead window to the off-thread worker pool.
-    this.prebakeContinuousSynthTimeline(ctx, this.scheduledTimeline, this.tempoBpm, 0, 2.2, 12, 55);
+    // Dispatch opening notes to workers and await up to 140ms so the first several measures
+    // are 100% prebaked in the ring buffer before the audio clock starts ticking!
     if (pool) {
-      this.requestWorkerBakes(
+      const startupBakes = this.requestWorkerBakes(
         ctx,
         this.scheduledTimeline,
         this.tempoBpm,
         0,
-        6.0
+        4.0
       );
+      if (startupBakes.length > 0) {
+        await Promise.race([
+          Promise.all(startupBakes),
+          new Promise((resolve) => setTimeout(resolve, 140)),
+        ]);
+      }
+    } else {
+      this.prebakeContinuousSynthTimeline(ctx, this.scheduledTimeline, this.tempoBpm, 0, 2.5, 12, 55);
     }
 
     const baseStart = ctx.currentTime + 0.05;
     this.startContextTime = baseStart;
 
-    // Keep WebAudio schedule lookahead tight (0.20s when visible) so worker jobs have maximum
-    // lead time before triggerRealtimeVoice checks for their prebaked AudioBuffer!
-    const DEFAULT_LOOKAHEAD_SEC = 0.20;
+    // 0.35s schedule lookahead provides ample buffer against minor frame drops or GC pauses
+    const DEFAULT_LOOKAHEAD_SEC = 0.35;
     let schedulerSubTick = 0;
 
     const scheduleLookaheadSlice = () => {
@@ -4281,7 +4303,7 @@ export class StudioAudioEngine {
         Boolean(item.def?.fxChain && item.def.fxChain.length > 0) ||
         Boolean(item.def?.fx && Object.keys(item.def.fx).length > 0) ||
         Boolean(item.def?.sends && Object.keys(item.def.sends).length > 0) ||
-        Boolean(item.def?.group);
+        Boolean(item.def?.groupId || (item.def as any)?.group);
 
       let targetL = left;
       let targetR = right;
@@ -5109,6 +5131,24 @@ export class StudioAudioEngine {
 
       left[i] = inL + earlyL + outAp2L * 0.34;
       right[i] = inR + earlyR + outAp2R * 0.34;
+    }
+
+    // 1st-order DC blocker (R=0.998 => ~14 Hz cutoff at 44.1kHz):
+    // Eliminates lingering DC offset across all summed stems before peak-normalizing
+    const R_dc = 0.998;
+    let prevDcXL = 0, prevDcYL = 0, prevDcXR = 0, prevDcYR = 0;
+    for (let i = 0; i < totalFrames; i++) {
+      const l = left[i];
+      const yL = l - prevDcXL + R_dc * prevDcYL;
+      prevDcXL = l;
+      prevDcYL = yL;
+      left[i] = yL;
+
+      const r = right[i];
+      const yR = r - prevDcXR + R_dc * prevDcYR;
+      prevDcXR = r;
+      prevDcYR = yR;
+      right[i] = yR;
     }
 
     // Peak-normalize the rendered stereo mix to 0.90 (-0.9 dBFS) with transient spike protection
