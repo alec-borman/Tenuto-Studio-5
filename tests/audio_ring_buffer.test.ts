@@ -107,9 +107,9 @@ describe('AudioRingBuffer & 30-Measure Crucible Stress Study', () => {
       engine.voiceRingBuffer.write(`k-${i}`, pcm.left, pcm.right);
     }
     const elapsedMs = performance.now() - t0;
-    // All 2 measures (6.32s of dense 20-voice binaural pad + spectral pitch harmonizer lead + krell)
-    // must render in well under 500ms total
-    expect(elapsedMs).toBeLessThan(500);
+    // All 2 measures (6.32s of dense 20-voice binaural pad + spectral pitch harmonizer lead + krell + release tails)
+    // must render rapidly in well under 1200ms total
+    expect(elapsedMs).toBeLessThan(1200);
     expect(engine.voiceRingBuffer.currentFrames).toBeLessThanOrEqual(engine.voiceRingBuffer.maxFrames);
   });
 
@@ -140,6 +140,16 @@ describe('AudioRingBuffer & 30-Measure Crucible Stress Study', () => {
       expect(res.peak).toBeGreaterThan(0.01);
       expect(res.rms).toBeGreaterThan(0.001);
       expect(res.nanCount).toBe(0);
+
+      // Verify release tail frames beyond item.durSec contain smooth non-zero release energy
+      const noteEndFrame = Math.ceil(timeline[i].durSec * 44100);
+      if (res.left.length > noteEndFrame + 400) {
+        let tailEnergy = 0;
+        for (let k = noteEndFrame + 16; k < Math.min(res.left.length, noteEndFrame + 800); k++) {
+          tailEnergy += res.left[k] * res.left[k] + res.right[k] * res.right[k];
+        }
+        expect(tailEnergy).toBeGreaterThan(1e-6);
+      }
     }
   });
 });

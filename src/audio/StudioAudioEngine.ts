@@ -1070,10 +1070,17 @@ export class StudioAudioEngine {
           groupId?.toLowerCase() === sidechainSourceId ||
           ev.style === 'grid' ||
           def?.style === 'grid');
-      const duckScalar =
+      const rawDuckScalar =
         !isSidechainSource && sidechainTriggers.length > 0
           ? this.computeSidechainDuckScalar(rawStartSec, sidechainTriggers, activeTapMode)
           : 1.0;
+      const noteSpanSec = Math.max(0.05, rawEndSec - rawStartSec);
+      // Short notes (<= 0.6s) take the full transient duckScalar; long sustained half/whole notes (> 0.6s)
+      // amortize static attenuation so a Beat 1 kick never crushes a 2.5-second hold by 50%.
+      const duckScalar =
+        noteSpanSec > 0.6
+          ? 1.0 - (1.0 - rawDuckScalar) * Math.min(0.28, 0.2 / noteSpanSec)
+          : rawDuckScalar;
 
       const trackGainScalar =
         (trackVolMidi / 100) * groupVolScalar * duckScalar * 0.95 * this.polyphonyScalar;
@@ -2188,6 +2195,22 @@ export class StudioAudioEngine {
         }
         src.connect(envGain);
         envGain.connect(voiceOut);
+
+        let sendTapGain: GainNode | null = null;
+        if (
+          this.reverbSendBus &&
+          item.reverbSendGain !== undefined &&
+          item.reverbSendGain > 0.02
+        ) {
+          sendTapGain = ctx.createGain();
+          sendTapGain.gain.setValueAtTime(
+            Math.min(0.45, item.reverbSendGain * 0.38),
+            safeStart
+          );
+          envGain.connect(sendTapGain);
+          sendTapGain.connect(this.reverbSendBus);
+        }
+
         src.start(safeStart, safeOffset);
         let cleaned = false;
         const cleanup: ActiveVoiceCleanup = {
@@ -2213,6 +2236,7 @@ export class StudioAudioEngine {
               src.stop();
               src.disconnect();
               envGain.disconnect();
+              sendTapGain?.disconnect();
               pannerNode?.disconnect();
             } catch {
               // Ignore
@@ -2220,9 +2244,10 @@ export class StudioAudioEngine {
           },
         };
         this.activeVoices.add(cleanup);
+        const remainingBufDur = Math.max(durSec + 0.28, buf.duration - safeOffset);
         this.activeVoiceMeta.set(cleanup, {
           startTime: safeStart,
-          endTime: safeStart + durSec + 0.28,
+          endTime: safeStart + remainingBufDur,
         });
         src.onended = () => cleanup.stopAndDisconnect();
         return;
@@ -3822,8 +3847,21 @@ export class StudioAudioEngine {
 
     const baseTempo = this.tempoBpm;
     const tempoMap = score.meta?.tempoMap;
-    let lastVisualUpdateSec = -1;
+    let lastVisualUpdateWallMs = -100;
     let lastRafTimeMs = 0;
+    let lastTrackedStartCtxTime = -1;
+    let lastMonotonicElapsedSec = 0;
+    // Capture a clamped baseline hardware latency once per session so mid-stream Bluetooth A2DP
+    // outputLatency renegotiations never cause the visual playhead to snap backward and flicker.
+    const sessionHwLatencySec = Math.min(
+      0.18,
+      Math.max(
+        0,
+        Number((ctx as unknown as { outputLatency?: number }).outputLatency) ||
+          Number((ctx as unknown as { baseLatency?: number }).baseLatency) ||
+          0
+      )
+    );
     const TARGET_FRAME_MS = 1000 / 60; // strictly 60 FPS (~16.66ms)
 
     const tickVisualProgress = (frameTimeMs: DOMHighResTimeStamp) => {
@@ -3837,16 +3875,23 @@ export class StudioAudioEngine {
       }
       lastRafTimeMs = frameTimeMs;
 
-      const now = this.ctx.currentTime;
       playbackDiag.recordVisualFrame();
-      // Dispatch React playhead state updates at ~30fps (33ms) so Monaco/SVG layout is lightweight
-      if (now - lastVisualUpdateSec >= 0.033) {
-        lastVisualUpdateSec = now;
-        const hwLatencySec =
-          Number((this.ctx as unknown as { outputLatency?: number }).outputLatency) ||
-          Number((this.ctx as unknown as { baseLatency?: number }).baseLatency) ||
-          0;
-        const rawElapsed = Math.max(0, now - this.startContextTime - hwLatencySec);
+      // Gate React playhead updates on wall-clock frameTimeMs (~30fps / 33ms) and enforce
+      // monotonic elapsed time within each loop pass so Bluetooth clock stalls never flicker the UI.
+      if (frameTimeMs - lastVisualUpdateWallMs >= 32) {
+        lastVisualUpdateWallMs = frameTimeMs;
+        if (this.startContextTime !== lastTrackedStartCtxTime) {
+          lastTrackedStartCtxTime = this.startContextTime;
+          lastMonotonicElapsedSec = 0;
+        }
+        const now = this.ctx.currentTime;
+        const candidateElapsed = Math.max(
+          0,
+          now - this.startContextTime - sessionHwLatencySec
+        );
+        const rawElapsed = Math.max(lastMonotonicElapsedSec, candidateElapsed);
+        lastMonotonicElapsedSec = rawElapsed;
+
         const audibleScoreSec = Math.max(0, rawElapsed - countInSec);
         const currentWhole = this.secondsToWholeNote(audibleScoreSec, baseTempo, tempoMap);
         const currentBeat = Math.min(this.totalQuarterBeats, currentWhole * 4);
@@ -4197,7 +4242,21 @@ export class StudioAudioEngine {
   }> {
     try {
       if (!this.soundfontLoader.isTestEnvironment()) {
-        await this.soundfontLoader.prewarmScoreSamples(this.ensureContext(), score);
+        const requiredAssets = this.soundfontLoader.extractRequiredScoreAssets(score);
+        if (requiredAssets.size > 0) {
+          const OfflineCtx =
+            typeof OfflineAudioContext !== 'undefined'
+              ? OfflineAudioContext
+              : (window as unknown as { webkitOfflineAudioContext?: typeof OfflineAudioContext })
+                  ?.webkitOfflineAudioContext;
+          const decodeCtx: BaseAudioContext =
+            this.ctx && (this.ctx.state as string) !== 'closed'
+              ? this.ctx
+              : OfflineCtx
+                ? new OfflineCtx(2, 1, 44100)
+                : this.ensureContext();
+          await this.soundfontLoader.prewarmScoreSamples(decodeCtx, score);
+        }
       }
     } catch {
       // Fallback to synthesis if AudioContext / network is unavailable

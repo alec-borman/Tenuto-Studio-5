@@ -484,25 +484,31 @@ export class ContinuousSynthEngine {
           : 0;
     const hasBinauralSplit = binauralCents > 0;
 
+    const sideWeight =
+      numUnison > 1 ? Math.min(0.38, 0.96 / Math.max(1, numUnison - 1)) : 1.0;
+
     for (let u = 0; u < numUnison; u++) {
       if (hasBinauralSplit) {
-        // UDO Super Gemini binaural split: even oscillators hard-biased Left, odd oscillators Right
-        unisonPanNorm[u] = u % 2 === 0 ? -0.92 : 0.92;
+        // Binaural split: even oscillators Left, odd oscillators Right.
+        // Anchor u=0 (Left fundamental) and u=1 (Right fundamental) so neither ear can ever phase-cancel.
+        unisonPanNorm[u] = u % 2 === 0 ? -0.86 : 0.86;
+        unisonDetuneNorm[u] =
+          u === 0 ? 0.0 : u === 1 ? 0.08 : u % 2 === 0 ? -0.91 : 1.09;
+        unisonWeight[u] = u <= 1 ? 1.38 : 0.36;
       } else {
         unisonPanNorm[u] = numUnison > 1 ? (u / (numUnison - 1)) * 2 - 1 : 0;
+        if (numUnison === 3) {
+          unisonDetuneNorm[u] = ASYM_3[u];
+        } else if (numUnison === 7) {
+          unisonDetuneNorm[u] = ASYM_7[u];
+        } else {
+          const sym = numUnison > 1 ? (u / (numUnison - 1)) * 2 - 1 : 0;
+          unisonDetuneNorm[u] = sym >= 0 ? sym * 1.07 : sym * 0.92;
+        }
+        // Fundamental-dominant unison weighting (1.55 center vs bounded side sum <= 0.96)
+        // guarantees side oscillators never cancel the center fundamental during detune sweeps.
+        unisonWeight[u] = u === centerUnisonIdx ? 1.55 : sideWeight;
       }
-      if (numUnison === 3) {
-        unisonDetuneNorm[u] = ASYM_3[u];
-      } else if (numUnison === 7) {
-        unisonDetuneNorm[u] = ASYM_7[u];
-      } else {
-        const sym = numUnison > 1 ? (u / (numUnison - 1)) * 2 - 1 : 0;
-        unisonDetuneNorm[u] = sym >= 0 ? sym * 1.07 : sym * 0.92;
-      }
-      // Fundamental-dominant unison weighting (1.55 center vs 0.42 side) guarantees that
-      // the sum of side oscillators in a channel never exceeds the center fundamental,
-      // making 180-degree phase cancellation to 0.0 mathematically impossible.
-      unisonWeight[u] = u === centerUnisonIdx ? 1.55 : 0.42;
 
       if (stackMode === 'octaves' && u >= numUnison - 1) {
         unisonStackRatios[u] = 2.0;
@@ -653,13 +659,15 @@ export class ContinuousSynthEngine {
 
       // 1. Amplitude Envelope at k-rate
       let ampEnv = 1.0;
-      if (phys?.osmoseSqueeze !== undefined && phys.osmoseSqueeze > 0) {
-        const sqNorm = Math.max(0.1, Math.min(1.0, phys.osmoseSqueeze / 100));
+      const hasSqueeze = phys?.osmoseSqueeze !== undefined && phys.osmoseSqueeze > 0;
+      if (hasSqueeze) {
+        const sqNorm = Math.max(0.1, Math.min(1.0, phys!.osmoseSqueeze! / 100));
+        const attRamp = t < 0.012 ? t / 0.012 : 1.0;
         if (midSample <= durFrames) {
-          ampEnv = 0.25 + 0.75 * Math.sin(normU * Math.PI) * sqNorm;
+          ampEnv = (0.58 + 0.42 * Math.sin(normU * Math.PI) * sqNorm) * attRamp;
         } else {
           const relProg = (midSample - durFrames) / Math.max(1, len - durFrames);
-          ampEnv = 0.45 * Math.pow(Math.max(0, 1 - relProg), 1.6);
+          ampEnv = 0.58 * Math.pow(Math.max(0, 1 - relProg), 1.5);
         }
       } else if (phys?.preSwell) {
         if (midSample <= durFrames) {
@@ -674,48 +682,41 @@ export class ContinuousSynthEngine {
           ampEnv = (item.startAmp + (item.endAmp - item.startAmp) * normU) * attRamp;
         } else {
           const relProg = (midSample - durFrames) / Math.max(1, len - durFrames);
-          ampEnv = item.endAmp * Math.pow(Math.max(0, 1 - relProg), 1.6);
+          ampEnv = item.endAmp * Math.pow(Math.max(0, 1 - relProg), 1.5);
         }
       } else {
-        const attackSec = isHauntologyPad ? Math.min(0.8, item.durSec * 0.35) : isPluckPatch ? 0.003 : 0.008;
+        const attackSec = isHauntologyPad ? Math.min(0.35, item.durSec * 0.22) : isPluckPatch ? 0.003 : 0.008;
         if (t < attackSec) {
           ampEnv = t / Math.max(0.001, attackSec);
         } else if (midSample <= durFrames) {
           ampEnv = isPluckPatch
-            ? 0.35 + 0.65 * Math.exp(-(t - attackSec) * 6.5)
+            ? 0.42 + 0.58 * Math.exp(-(t - attackSec) * 5.5)
             : isBuchlaKrell
-              ? 0.45 + 0.5 * (0.5 + 0.5 * Math.sin(2 * Math.PI * 1.8 * t))
+              ? 0.68 + 0.28 * (0.5 + 0.5 * Math.sin(2 * Math.PI * 1.8 * t))
               : 0.92;
         } else {
           const relProg = (midSample - durFrames) / Math.max(1, len - durFrames);
-          ampEnv = 0.92 * Math.pow(Math.max(0, 1 - relProg), 1.6);
+          ampEnv = 0.92 * Math.pow(Math.max(0, 1 - relProg), 1.5);
         }
       }
 
-      // Arturia PolyBrute 12 FullTouch MPE keybed envelope shaping
+      // FullTouch MPE keybed envelope shaping (avoid double-pinching when osmoseSqueeze is already active)
       if (phys?.fullTouchMode === 'pizz') {
         ampEnv *= Math.exp(-t * 7.5);
-      } else if (phys?.fullTouchMode === 'at' || phys?.fullTouchMode === 'at_z') {
-        ampEnv *= 0.35 + 0.65 * Math.sin(normU * Math.PI);
+      } else if (!hasSqueeze && (phys?.fullTouchMode === 'at' || phys?.fullTouchMode === 'at_z')) {
+        ampEnv *= 0.65 + 0.35 * Math.sin(normU * Math.PI);
       }
 
-      // Buchla 292e Vactrol Low-Pass Gate (asymmetrical photoresistor decay shaping VCA & LP)
+      // West Coast Vactrol Low-Pass Gate (asymmetrical photoresistor decay shaping VCA & LP)
       const lpgSpec =
         phys?.lpg ?? (isBuchla200e ? { mode: 'both' as const, decayMs: 420 } : undefined);
       let vactrolEnv = 1.0;
       if (lpgSpec) {
-        const tau = Math.max(0.03, lpgSpec.decayMs / 1000);
-        const cycleHz =
-          (phys as any)?.eocCycleHz && (phys as any).eocCycleHz > 0
-            ? (phys as any).eocCycleHz
-            : isBuchlaKrell
-              ? 1.8
-              : 0;
-        const vT = cycleHz > 0 ? t % (1.0 / cycleHz) : t;
-        const vAtt = vT < 0.004 ? vT / 0.004 : 1.0;
-        // Asymmetrical vactrol photoresistor decay tail with warm photoresistor floor
+        const tau = Math.max(0.04, lpgSpec.decayMs / 1000);
+        const vAtt = t < 0.004 ? t / 0.004 : 1.0;
+        // Asymmetrical vactrol photoresistor decay tail with warm sustain floor
         vactrolEnv =
-          vAtt * (0.12 + 0.62 * Math.exp(-vT / tau) + 0.26 * Math.exp(-vT / (tau * 2.4)));
+          vAtt * (0.28 + 0.48 * Math.exp(-t / tau) + 0.24 * Math.exp(-t / (tau * 2.6)));
         if (lpgSpec.mode === 'vca' || lpgSpec.mode === 'both') {
           ampEnv *= vactrolEnv;
         }
@@ -951,7 +952,11 @@ export class ContinuousSynthEngine {
         const vLfo = 0.5 + 0.5 * Math.sin(2 * Math.PI * phys.vowelFormant.rateHz * songTimeSec);
         const f1Active = f1From + (f1To - f1From) * vLfo;
         const f2Active = f2From + (f2To - f2From) * vLfo;
-        modCutoffHz = 0.45 * f1Active + 0.55 * f2Active;
+        const formantTargetHz = 0.35 * f1Active + 0.65 * f2Active;
+        // Blend vowel formant contour with the active filter trajectory so high melodic notes are never muffled
+        modCutoffHz = hasExplicitNoteFilter
+          ? Math.max(modCutoffHz * 0.68, 0.55 * modCutoffHz + 0.45 * formantTargetHz * 1.6)
+          : Math.max(formantTargetHz, modCutoffHz * 0.55);
       }
 
       const effectiveCutoff = Math.max(55, Math.min(15500, modCutoffHz * keytrackRatio));

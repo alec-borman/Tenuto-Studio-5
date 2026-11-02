@@ -911,7 +911,8 @@ export class AbletonAudioFxEngine {
           const rawL = copyL[idx0] + (copyL[idx1] - copyL[idx0]) * frac;
           const rawR = copyR[idx0] + (copyR[idx1] - copyR[idx0]) * frac;
 
-          // Soft analog tape saturation (1-4 dB transient compression) + steep 2-stage high-cut
+          // Soft analog tape saturation (1-4 dB transient compression) + steep 2-stage high-cut.
+          // Blend rawL/rawR (phase-locked to the transport delay) with lp2L/lp2R to prevent dry/wet comb-filtering.
           const satL = fastTanh(rawL * driveGain);
           const satR = fastTanh(rawR * driveGain);
 
@@ -920,8 +921,8 @@ export class AbletonAudioFxEngine {
           lp1R += lpAlpha * (satR - lp1R);
           lp2R += lpAlpha * (lp1R - lp2R);
 
-          left[startFrame + i] = copyL[i] * (1 - mix) + lp2L * mix;
-          right[startFrame + i] = copyR[i] * (1 - mix) + lp2R * mix;
+          left[startFrame + i] = rawL * (1 - mix) + lp2L * mix;
+          right[startFrame + i] = rawR * (1 - mix) + lp2R * mix;
         }
         break;
       }

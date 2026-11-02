@@ -93,7 +93,10 @@ export function renderContinuousVoicePcm(
   voiceSeed: number
 ): RenderedContinuousVoicePcm {
   const rawRelease = Number(item.def?.env?.release);
-  const baseReleaseSec = Math.min(0.45, Math.max(0.06, Number.isFinite(rawRelease) ? rawRelease * 0.25 : 0.14));
+  const baseReleaseSec = Math.min(
+    0.45,
+    Math.max(0.14, Number.isFinite(rawRelease) ? rawRelease * 0.28 : 0.18)
+  );
   const fxChain = AbletonAudioFxEngine.resolveActiveFxChain(item.def, item.event);
   let fxTailSec = 0;
   if (fxChain.length > 0) {
@@ -107,15 +110,16 @@ export function renderContinuousVoicePcm(
   }
   const releaseTailSec = baseReleaseSec + fxTailSec;
   const totalFrames = Math.max(64, Math.ceil((item.durSec + releaseTailSec) * sampleRate));
-  const noteFrames = Math.max(32, Math.ceil(item.durSec * sampleRate));
   const chL = new Float32Array(totalFrames);
   const chR = new Float32Array(totalFrames);
 
+  // Pass totalFrames so ContinuousSynthEngine renders both the note body (0..durFrames)
+  // and the smooth release envelope tail (durFrames..totalFrames) without abrupt cutoffs.
   ContinuousSynthEngine.renderVoiceIntoTrackStem(
     chL,
     chR,
     0,
-    noteFrames,
+    totalFrames,
     sampleRate,
     tempoBpm,
     voiceSeed,
@@ -123,11 +127,24 @@ export function renderContinuousVoicePcm(
   );
 
   if (fxChain.length > 0) {
-    const fastChain = fxChain.filter((f) => f.type !== 'vocoder');
+    const vocoderFx = fxChain.find((f) => f.type.toLowerCase() === 'vocoder');
+    if (vocoderFx) {
+      AbletonAudioFxEngine.applyTalkingVocoderToSlice(
+        chL,
+        chR,
+        0,
+        totalFrames,
+        sampleRate,
+        item.event?.physics?.lyric || String(vocoderFx.params?.lyric ?? 'ah'),
+        vocoderFx.params
+      );
+    }
+    const fastChain = fxChain.filter((f) => f.type.toLowerCase() !== 'vocoder');
     if (fastChain.length > 0) {
       AbletonAudioFxEngine.applyFxChainToSlice(chL, chR, 0, totalFrames, sampleRate, fastChain, {
         tempoBpm,
         carrierFreqHz: item.freq,
+        lyric: item.event?.physics?.lyric,
       });
     }
   }
