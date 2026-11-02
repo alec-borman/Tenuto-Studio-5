@@ -2,6 +2,8 @@ import { TrackDefinition } from '../../parser/DocumentParser';
 import { AtomicEvent } from '../../parser/ASTSerializer';
 import { SuperColliderEngine } from '../scsynth/SuperColliderEngine';
 import { MutablePlaitsEngine } from '../eurorack/MutablePlaitsEngine';
+import { DaisyStkEngine } from '../daisy/DaisyStkEngine';
+import { SoundpipeEngine } from '../soundpipe/SoundpipeEngine';
 
 export type AbletonSynthEngineType =
   | 'operator'
@@ -72,6 +74,12 @@ export class AbletonSynthSuite {
     }
     if (MutablePlaitsEngine.isEurorackPatch(clean)) {
       return MutablePlaitsEngine.getTopologySpec(clean);
+    }
+    if (DaisyStkEngine.isDaisyStkPatch(clean)) {
+      return DaisyStkEngine.getTopologySpec(clean);
+    }
+    if (SoundpipeEngine.isSoundpipePatch(clean)) {
+      return SoundpipeEngine.getTopologySpec(clean);
     }
     switch (clean) {
       case 'operator':

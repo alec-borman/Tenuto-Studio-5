@@ -2,6 +2,8 @@ import { AtomicEvent, WindowedModulationSpec } from '../../parser/ASTSerializer'
 import { TrackDefinition } from '../../parser/DocumentParser';
 import { SuperColliderEngine } from '../scsynth/SuperColliderEngine';
 import { MutablePlaitsEngine } from '../eurorack/MutablePlaitsEngine';
+import { DaisyStkEngine } from '../daisy/DaisyStkEngine';
+import { SoundpipeEngine } from '../soundpipe/SoundpipeEngine';
 
 export interface ContinuousVoiceNote {
   event: AtomicEvent;
@@ -274,6 +276,12 @@ export class ContinuousSynthEngine {
     if (MutablePlaitsEngine.isEurorackPatch(patch, style)) {
       return true;
     }
+    if (DaisyStkEngine.isDaisyStkPatch(patch, style)) {
+      return true;
+    }
+    if (SoundpipeEngine.isSoundpipePatch(patch, style)) {
+      return true;
+    }
     const p = (patch || '').trim().toLowerCase();
     const s = (style || '').trim().toLowerCase();
     if (
@@ -414,6 +422,32 @@ export class ContinuousSynthEngine {
     }
     if (MutablePlaitsEngine.isEurorackPatch(patch, item.def?.style)) {
       MutablePlaitsEngine.renderVoiceIntoStereo(
+        trackLeft,
+        trackRight,
+        startFrame,
+        noteFrames,
+        sampleRate,
+        tempoBpm,
+        voiceSeed,
+        item
+      );
+      return;
+    }
+    if (DaisyStkEngine.isDaisyStkPatch(patch, item.def?.style)) {
+      DaisyStkEngine.renderVoiceIntoStereo(
+        trackLeft,
+        trackRight,
+        startFrame,
+        noteFrames,
+        sampleRate,
+        tempoBpm,
+        voiceSeed,
+        item
+      );
+      return;
+    }
+    if (SoundpipeEngine.isSoundpipePatch(patch, item.def?.style)) {
+      SoundpipeEngine.renderVoiceIntoStereo(
         trackLeft,
         trackRight,
         startFrame,

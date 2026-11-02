@@ -1338,6 +1338,81 @@ export const PRESET_SCORES: PresetScore[] = [
 }`,
   },
   {
+    id: 'mit_open_source_symphony',
+    title: 'The MIT Open-Source Synth & Waveguide Symphony (SC + Plaits/Rings + STK + Soundpipe)',
+    genre: '112 BPM • Pure-MIT Multi-Engine Showcase',
+    code: `tenuto "6.0" {
+  meta @{
+    title: "The MIT Open-Source Synth & Waveguide Symphony",
+    tempo: 112,
+    time: "4/4",
+    key: "D",
+    scale: "dorian",
+    scale_lock: false
+  }
+
+  return hall_bus "Signalsmith + Dattorro Space"
+    .fx(signalsmith_reverb, @{ decay: 4.5, damp_hz: 5400, mod_depth: 0.4, mix: 1.0 })
+    .fx(dattorro_plate, @{ decay: 0.84, damping: 0.28, mix: 0.65 })
+
+  def rings "Eurorack Rings Sympathetic" style=eurorack patch="mi:rings_sympathetic"
+    vol=88 pan=-0.22 structure=64 damping=78
+    sends=@{ hall_bus: 0.65 }
+    .fx(signalsmith_chorus, @{ rate: 0.45, depth_ms: 6.0, mix: 0.35 })
+
+  def plaits "Eurorack Plaits Waveshaper" style=eurorack patch="mi:plaits_waveshaper"
+    vol=86 pan=0.20 timbre=68 harmonics=55 morph=45
+    sends=@{ hall_bus: 0.55 }
+
+  def sitar "Stanford STK Jawari Sitar" style=stk patch="stk:sitar"
+    vol=84 pan=-0.28 jawari=72 damping=75
+    sends=@{ hall_bus: 0.50 }
+
+  def flute "Stanford STK Jet Flute" style=stk patch="stk:flute"
+    vol=85 pan=0.25 breath=58 jet=48
+    sends=@{ hall_bus: 0.60 }
+
+  def cz "Soundpipe Casio CZ Phase-Distortion" style=soundpipe patch="sp:pdhalf"
+    vol=90 pan=0.0
+    .fx(aw_totape6, @{ slam: 0.48, head_bump: 0.5, mix: 0.85 })
+
+  def sc "SuperCollider JP-8000 Splay Pad" style=scsynth patch="sc:jp8000"
+    vol=82 pan=0.0
+    sends=@{ hall_bus: 0.75 }
+    .fx(aw_galactic, @{ replace: 0.72, detune: 0.35, bigness: 0.85, mix: 0.42 })
+
+  locator "I. Sympathetic Rings & Jawari Waveguide" at measure 1
+
+  measure 1 {
+    rings:  d4:4.mf.structure(68%).damping(82%) a4:4.mf f4:4.mp.timbre(74%) c5:4.mf |
+    sitar:  d3:2.mf.jawari(76%).dattorro(35%) a2:2.mp.jawari(65%) |
+    sc:     [d3 a3 f4 c5]:1.mp.open_voice.filter(900, 3200).galactic(40%) |
+    cz:     d1:2.f.pdhalf(72%).totape(45%) a1:2.mf.pdhalf(64%) |
+  }
+
+  measure 2 {
+    rings:  fast 2 { e4:4.mp f4:4 a4:4 c5:4 } |
+    flute:  a4:2.mp.legato.breath(64%).jet(52%).vib g4:4.mp.legato f4:4.p |
+    sc:     [c3 g3 e4 b4]:1.mp.open_voice.filter(1100, 3600) |
+    cz:     c1:2.f.pdhalf(76%) g1:2.mf.pdhalf(68%).glide(140ms) |
+  }
+
+  measure 3 {
+    plaits: d4:4.f.timbre([35, 88, 45]).harmonics(65%) f4:4.mf.ply(2) a4:4.f.morph(72%) d5:4.f.ply(3) |
+    sitar:  rev { a3:4.mp f3:4.mp e3:4.mp d3:4.mf.jawari(82%) } |
+    flute:  d5:2.mf.legato.vib.breath(70%) c5:2.mp.legato.dattorro(45%) |
+    cz:     bb0:2.f.pdhalf(80%) a0:2.f.pdhalf(85%).glide(150ms) |
+  }
+
+  measure 4 {
+    rings:  [d4 a4 e5 f5]:1.f.arp.structure(75%).damping(88%).fermata |
+    plaits: d5:1.mf.timbre(78%).morph(65%).paulstretch(4.0).fermata |
+    sc:     [d3 a3 f4 c5 e5]:1.f.open_voice.galactic(55%).fermata |
+    cz:     d1:1.f.pdhalf(75%).totape(55%).fermata |
+  }
+}`,
+  },
+  {
     id: 'minimal_sketch',
     title: 'Minimal Piano Sketch (Default)',
     genre: '120 BPM',

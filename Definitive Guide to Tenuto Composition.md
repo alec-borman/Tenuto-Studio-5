@@ -1,5 +1,5 @@
 # The Definitive Guide to Music Creation in Tenuto Studio 5 (`.ten`)
-### Complete Grammar Specification, Synthesis Physics, Compositional Theory & Studio Engineering Manual (`v5.6.2`)
+### Complete Grammar Specification, Synthesis Physics, Compositional Theory & Studio Engineering Manual (`v5.6.6`)
 
 > **Self-Contained Reference:** This manual contains the complete **Tenuto 6.0 (`.ten`)** formal grammar, compiler rules, instrument & patch catalog, continuous synthesizer modifiers, outboard DSP effects, psychoacoustic voicing laws, and stylistic blueprints. A human composer or AI agent reading **only this document** has 100% of the knowledge required to write studio-mastered, multi-track `.ten` compositions from scratch.
 
@@ -303,10 +303,11 @@ To guarantee that `measure 1`, `measure 2`, ..., `measure N` align 1-to-1 across
   ```tenuto
   drums: (k):3/8 (h):5/8 |                 %% 3-over-8 tresillo + 5-over-8 cinquillo
   ```
-* **Inline Repeats (`repeat N { ... }`) & Macros (`macro name = { ... }` / `$name`):**
+* **Inline Repeats (`repeat N { ... }`), Strudel Pattern Combinators (`fast N { ... }`, `slow N { ... }`, `rev { ... }`), `.ply(N)`, `.degrade(pct)` & Macros (`macro name = { ... }` / `$name`):**
   ```tenuto
   macro bass_cell = { c2:16 c3:16 g2:16 c3:16 }
   seq: repeat 4 { $bass_cell } |           %% 4 * 4 sixteenths = 16 sixteenths (4 beats)
+  arp: fast 2 { c4:4 e4:4 } rev { g4:4 b4:4.ply(2).degrade(25%) } |
   ```
 * **Forward-Looking Ties (`~`):**
   Merges consecutive notes or chords of identical pitch on the same track/voice into a single unbroken sustained event across beats or barlines:
@@ -397,6 +398,10 @@ Any continuous modifier (`.detune`, `.detune_cents`, `.cutoff`, `.filter`, `.noi
 | `.analog_slop(pct)` & `.keytrack(pct)` | Per-voice random analog tuning drift (`0%–100%`) and filter keyboard tracking (`0%–100%`). |
 | `.air(pct)` & `.drive(pctOrCurve)` | High-frequency exciter sheen (`0%–100%`) and soft-clipping filter drive. |
 | `.pre_swell` | Reverse-envelope pre-swell that blooms exponentially to the note's cutoff. |
+| `.timbre(pctOrCurve)`, `.harmonics(pct)`, `.structure(pct)`, `.damping(pct)`, `.position(pct)` | **Eurorack (`mi:*`) Macro & Modal Resonator Modifiers:** Per-note or windowed control over `Plaits` `TIMBRE` / `HARMONICS` / `MORPH` and `Rings` sympathetic `STRUCTURE` / `DAMPING` / `POSITION`. |
+| `.jawari(pct)`, `.breath(pct)`, `.jet(pct)`, `.bow(pressurePct, posPct)` | **DaisySP (`daisy:*`) & Stanford STK (`stk:*`) Physical Waveguide Modifiers:** Controls curved-bridge sitar `jawari` dispersion, flute/clarinet/brass `breath` turbulence & `jet` embouchure delay, and bowed-string friction pressure/position. |
+| `.pdhalf(pct)`, `.gbuzz(pct)`, `.fof("a" \| "e" \| "i" \| "o" \| "u")` | **Soundpipe (`sp:*`) Phase-Distortion, Harmonic Buzz & IRCAM FOF Formant Modifiers:** Controls Casio CZ `pdhalf` inflection skew, closed-form `gbuzz` harmonic brightness multiplier, and IRCAM Chant `fof` vocal formants. |
+| `.galactic(mixPct)`, `.dattorro(mixPct)`, `.paulstretch(ratioX)`, `.totape(slamPct)`, `.fdn_reverb(mixPct)` | **Inline Note/Chord FX Shorthands:** Attaches `aw_galactic`, `dattorro_plate`, `paulstretch`, `aw_totape6`, or `signalsmith_reverb` directly to an individual note or chord token. |
 
 ---
 

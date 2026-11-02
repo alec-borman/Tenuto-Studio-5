@@ -255,11 +255,23 @@ export function resolveSoundfontInstrument(
     cleanStyle === 'eurorack' ||
     cleanStyle === 'modular' ||
     cleanStyle === 'plaits' ||
+    cleanStyle === 'daisy' ||
+    cleanStyle === 'stk' ||
+    cleanStyle === 'waveguide' ||
+    cleanStyle === 'soundpipe' ||
+    cleanStyle === 'sporth' ||
+    cleanStyle === 'csound' ||
     cleanPatch.startsWith('sc:') ||
     cleanPatch.startsWith('sc_') ||
     cleanPatch.startsWith('sonic-pi-') ||
     cleanPatch.startsWith('mi:') ||
-    cleanPatch.startsWith('mi_')
+    cleanPatch.startsWith('mi_') ||
+    cleanPatch.startsWith('daisy:') ||
+    cleanPatch.startsWith('daisy_') ||
+    cleanPatch.startsWith('stk:') ||
+    cleanPatch.startsWith('stk_') ||
+    cleanPatch.startsWith('sp:') ||
+    cleanPatch.startsWith('sp_')
   ) {
     return null;
   }

@@ -483,17 +483,63 @@ export class DocumentParser {
       const tok = rawTokens[idx];
       if (tok === '|') continue;
 
-      if (tok.toLowerCase() === 'repeat' && idx + 2 < rawTokens.length) {
-        const count = parseInt(rawTokens[idx + 1], 10);
+      const scaleTokenDuration = (
+        rawTok: string,
+        factor: number,
+        mode: 'fast' | 'slow'
+      ): string => {
+        if (!Number.isFinite(factor) || factor <= 0) return rawTok;
+        return rawTok.replace(/:(\d+)/, (_m, dStr) => {
+          const d = parseInt(dStr, 10);
+          if (isNaN(d) || d <= 0) return _m;
+          const scaled =
+            mode === 'fast'
+              ? Math.min(128, Math.max(1, Math.round(d * factor)))
+              : Math.max(1, Math.round(d / factor));
+          return `:${scaled}`;
+        });
+      };
+
+      if (
+        (tok.toLowerCase() === 'repeat' ||
+          tok.toLowerCase() === 'fast' ||
+          tok.toLowerCase() === 'slow') &&
+        idx + 2 < rawTokens.length
+      ) {
+        const keyword = tok.toLowerCase() as 'repeat' | 'fast' | 'slow';
+        const factor = parseFloat(rawTokens[idx + 1]);
         const block = rawTokens[idx + 2];
-        if (!isNaN(count) && count > 0 && block.startsWith('{') && block.endsWith('}')) {
+        if (!isNaN(factor) && factor > 0 && block.startsWith('{') && block.endsWith('}')) {
           const innerTokens = this.tokenizeVoiceStream(block.slice(1, -1)).flatMap((t) =>
             expandMacroToken(t)
           );
-          for (let r = 0; r < Math.min(32, count); r++) {
-            expandedTokens.push(...innerTokens);
+          if (keyword === 'repeat') {
+            for (let r = 0; r < Math.min(32, Math.round(factor)); r++) {
+              expandedTokens.push(...innerTokens);
+            }
+          } else if (keyword === 'fast') {
+            const scaledInner = innerTokens.map((t) => scaleTokenDuration(t, factor, 'fast'));
+            const reps = Math.max(1, Math.min(16, Math.round(factor)));
+            for (let r = 0; r < reps; r++) {
+              expandedTokens.push(...scaledInner);
+            }
+          } else {
+            const scaledInner = innerTokens.map((t) => scaleTokenDuration(t, factor, 'slow'));
+            expandedTokens.push(...scaledInner);
           }
           idx += 2;
+          continue;
+        }
+      }
+
+      if (tok.toLowerCase() === 'rev' && idx + 1 < rawTokens.length) {
+        const block = rawTokens[idx + 1];
+        if (block.startsWith('{') && block.endsWith('}')) {
+          const innerTokens = this.tokenizeVoiceStream(block.slice(1, -1))
+            .flatMap((t) => expandMacroToken(t))
+            .reverse();
+          expandedTokens.push(...innerTokens);
+          idx += 1;
           continue;
         }
       }
@@ -1341,6 +1387,15 @@ export class DocumentParser {
           'width',
           'slop',
           'noise',
+          'timbre',
+          'harmonics',
+          'morph',
+          'structure',
+          'damping',
+          'position',
+          'breath',
+          'jet',
+          'jawari',
         ];
         for (const mKey of shorthandMacroNames) {
           const mMatch = attrStr.match(

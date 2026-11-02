@@ -370,7 +370,10 @@ export class MutablePlaitsEngine {
 
     // Normalize Eurorack HARMONICS / TIMBRE / MORPH macros into [0..1]
     const rawHarmonics =
+      phys?.harmonicsAmount ??
+      phys?.structureAmount ??
       macros.harmonics ??
+      macros.structure ??
       (phys?.detune !== undefined ? phys.detune : spec.defaultHarmonics * 100);
     const baseHarmonics = Math.max(
       0,
@@ -378,9 +381,12 @@ export class MutablePlaitsEngine {
     );
 
     const rawTimbre =
+      phys?.timbreAmount ??
       macros.timbre ??
       (phys?.wavefoldAmount !== undefined
-        ? phys.wavefoldAmount
+        ? Array.isArray(phys.wavefoldAmount)
+          ? phys.wavefoldAmount[0]
+          : phys.wavefoldAmount
         : phys?.fmAmount !== undefined
           ? phys.fmAmount
           : spec.defaultTimbre * 100);
@@ -390,8 +396,11 @@ export class MutablePlaitsEngine {
     );
 
     const rawMorph =
+      phys?.morphAmount ??
+      phys?.dampingAmount ??
       macros.morph ??
-      (phys?.morphAmount !== undefined ? phys.morphAmount : spec.defaultMorph * 100);
+      macros.damping ??
+      spec.defaultMorph * 100;
     const baseMorph = Math.max(
       0,
       Math.min(1, Number(rawMorph) > 1 ? Number(rawMorph) / 100 : Number(rawMorph))
@@ -516,9 +525,15 @@ export class MutablePlaitsEngine {
       const morphMod = phys?.morphMod
         ? ContinuousSynthEngine.evaluateWindowedModulation(phys.morphMod, uNorm, 0) / 100
         : baseMorph;
-      const timbreMod = phys?.detuneMod
-        ? ContinuousSynthEngine.evaluateWindowedModulation(phys.detuneMod, uNorm, 0) / 100
-        : baseTimbre;
+      const timbreMod = phys?.timbreMod
+        ? ContinuousSynthEngine.evaluateWindowedModulation(
+            phys.timbreMod,
+            uNorm,
+            baseTimbre * 100
+          ) / 100
+        : phys?.detuneMod
+          ? ContinuousSynthEngine.evaluateWindowedModulation(phys.detuneMod, uNorm, 0) / 100
+          : baseTimbre;
 
       // Vactrol couples amplitude to low-pass filter cutoff
       const sweepCutoff = baseCutoff + (targetCutoff - baseCutoff) * uNorm;

@@ -144,6 +144,19 @@ export interface EventPhysics {
   morphMod?: WindowedModulationSpec;
   fullTouchMode?: 'at' | 'at_z' | 'pizz';
   aliasingAmount?: number;
+  timbreAmount?: number;
+  timbreMod?: WindowedModulationSpec;
+  harmonicsAmount?: number;
+  structureAmount?: number;
+  dampingAmount?: number;
+  positionAmount?: number;
+  breathAmount?: number;
+  jetAmount?: number;
+  bowPressure?: number;
+  bowPosition?: number;
+  jawariAmount?: number;
+  pdhalfAmount?: number;
+  gbuzzAmount?: number;
 }
 
 export interface AtomicEvent {
@@ -211,6 +224,19 @@ export interface AtomicEvent {
   morphMod?: WindowedModulationSpec;
   fullTouchMode?: 'at' | 'at_z' | 'pizz';
   aliasingAmount?: number;
+  timbreAmount?: number;
+  timbreMod?: WindowedModulationSpec;
+  harmonicsAmount?: number;
+  structureAmount?: number;
+  dampingAmount?: number;
+  positionAmount?: number;
+  breathAmount?: number;
+  jetAmount?: number;
+  bowPressure?: number;
+  bowPosition?: number;
+  jawariAmount?: number;
+  pdhalfAmount?: number;
+  gbuzzAmount?: number;
   continuousSynth?: Record<string, any>;
 }
 
@@ -940,6 +966,91 @@ export class ASTSerializer {
       } else if (mod.startsWith('aliasing(') && mod.endsWith(')')) {
         const v = parseFloat(mod.slice(9, -1).replace('%', ''));
         if (!isNaN(v)) physics.aliasingAmount = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('timbre(') && mod.endsWith(')')) {
+        const parsed = this.parseWindowedOrCurveArg(mod.slice(7, -1), 100);
+        if (parsed) {
+          physics.timbreAmount = Math.max(0, Math.min(100, parsed.scalar));
+          physics.timbreMod = parsed.spec;
+        }
+      } else if (mod.startsWith('harmonics(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(10, -1).replace('%', ''));
+        if (!isNaN(v)) physics.harmonicsAmount = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('structure(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(10, -1).replace('%', ''));
+        if (!isNaN(v)) physics.structureAmount = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('damping(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(8, -1).replace('%', ''));
+        if (!isNaN(v)) physics.dampingAmount = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('position(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(9, -1).replace('%', ''));
+        if (!isNaN(v)) physics.positionAmount = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('breath(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(7, -1).replace('%', ''));
+        if (!isNaN(v)) physics.breathAmount = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('jet(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(4, -1).replace('%', ''));
+        if (!isNaN(v)) physics.jetAmount = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('bow(') && mod.endsWith(')')) {
+        const parts = mod.slice(4, -1).split(',').map((s) => parseFloat(s.replace('%', '').trim()));
+        if (!isNaN(parts[0])) {
+          physics.bowPressure = Math.max(0, Math.min(100, parts[0] <= 1 ? parts[0] * 100 : parts[0]));
+        }
+        if (parts[1] !== undefined && !isNaN(parts[1])) {
+          physics.bowPosition = Math.max(0, Math.min(100, parts[1] <= 1 ? parts[1] * 100 : parts[1]));
+        }
+      } else if (mod.startsWith('jawari(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(7, -1).replace('%', ''));
+        if (!isNaN(v)) physics.jawariAmount = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('pdhalf(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(7, -1).replace('%', ''));
+        if (!isNaN(v)) physics.pdhalfAmount = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('gbuzz(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(6, -1).replace('%', ''));
+        if (!isNaN(v)) physics.gbuzzAmount = Math.max(0, Math.min(100, v <= 1 ? v * 100 : v));
+      } else if (mod.startsWith('fof(') && mod.endsWith(')')) {
+        const v = mod.slice(4, -1).trim().replace(/^["']|["']$/g, '').toLowerCase();
+        if (v) {
+          physics.lyric = v;
+          physics.vowelFormant = { from: v, to: v, rateHz: 0.25 };
+        }
+      } else if (mod.startsWith('ply(') && mod.endsWith(')')) {
+        const count = parseInt(mod.slice(4, -1).replace(/x/gi, '').trim(), 10);
+        if (!isNaN(count) && count >= 1) {
+          physics.ratchet = { count: Math.min(32, count), curve: 'flat' };
+        }
+      } else if (mod.startsWith('degrade(') && mod.endsWith(')')) {
+        const dropPct = parseFloat(mod.slice(8, -1).replace('%', '').trim());
+        if (!isNaN(dropPct)) {
+          const normDrop = dropPct <= 1 ? dropPct * 100 : dropPct;
+          physics.chance = Math.max(0, Math.min(100, 100 - normDrop));
+        }
+      } else if (mod === 'degrade') {
+        physics.chance = 50;
+      } else if (mod.startsWith('galactic(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(9, -1).replace('%', ''));
+        const mix = !isNaN(v) ? (v > 1 ? v / 100 : v) : 0.45;
+        if (!physics.fx) physics.fx = [];
+        physics.fx.push({ type: 'aw_galactic', params: { replace: 0.72, detune: 0.35, bigness: 0.85, mix } });
+      } else if (mod.startsWith('dattorro(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(9, -1).replace('%', ''));
+        const mix = !isNaN(v) ? (v > 1 ? v / 100 : v) : 0.38;
+        if (!physics.fx) physics.fx = [];
+        physics.fx.push({ type: 'dattorro_plate', params: { decay: 0.84, damping: 0.3, mix } });
+      } else if (mod.startsWith('paulstretch(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(12, -1).replace(/x/gi, ''));
+        const stretch = !isNaN(v) ? Math.max(1, Math.min(16, v)) : 4.0;
+        if (!physics.fx) physics.fx = [];
+        physics.fx.push({ type: 'paulstretch', params: { stretch, window_ms: 120, mix: 0.85 } });
+      } else if (mod.startsWith('totape(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(7, -1).replace('%', ''));
+        const slam = !isNaN(v) ? (v > 1 ? v / 100 : v) : 0.5;
+        if (!physics.fx) physics.fx = [];
+        physics.fx.push({ type: 'aw_totape6', params: { slam, head_bump: 0.45, flutter: 0.2, mix: 1.0 } });
+      } else if (mod.startsWith('fdn_reverb(') && mod.endsWith(')')) {
+        const v = parseFloat(mod.slice(11, -1).replace('%', ''));
+        const mix = !isNaN(v) ? (v > 1 ? v / 100 : v) : 0.4;
+        if (!physics.fx) physics.fx = [];
+        physics.fx.push({ type: 'signalsmith_reverb', params: { decay: 3.8, damp_hz: 5200, mix } });
       }
     }
 
@@ -1041,6 +1152,56 @@ export class ASTSerializer {
     if (p.aliasingAmount !== undefined) {
       ev.aliasingAmount = p.aliasingAmount;
       ev.continuousSynth = { ...(ev.continuousSynth || {}), aliasingAmount: p.aliasingAmount };
+    }
+    if (p.timbreAmount !== undefined) {
+      ev.timbreAmount = p.timbreAmount;
+      ev.timbreMod = p.timbreMod;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), timbreAmount: p.timbreAmount };
+    }
+    if (p.harmonicsAmount !== undefined) {
+      ev.harmonicsAmount = p.harmonicsAmount;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), harmonicsAmount: p.harmonicsAmount };
+    }
+    if (p.structureAmount !== undefined) {
+      ev.structureAmount = p.structureAmount;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), structureAmount: p.structureAmount };
+    }
+    if (p.dampingAmount !== undefined) {
+      ev.dampingAmount = p.dampingAmount;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), dampingAmount: p.dampingAmount };
+    }
+    if (p.positionAmount !== undefined) {
+      ev.positionAmount = p.positionAmount;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), positionAmount: p.positionAmount };
+    }
+    if (p.breathAmount !== undefined) {
+      ev.breathAmount = p.breathAmount;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), breathAmount: p.breathAmount };
+    }
+    if (p.jetAmount !== undefined) {
+      ev.jetAmount = p.jetAmount;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), jetAmount: p.jetAmount };
+    }
+    if (p.bowPressure !== undefined) {
+      ev.bowPressure = p.bowPressure;
+      ev.bowPosition = p.bowPosition;
+      ev.continuousSynth = {
+        ...(ev.continuousSynth || {}),
+        bowPressure: p.bowPressure,
+        bowPosition: p.bowPosition,
+      };
+    }
+    if (p.jawariAmount !== undefined) {
+      ev.jawariAmount = p.jawariAmount;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), jawariAmount: p.jawariAmount };
+    }
+    if (p.pdhalfAmount !== undefined) {
+      ev.pdhalfAmount = p.pdhalfAmount;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), pdhalfAmount: p.pdhalfAmount };
+    }
+    if (p.gbuzzAmount !== undefined) {
+      ev.gbuzzAmount = p.gbuzzAmount;
+      ev.continuousSynth = { ...(ev.continuousSynth || {}), gbuzzAmount: p.gbuzzAmount };
     }
     return ev;
   }

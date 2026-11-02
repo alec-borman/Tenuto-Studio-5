@@ -78,13 +78,13 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     expect(content).toContain('Copy-Paste Prompt for Gemini');
   });
 
-  it('provides the synchronized v5.6.2 README.md, package.json, and electron-builder.json free of third-party hardware/platform trademarks', () => {
+  it('provides the synchronized v5.6.6 README.md, package.json, and electron-builder.json free of third-party hardware/platform trademarks', () => {
     const readmePath = path.resolve(__dirname, '../README.md');
     expect(fs.existsSync(readmePath)).toBe(true);
 
     const content = fs.readFileSync(readmePath, 'utf-8');
     expect(content).toContain('TENUTO STUDIO 5');
-    expect(content).toContain('v5.6.2');
+    expect(content).toContain('v5.6.6');
     expect(content).toContain('TENUTO_GRAMMAR.md');
     expect(content).toContain('repomix.config.json');
     expect(content).toContain('npm run electron:build:mac');
@@ -97,7 +97,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     );
     expect(fs.existsSync(guidePath)).toBe(true);
     const guideContent = fs.readFileSync(guidePath, 'utf-8');
-    expect(guideContent).toContain('v5.6.2');
+    expect(guideContent).toContain('v5.6.6');
     expect(guideContent).toContain('Blueprint 1:');
     expect(guideContent).toContain('Blueprint 6:');
 
@@ -124,7 +124,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     const pkgJson = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8')
     );
-    expect(pkgJson.version).toBe('5.6.2');
+    expect(pkgJson.version).toBe('5.6.6');
     expect(pkgJson.scripts['clean:bloat']).toBeDefined();
     expect(pkgJson.scripts['electron:build:mac']).toContain('--mac pkg');
     expect(pkgJson.scripts['electron:build:win']).toContain('--win nsis');
@@ -132,7 +132,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     const builderJson = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '../electron-builder.json'), 'utf-8')
     );
-    expect(builderJson.extraMetadata.version).toBe('5.6.2');
+    expect(builderJson.extraMetadata.version).toBe('5.6.6');
   });
 
   it('synthesizes all 12 SuperCollider (sc:*) UGen-Graph patches, encodes RFC-compliant OSC 1.1 /s_new bundles, and exports valid sclang .scd scores', async () => {
@@ -327,6 +327,43 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     const faust = StrudelAndMusicXmlExporter.compileScoreToFaustDsp(score);
     expect(faust).toContain('import("stdfaust.lib");');
     expect(faust).toContain('process = filtered <: _, _;');
+  });
+
+  it('compiles and renders inline .ten MIT engine modifiers (.timbre, .harmonics, .structure, .damping, .jawari, .breath, .jet, .pdhalf, .gbuzz, .fof, .ply, .degrade, .galactic, .dattorro, .paulstretch, .totape) and Strudel pattern combinators (fast, slow, rev)', async () => {
+    const parser = new DocumentParser();
+    const dslScore = parser.compile(`tenuto "6.0" {
+      meta @{ title: "Inline MIT Modifiers", tempo: 120, time: "4/4" }
+      def rings "Rings" style=eurorack patch="mi:rings_sympathetic" structure=65 damping=80
+      def sitar "Sitar" style=stk patch="stk:sitar" jawari=75
+      def flute "Flute" style=stk patch="stk:flute" breath=60 jet=50
+      def cz "CZ" style=soundpipe patch="sp:pdhalf"
+
+      measure 1 {
+        rings: fast 2 { d4:4.structure(70%).damping(85%) a4:4.timbre(75%) } rev { f4:4 c5:4.ply(2) } |
+        sitar: d3:2.jawari(82%).dattorro(40%) a2:2.jawari(65%).galactic(45%) |
+        flute: slow 2 { a4:4.breath(68%).jet(54%) g4:4.paulstretch(4.0) } |
+        cz:    d2:2.pdhalf(78%).totape(45%) a1:2.gbuzz(72%).fof("e").degrade(25%) |
+      }
+    }`);
+
+    expect(dslScore.events.length).toBeGreaterThanOrEqual(12);
+    const ringsDef = dslScore.defs.find((d) => d.id === 'rings');
+    expect(ringsDef?.macros?.structure).toBe(65);
+    expect(ringsDef?.macros?.damping).toBe(80);
+
+    const sitarEvent = dslScore.events.find((e) => e.trackId === 'sitar');
+    expect(sitarEvent?.physics?.jawariAmount).toBe(82);
+    expect(sitarEvent?.physics?.fx?.some((f) => f.type === 'dattorro_plate')).toBe(true);
+
+    const czEvents = dslScore.events.filter((e) => e.trackId === 'cz');
+    expect(czEvents[0]?.physics?.pdhalfAmount).toBe(78);
+    expect(czEvents[1]?.physics?.gbuzzAmount).toBe(72);
+    expect(czEvents[1]?.physics?.lyric).toBe('e');
+    expect(czEvents[1]?.physics?.chance).toBe(75);
+
+    const engine = new StudioAudioEngine();
+    const wavBlob = await engine.exportWavBlob(dslScore);
+    expect(wavBlob.size).toBeGreaterThan(44100);
   });
 });
 

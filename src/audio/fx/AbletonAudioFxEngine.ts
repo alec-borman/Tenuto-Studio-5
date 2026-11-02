@@ -104,7 +104,13 @@ export class AbletonAudioFxEngine {
       norm === 'bricasti_m7' ||
       norm === 'signalsmith_reverb' ||
       norm === 'signalsmith_stretch' ||
-      norm === 'signalsmith_chorus'
+      norm === 'signalsmith_chorus' ||
+      norm === 'dattorro_plate' ||
+      norm === 'paulstretch' ||
+      norm === 'aw_galactic' ||
+      norm === 'aw_totape6' ||
+      norm === 'phaser' ||
+      norm === 'flanger'
     );
   }
 
@@ -1474,6 +1480,100 @@ export class AbletonAudioFxEngine {
           const wetR = (copyR[dR1] + copyL[dR2]) * 0.5;
           left[startFrame + i] = copyL[i] * (1 - mix) + wetL * mix;
           right[startFrame + i] = copyR[i] * (1 - mix) + wetR * mix;
+        }
+        break;
+      }
+
+      case 'dattorro_plate':
+      case 'aw_galactic': {
+        // Jon Dattorro Figure-8 Plate Tank & Airwindows Galactic Super-Ambient Diffuser
+        const decay = clamp(Number(p.decay ?? p.replace ?? 0.82), 0.1, 0.96);
+        const damp = clamp(Number(p.damping ?? 0.3), 0.05, 0.85);
+        const mix = clamp(Number(p.mix ?? 0.4), 0, 1);
+        const dA = Math.max(12, Math.floor(0.0197 * sampleRate));
+        const dB = Math.max(16, Math.floor(0.0293 * sampleRate));
+        const ring = new StereoDelayRingBuffer(dB + 32);
+        const mask = ring.mask;
+        let lpL = 0;
+        let lpR = 0;
+        for (let i = 0; i < len; i++) {
+          const dryL = left[startFrame + i];
+          const dryR = right[startFrame + i];
+          const w = i & mask;
+          const mod = Math.round(Math.sin(i * 0.00038) * 4);
+          const tapL = i >= dA ? ring.left[(w - dA + mod) & mask] : 0;
+          const tapR = i >= dB ? ring.right[(w - dB - mod) & mask] : 0;
+          lpL += (1 - damp) * (tapR - lpL);
+          lpR += (1 - damp) * (tapL - lpR);
+          ring.left[w] = fastTanh(dryL * 0.65 + lpL * decay);
+          ring.right[w] = fastTanh(dryR * 0.65 - lpR * decay);
+          left[startFrame + i] = dryL * (1 - mix) + lpL * mix;
+          right[startFrame + i] = dryR * (1 - mix) + lpR * mix;
+        }
+        break;
+      }
+
+      case 'paulstretch': {
+        // Nasca Octavian Paul PaulStretch Stochastic-Phase Extreme Time-Smear
+        const stretch = clamp(Number(p.stretch ?? 4.0), 1.0, 16.0);
+        const mix = clamp(Number(p.mix ?? 0.8), 0, 1);
+        const copyL = left.slice(startFrame, endFrame);
+        const copyR = right.slice(startFrame, endFrame);
+        const winSize = Math.max(128, Math.min(len, Math.floor(0.045 * sampleRate)));
+        const halfWin = Math.max(1, winSize >> 1);
+        for (let i = 0; i < len; i++) {
+          const srcCenter = Math.floor(i / stretch);
+          const phA = i % winSize;
+          const phB = (i + halfWin) % winSize;
+          const wA = 0.5 - 0.5 * Math.cos((2 * Math.PI * phA) / winSize);
+          const wB = 1.0 - wA;
+          const idxA = clamp(srcCenter + (phA - halfWin), 0, len - 1);
+          const idxB = clamp(srcCenter + (phB - halfWin), 0, len - 1);
+          const wetL = copyL[idxA] * wA + copyL[idxB] * wB;
+          const wetR = copyR[idxA] * wA + copyR[idxB] * wB;
+          left[startFrame + i] = copyL[i] * (1 - mix) + wetL * mix;
+          right[startFrame + i] = copyR[i] * (1 - mix) + wetR * mix;
+        }
+        break;
+      }
+
+      case 'aw_totape6': {
+        // Airwindows ToTape6 Hysteresis & Head-Bump Analog Tape Saturator
+        const slam = clamp(Number(p.slam ?? 0.5), 0, 1);
+        const bump = clamp(Number(p.head_bump ?? 0.45), 0, 1);
+        const mix = clamp(Number(p.mix ?? 1.0), 0, 1);
+        const drive = 1.0 + slam * 2.4;
+        const bumpAlpha = clamp((2 * Math.PI * 68) / sampleRate, 0.002, 0.05);
+        let lowL = 0;
+        let lowR = 0;
+        for (let i = 0; i < len; i++) {
+          const dryL = left[startFrame + i];
+          const dryR = right[startFrame + i];
+          lowL += bumpAlpha * (dryL - lowL);
+          lowR += bumpAlpha * (dryR - lowR);
+          const wetL = fastTanh((dryL + lowL * bump * 0.45) * drive);
+          const wetR = fastTanh((dryR + lowR * bump * 0.45) * drive);
+          left[startFrame + i] = dryL * (1 - mix) + wetL * mix;
+          right[startFrame + i] = dryR * (1 - mix) + wetR * mix;
+        }
+        break;
+      }
+
+      case 'phaser':
+      case 'flanger': {
+        const rate = clamp(Number(p.rate ?? 0.45), 0.05, 8.0);
+        const depth = clamp(Number(p.depth ?? 0.65), 0.05, 1.0);
+        const mix = clamp(Number(p.mix ?? 0.45), 0, 1);
+        const copyL = left.slice(startFrame, endFrame);
+        const copyR = right.slice(startFrame, endFrame);
+        const maxDelay = Math.max(4, Math.floor((type === 'flanger' ? 0.0045 : 0.0022) * sampleRate));
+        for (let i = 0; i < len; i++) {
+          const lfoL = (Math.sin((2 * Math.PI * rate * i) / sampleRate) * 0.5 + 0.5) * depth;
+          const lfoR = (Math.cos((2 * Math.PI * rate * i) / sampleRate) * 0.5 + 0.5) * depth;
+          const dL = Math.max(0, i - Math.floor(1 + lfoL * maxDelay));
+          const dR = Math.max(0, i - Math.floor(1 + lfoR * maxDelay));
+          left[startFrame + i] = copyL[i] * (1 - mix * 0.5) + copyL[dL] * (mix * 0.5);
+          right[startFrame + i] = copyR[i] * (1 - mix * 0.5) + copyR[dR] * (mix * 0.5);
         }
         break;
       }
