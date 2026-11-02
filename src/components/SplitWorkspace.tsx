@@ -25,6 +25,7 @@ import {
 } from '../mutator/MidiTransformAndGeneratorEngine';
 import { DebouncedCodeMemory } from '../utils/DebouncedCodeMemory';
 import { usePlaybackAutoHideTopBar } from '../utils/usePlaybackAutoHideTopBar';
+import { useDisplayRefreshRate } from '../utils/useDisplayRefreshRate';
 
 export const IPHONE_15_PRO_STORAGE_KEY = 'tenuto_viewport_iphone15pro_v1';
 
@@ -47,6 +48,8 @@ export default function SplitWorkspace() {
   const [isLooping, setIsLooping] = useState<boolean>(false);
   const [playheadBeat, setPlayheadBeat] = useState<number>(0);
   const [masterVolume, setMasterVolume] = useState<number>(80);
+  const displayRefreshTelemetry = useDisplayRefreshRate();
+  const [livePlaybackHz, setLivePlaybackHz] = useState<number | null>(null);
   const [activeMainView, setActiveMainView] = useState<MainStudioView>('piano_roll');
   const [activeBottomDock, setActiveBottomDock] = useState<BottomDockTab>(null);
   const [isCodeVisible, setIsCodeVisible] = useState<boolean>(true);
@@ -213,6 +216,11 @@ export default function SplitWorkspace() {
             ? prev
             : { ...prev, tempo: progress.currentTempoBpm! }
         );
+      }
+      if (progress.currentRefreshRateHz && progress.isPlaying) {
+        setLivePlaybackHz(progress.currentRefreshRateHz);
+      } else if (!progress.isPlaying) {
+        setLivePlaybackHz(null);
       }
       if (!progress.isPlaying) {
         setIsPlaying(false);
@@ -1188,6 +1196,7 @@ export default function SplitWorkspace() {
               onToggleFullscreen={handleToggleFullscreen}
               isIphonePortrait={isIphonePortrait}
               onToggleIphonePortrait={handleToggleIphonePortrait}
+              displayRefreshRateHz={livePlaybackHz ?? displayRefreshTelemetry.snappedHz}
             />
           </div>
 

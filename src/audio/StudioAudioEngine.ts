@@ -28,6 +28,7 @@ import { AbletonAudioFxEngine } from './fx/AbletonAudioFxEngine';
 import { VoiceBakePool } from './VoiceBakePool';
 import { VoicePcmRingBuffer } from './AudioRingBuffer';
 import { playbackDiag } from './PlaybackDiagnostics';
+import { estimateRefreshRateFromDeltas } from '../utils/useDisplayRefreshRate';
 
 export interface PlaybackProgress {
   isPlaying: boolean;
@@ -36,6 +37,7 @@ export interface PlaybackProgress {
   currentTimeSec: number;
   totalDurationSec: number;
   currentTempoBpm?: number;
+  currentRefreshRateHz?: number;
 }
 
 interface ScheduledNoteEvent {
@@ -3857,10 +3859,13 @@ export class StudioAudioEngine {
 
     const baseTempo = this.tempoBpm;
     const tempoMap = score.meta?.tempoMap;
-    let lastVisualUpdateWallMs = -100;
     let lastRafTimeMs = 0;
     let lastTrackedStartCtxTime = -1;
     let lastMonotonicElapsedSec = 0;
+    let lastObservedCtxTime = -1;
+    let lastAudioClockAdvanceWallMs = 0;
+    const rafDeltaWindowMs: number[] = [];
+    let detectedRefreshRateHz = 60;
     // Capture a clamped baseline hardware latency once per session so mid-stream Bluetooth A2DP
     // outputLatency renegotiations never cause the visual playhead to snap backward and flicker.
     const sessionHwLatencySec = Math.min(
@@ -3872,50 +3877,75 @@ export class StudioAudioEngine {
           0
       )
     );
-    const TARGET_FRAME_MS = 1000 / 60; // strictly 60 FPS (~16.66ms)
 
     const tickVisualProgress = (frameTimeMs: DOMHighResTimeStamp) => {
       if (!this.isPlaying || this.playbackSessionId !== sessionId || !this.ctx) return;
       this.rafId = requestAnimationFrame(tickVisualProgress);
 
-      const elapsedRafMs = frameTimeMs - lastRafTimeMs;
-      // Reduce/lock visual progress to strictly 60 FPS on high-refresh monitors (120Hz/144Hz/240Hz)
-      if (lastRafTimeMs > 0 && elapsedRafMs < TARGET_FRAME_MS - 1.5) {
-        return;
+      if (lastRafTimeMs > 0) {
+        const elapsedRafMs = frameTimeMs - lastRafTimeMs;
+        // Guard only against duplicate synthetic sub-millisecond calls (< 1.5ms);
+        // allow up to 500Hz native hardware VSync!
+        if (elapsedRafMs < 1.5) {
+          return;
+        }
+        if (elapsedRafMs >= 1.8 && elapsedRafMs <= 50) {
+          rafDeltaWindowMs.push(elapsedRafMs);
+          if (rafDeltaWindowMs.length > 30) {
+            rafDeltaWindowMs.shift();
+          }
+          if (rafDeltaWindowMs.length >= 6 && rafDeltaWindowMs.length % 6 === 0) {
+            detectedRefreshRateHz = estimateRefreshRateFromDeltas(rafDeltaWindowMs).snappedHz;
+          }
+        }
       }
       lastRafTimeMs = frameTimeMs;
 
       playbackDiag.recordVisualFrame();
-      // Gate React playhead updates on wall-clock frameTimeMs (~30fps / 33ms) and enforce
-      // monotonic elapsed time within each loop pass so Bluetooth clock stalls never flicker the UI.
-      if (frameTimeMs - lastVisualUpdateWallMs >= 32) {
-        lastVisualUpdateWallMs = frameTimeMs;
-        if (this.startContextTime !== lastTrackedStartCtxTime) {
-          lastTrackedStartCtxTime = this.startContextTime;
-          lastMonotonicElapsedSec = 0;
-        }
-        const now = this.ctx.currentTime;
-        const candidateElapsed = Math.max(
-          0,
-          now - this.startContextTime - sessionHwLatencySec
-        );
-        const rawElapsed = Math.max(lastMonotonicElapsedSec, candidateElapsed);
-        lastMonotonicElapsedSec = rawElapsed;
 
-        const audibleScoreSec = Math.max(0, rawElapsed - countInSec);
-        const currentWhole = this.secondsToWholeNote(audibleScoreSec, baseTempo, tempoMap);
-        const currentBeat = Math.min(this.totalQuarterBeats, currentWhole * 4);
-        const activeTempo = this.getTempoAtWholeNote(currentWhole, baseTempo, tempoMap);
-
-        this.onProgress?.({
-          isPlaying: true,
-          currentQuarterBeat: currentBeat,
-          totalQuarterBeats: this.totalQuarterBeats,
-          currentTimeSec: rawElapsed,
-          totalDurationSec: this.scoreDurationSec,
-          currentTempoBpm: activeTempo,
-        });
+      if (this.startContextTime !== lastTrackedStartCtxTime) {
+        lastTrackedStartCtxTime = this.startContextTime;
+        lastMonotonicElapsedSec = 0;
+        lastObservedCtxTime = -1;
+        lastAudioClockAdvanceWallMs = frameTimeMs;
       }
+
+      const now = this.ctx.currentTime;
+      // Phase-locked sub-quantum clock interpolation:
+      // Web Audio's `ctx.currentTime` advances in 128-sample render quanta (~2.9ms at 44.1kHz).
+      // On 120Hz/144Hz/240Hz monitors (4.16ms–8.33ms per frame), interpolating with high-res
+      // `frameTimeMs` between audio quantum ticks eliminates quantum aliasing and delivers
+      // silky sub-pixel motion on every VSync frame while remaining strictly locked to `ctx.currentTime`.
+      if (now !== lastObservedCtxTime) {
+        lastObservedCtxTime = now;
+        lastAudioClockAdvanceWallMs = frameTimeMs;
+      }
+      const subQuantumSec =
+        lastAudioClockAdvanceWallMs > 0
+          ? Math.min(0.012, Math.max(0, (frameTimeMs - lastAudioClockAdvanceWallMs) / 1000))
+          : 0;
+
+      const candidateElapsed = Math.max(
+        0,
+        now + subQuantumSec - this.startContextTime - sessionHwLatencySec
+      );
+      const rawElapsed = Math.max(lastMonotonicElapsedSec, candidateElapsed);
+      lastMonotonicElapsedSec = rawElapsed;
+
+      const audibleScoreSec = Math.max(0, rawElapsed - countInSec);
+      const currentWhole = this.secondsToWholeNote(audibleScoreSec, baseTempo, tempoMap);
+      const currentBeat = Math.min(this.totalQuarterBeats, currentWhole * 4);
+      const activeTempo = this.getTempoAtWholeNote(currentWhole, baseTempo, tempoMap);
+
+      this.onProgress?.({
+        isPlaying: true,
+        currentQuarterBeat: currentBeat,
+        totalQuarterBeats: this.totalQuarterBeats,
+        currentTimeSec: rawElapsed,
+        totalDurationSec: this.scoreDurationSec,
+        currentTempoBpm: activeTempo,
+        currentRefreshRateHz: detectedRefreshRateHz,
+      });
     };
 
     // Recompute signature after prewarmScoreSamples in case new SoundFont banks were decoded

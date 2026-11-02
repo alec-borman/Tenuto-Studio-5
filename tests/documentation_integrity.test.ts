@@ -3,8 +3,38 @@ import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import { purgeRepositoryBloat } from '../vite.config';
+import {
+  snapToStandardRefreshRate,
+  estimateRefreshRateFromDeltas,
+} from '../src/utils/useDisplayRefreshRate';
 
-describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5.3.6 Integrity', () => {
+describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5.5.4 Integrity', () => {
+  it('accurately detects 60Hz, 120Hz, 144Hz, 165Hz, and 240Hz monitor refresh rates from VSync frame deltas', () => {
+    expect(snapToStandardRefreshRate(59.94)).toBe(60);
+    expect(snapToStandardRefreshRate(119.88)).toBe(120);
+    expect(snapToStandardRefreshRate(143.9)).toBe(144);
+    expect(snapToStandardRefreshRate(164.8)).toBe(165);
+    expect(snapToStandardRefreshRate(239.76)).toBe(240);
+
+    // 144Hz monitor with two GC/compositor outlier spikes that should be trimmed out
+    const deltas144 = [
+      33.3,
+      ...Array.from({ length: 20 }, () => 1000 / 144),
+      28.0,
+    ];
+    const est144 = estimateRefreshRateFromDeltas(deltas144);
+    expect(est144.snappedHz).toBe(144);
+    expect(est144.isHighRefresh).toBe(true);
+    expect(est144.isCalibrated).toBe(true);
+
+    // 240Hz monitor (~4.166ms per frame)
+    const deltas240 = Array.from({ length: 24 }, () => 1000 / 240);
+    const est240 = estimateRefreshRateFromDeltas(deltas240);
+    expect(est240.snappedHz).toBe(240);
+    expect(est240.isHighRefresh).toBe(true);
+    expect(est240.frameBudgetMs).toBeCloseTo(1000 / 240, 3);
+  });
+
   it('purges unreferenced AI Studio paste dumps and root bloat artifacts while keeping all needed docs and code', () => {
     const rootDir = path.resolve(__dirname, '..');
     purgeRepositoryBloat(rootDir);
@@ -40,13 +70,13 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     expect(content).toContain('Copy-Paste Prompt for Gemini');
   });
 
-  it('provides the synchronized v5.5.2 README.md, package.json, and electron-builder.json free of third-party hardware/platform trademarks', () => {
+  it('provides the synchronized v5.5.4 README.md, package.json, and electron-builder.json free of third-party hardware/platform trademarks', () => {
     const readmePath = path.resolve(__dirname, '../README.md');
     expect(fs.existsSync(readmePath)).toBe(true);
 
     const content = fs.readFileSync(readmePath, 'utf-8');
     expect(content).toContain('TENUTO STUDIO 5');
-    expect(content).toContain('v5.5.2');
+    expect(content).toContain('v5.5.4');
     expect(content).toContain('TENUTO_GRAMMAR.md');
     expect(content).toContain('repomix.config.json');
     expect(content).toContain('npm run electron:build:mac');
@@ -59,7 +89,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     );
     expect(fs.existsSync(guidePath)).toBe(true);
     const guideContent = fs.readFileSync(guidePath, 'utf-8');
-    expect(guideContent).toContain('v5.5.2');
+    expect(guideContent).toContain('v5.5.4');
     expect(guideContent).toContain('Blueprint 1:');
     expect(guideContent).toContain('Blueprint 6:');
 
@@ -86,7 +116,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     const pkgJson = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8')
     );
-    expect(pkgJson.version).toBe('5.5.2');
+    expect(pkgJson.version).toBe('5.5.4');
     expect(pkgJson.scripts['clean:bloat']).toBeDefined();
     expect(pkgJson.scripts['electron:build:mac']).toContain('--mac pkg');
     expect(pkgJson.scripts['electron:build:win']).toContain('--win nsis');
@@ -94,7 +124,8 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     const builderJson = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '../electron-builder.json'), 'utf-8')
     );
-    expect(builderJson.extraMetadata.version).toBe('5.5.2');
+    expect(builderJson.extraMetadata.version).toBe('5.5.4');
   });
 });
+
 

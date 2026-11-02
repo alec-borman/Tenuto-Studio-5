@@ -44,6 +44,7 @@ interface TransportProps {
     percent?: number;
     label?: string;
   };
+  displayRefreshRateHz?: number;
 }
 
 export default function Transport({
@@ -81,6 +82,7 @@ export default function Transport({
   onToggleIphonePortrait,
   onPredownloadScore,
   predownloadState,
+  displayRefreshRateHz = 60,
 }: TransportProps) {
   const measureNum = Math.floor(currentBeat / 4) + 1;
   const beatInMeasure = Math.floor(currentBeat % 4) + 1;
@@ -239,6 +241,14 @@ export default function Transport({
             <span className="text-slate-700">|</span>
             <span className="text-blue-400 font-semibold whitespace-nowrap">
               M{measureNum}:{beatInMeasure}
+            </span>
+            <span className="text-slate-700">|</span>
+            <span
+              data-testid="display-refresh-rate-badge"
+              className="text-cyan-400 font-semibold whitespace-nowrap"
+              title={`Display VSync Refresh Rate: ${displayRefreshRateHz} Hz (${(1000 / Math.max(1, displayRefreshRateHz)).toFixed(2)} ms/frame)`}
+            >
+              {displayRefreshRateHz} Hz
             </span>
           </div>
         </div>

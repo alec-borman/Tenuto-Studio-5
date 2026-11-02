@@ -724,7 +724,7 @@ export default function WebGPUCanvas({
     if (isPlaying) {
       const viewportW = el.clientWidth || 600;
       const targetScroll = Math.max(0, playheadX - viewportW * 0.35);
-      if (Math.abs(el.scrollLeft - targetScroll) > 6) {
+      if (Math.abs(el.scrollLeft - targetScroll) > 0.25) {
         el.scrollLeft = targetScroll;
       }
     }

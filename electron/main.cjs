@@ -1,9 +1,10 @@
 const { app, BrowserWindow, session } = require('electron');
 const path = require('path');
 
-// Enable SharedArrayBuffer and zero-gesture WebAudio playback for DAW performance
+// Enable SharedArrayBuffer, zero-gesture WebAudio playback, and uncapped native monitor VSync (60Hz / 120Hz / 144Hz / 240Hz+)
 app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+app.commandLine.appendSwitch('disable-frame-rate-limit');
 
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.tenuto.studio5');
