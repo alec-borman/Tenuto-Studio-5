@@ -157,6 +157,11 @@ export interface EventPhysics {
   jawariAmount?: number;
   pdhalfAmount?: number;
   gbuzzAmount?: number;
+  drive?: number;
+  steinerDrive?: number;
+  discreteDrive?: number;
+  structure?: number;
+  damping?: number;
 }
 
 export interface AtomicEvent {
@@ -1051,6 +1056,43 @@ export class ASTSerializer {
         const mix = !isNaN(v) ? (v > 1 ? v / 100 : v) : 0.4;
         if (!physics.fx) physics.fx = [];
         physics.fx.push({ type: 'signalsmith_reverb', params: { decay: 3.8, damp_hz: 5200, mix } });
+      } else if (
+        (mod.startsWith('rlpf(') || mod.startsWith('dfm1(') || mod.startsWith('moog_ff(')) &&
+        mod.endsWith(')')
+      ) {
+        const openIdx = mod.indexOf('(');
+        const modName = mod.slice(0, openIdx);
+        const parts = mod
+          .slice(openIdx + 1, -1)
+          .split(',')
+          .map((s) => parseFloat(s.trim().replace(/hz/gi, '')));
+        if (!isNaN(parts[0]) && parts[0] > 0) {
+          physics.cutoff = Math.max(40, Math.min(18000, parts[0]));
+        }
+        if (parts[1] !== undefined && !isNaN(parts[1])) {
+          physics.resonance = Math.max(0.3, Math.min(18, parts[1]));
+        }
+        if (modName === 'dfm1') {
+          physics.drive = Math.max(physics.drive ?? 0, 58);
+          physics.steinerDrive = Math.max(physics.steinerDrive ?? 0, 55);
+          physics.bruteFactor = Math.max(physics.bruteFactor ?? 0, 55);
+        } else if (modName === 'moog_ff') {
+          physics.discreteDrive = Math.max(physics.discreteDrive ?? 0, 48);
+          physics.cp3Drive = Math.max(physics.cp3Drive ?? 0, 48);
+        }
+      } else if (mod.startsWith('klank(') && mod.endsWith(')')) {
+        const parts = mod
+          .slice(6, -1)
+          .split(',')
+          .map((s) => s.trim());
+        const numVal = parseFloat((parts[1] ?? parts[0] ?? '75').replace('%', ''));
+        if (!isNaN(numVal)) {
+          const norm = Math.max(0, Math.min(100, numVal <= 1 ? numVal * 100 : numVal));
+          physics.damping = norm;
+          physics.dampingAmount = norm;
+          physics.structure = Math.max(physics.structure ?? 0, 62);
+          physics.structureAmount = Math.max(physics.structureAmount ?? 0, 62);
+        }
       }
     }
 

@@ -6,7 +6,7 @@
 
   [![Live Web Studio](https://img.shields.io/badge/Try_Live_Web_Studio-tenuto--studio--5--production.up.railway.app-10b981?style=for-the-badge)](https://tenuto-studio-5-production.up.railway.app/)
 
-  [![Release: v5.6.6](https://img.shields.io/badge/Release-v5.6.6-2563eb.svg)](./SPEC.md)
+  [![Release: v5.6.8](https://img.shields.io/badge/Release-v5.6.8-2563eb.svg)](./SPEC.md)
   [![Grammar Guide: TENUTO_GRAMMAR.md](https://img.shields.io/badge/Grammar_Guide-TENUTO__GRAMMAR.md-10b981.svg)](./TENUTO_GRAMMAR.md)
   [![Platform: macOS .pkg | Windows .exe | Web](https://img.shields.io/badge/Platform-macOS_.pkg_%7C_Windows_.exe_%7C_Web-8b5cf6.svg)](#installation--desktop-packaging)
   [![License: MIT](https://img.shields.io/badge/License-MIT-64748b.svg)](LICENSE)
@@ -24,7 +24,7 @@ Launch **Tenuto Studio 5** immediately in your browser with zero installation:
 
 ## Overview
 
-**Tenuto Studio 5** (`v5.6.6`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
+**Tenuto Studio 5** (`v5.6.8`) is a bi-directional, code-driven Digital Audio Workstation (DAW) and real-time multi-view player built around the **Tenuto 5.0 / 6.0** domain-specific language (`.ten`).
 
 In Tenuto Studio 5, **human-readable `.ten` source code is the single Source of Truth**:
 * **Code Projects the Entire Studio:** Writing or pasting `.ten` code (including raw Markdown blocks straight from Gemini, Claude, or ChatGPT) immediately compiles into four synchronized visual views (**Scrolling Piano Roll**, **Tab / Chord Flow**, **Session View Clip Matrix**, and **Arrangement View Timeline**), three interactive bottom studio docks (**Console Mixer**, **Device Chain & 8-Macro Rack**, and **Context Note/Score Inspector**), and a real-time WebAudio / PCM DSP engine.
@@ -246,6 +246,9 @@ For the full grammar breakdown, see **[`TENUTO_GRAMMAR.md`](./TENUTO_GRAMMAR.md)
 | **Lyrics & Talking Vocoder** | `[d4 f4 a4]:4.fx(vocoder).lyric("Right")` | G2P consonant/vowel formant decomposition driving the 20-Band Klatt Talking Vocoder |
 | **Z-Axis Automation** | `s:1.automate("cutoff", [300, 6400], "s_curve")` | Continuous parameter/CC envelope (`linear`, `s_curve`, `exp`, `log`, `step`) |
 | **Probability & MPE** | `.chance(75%)`, `.vel_range(70, 110)`, `.pick_one`, `.mpe(@{bend: [0, 12, 0]})` | Stochastic note probability, humanized velocity ranges, chord pick-one, and 3D MPE expression |
+| **Strudel Pattern Combinators** | `fast 2 { c4:4 e4:4 }`, `slow 2 { c4:2 g4:2 }`, `rev { c4:8 e g b }`, `.ply(2)`, `.degrade(25%)` | Cycle compression/repetition (`fast`), stretching (`slow`), token reversal (`rev`), Strudel re-triggers (`.ply`), and stochastic drop (`.degrade`) |
+| **MIT Synth & Waveguide Modifiers** | `.timbre(72%)`, `.structure(68%)`, `.damping(82%)`, `.jawari(75%)`, `.breath(65%)`, `.jet(54%)`, `.bow(75%, 35%)`, `.pdhalf(78%)`, `.gbuzz(72%)`, `.fof("a")`, `.rlpf(2400, 1.8)`, `.dfm1(1800, 2.6)` | Inline macro & physical-modeling controls for `mi:*` (Plaits/Rings), `stk:*` (Sitar/Flute/Bowed), `sp:*` (CZ/GBuzz/Chant FOF), and `sc:*` (SuperCollider UGen filters) |
+| **Inline Note-FX Shorthands** | `.galactic(45%)`, `.dattorro(38%)`, `.paulstretch(4.0)`, `.totape(50%)`, `.fdn_reverb(40%)` | Per-note Airwindows Galactic reverb, Dattorro figure-8 plate, PaulStretch spectral freeze, ToTape6 hysteresis, and Signalsmith Hadamard FDN reverb |
 
 ---
 
@@ -344,8 +347,9 @@ npx repomix
 
 ---
 
-## Release Notes (`v5.6.6`)
+## Release Notes (`v5.6.8`)
 
+* **`v5.6.8`:** Synchronized `TENUTO_GRAMMAR.md`, `Definitive Guide to Tenuto Composition.md`, and `README.md` with the complete MIT Open-Source Synthesis & Waveguide catalog (`sc:*`, `mi:*`, `daisy:*`, `stk:*`, `sp:*`), all 38 `.fx(...)` processors (`signalsmith_*`, `aw_*`, `dattorro_plate`, `paulstretch`, `chow_tape`), Strudel pattern combinators (`fast`, `slow`, `rev`, `.ply`, `.degrade`), and updated AI Composer master prompts; added inline SuperCollider UGen filter/resonator modifiers (`.rlpf(cutoff, res)`, `.dfm1(cutoff, res)`, `.moog_ff(cutoff, res)`, `.klank(mode, decayPct)`) in `ASTSerializer.ts`; and hardened `fast N { ... }` / `slow N { ... }` sticky-duration inheritance in `DocumentParser.ts`.
 * **`v5.6.6`:** Added first-class `.ten` DSL inline modifiers, Strudel pattern combinators (`fast N { ... }`, `slow N { ... }`, `rev { ... }`, `.ply(N)`, `.degrade(pct)`), track-header macro shorthands (`timbre=`, `harmonics=`, `morph=`, `structure=`, `damping=`, `position=`, `breath=`, `jet=`, `jawari=`), and the built-in showcase score *"The MIT Open-Source Synth & Waveguide Symphony (SC + Plaits/Rings + STK + Soundpipe)"* (`mit_open_source_symphony`): wired `.timbre()`, `.harmonics()`, `.structure()`, `.damping()`, and `.position()` into `MutablePlaitsEngine.ts`; wired `.jawari()`, `.breath()`, `.jet()`, and `.bow()` into `DaisyStkEngine.ts`; wired `.pdhalf()`, `.gbuzz()`, and `.fof()` into `SoundpipeEngine.ts`; added inline note-FX shorthands (`.galactic()`, `.dattorro()`, `.paulstretch()`, `.totape()`, `.fdn_reverb()`) in `ASTSerializer.ts` and `AbletonAudioFxEngine.ts`; and updated the Monaco syntax highlighter (`CodeEditor.tsx`).
 * **`v5.6.2`:** Added MIT **Signalsmith DSP 4x4 Hadamard FDN Reverb, Spectral Pitch Stretch & Quadrature Chorus (`signalsmith_reverb`, `signalsmith_stretch`, `signalsmith_chorus`)** in `AbletonAudioFxEngine.ts`, plus **Strudel / TidalCycles Mini-Notation (`.strudel`), MusicXML 4.0 Partwise Engraving (`.musicxml`), and Faust Functional DSP (`.dsp`) Score Exporters** (`src/audio/export/StrudelAndMusicXmlExporter.ts`): wired `DemarcationEngine` into `compileScoreToMusicXml` to prune unprintable DSP physics prior to XML engraving serialization; added 1-click **`Export .strudel`** (`export-strudel-btn`) and **`Export .musicxml`** (`export-musicxml-btn`) buttons to `Transport.tsx` and `SplitWorkspace.tsx`; registered Signalsmith FX defaults in `DeviceChainDock.tsx`; and documented the new FX processors in `Definitive Guide to Tenuto Composition.md`.
 * **`v5.5.8`:** Added a 100% MIT-licensed **Eurorack Macro-Oscillator & Modal Resonator Suite (`mi:*` — Plaits / Rings / Clouds)** (`src/audio/eurorack/MutablePlaitsEngine.ts`) and hardened `SuperColliderEngine.ts` with 1st-order DC blocking: implemented 12 pure-MIT Eurorack patches (`mi:plaits_va`, `mi:plaits_waveshaper`, `mi:plaits_fm`, `mi:plaits_grain`, `mi:plaits_additive`, `mi:plaits_swarm`, `mi:plaits_chord`, `mi:plaits_speech`, `mi:plaits_karplus`, `mi:plaits_modal`, `mi:rings_sympathetic`, `mi:clouds_texture`, plus `style=eurorack` / `style=modular` / `style=plaits`) with internal Vactrol Low-Pass Gate (`LPG`) coupling, `HARMONICS` / `TIMBRE` / `MORPH` macro routing, `PhonemeEngine` formant integration, and 1st-order `R = 0.998` DC-blocking high-pass filters across both `MutablePlaitsEngine` and `SuperColliderEngine`; wired `MutablePlaitsEngine` into `ContinuousSynthEngine.ts`, `AbletonSynthSuite.ts`, `SoundfontLibrary.ts`, and the `DeviceChainDock.tsx` patch catalog; and documented the `mi:*` suite in `Definitive Guide to Tenuto Composition.md`.

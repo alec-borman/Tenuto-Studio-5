@@ -16,7 +16,7 @@ import { StrudelAndMusicXmlExporter } from '../src/audio/export/StrudelAndMusicX
 import { AbletonAudioFxEngine } from '../src/audio/fx/AbletonAudioFxEngine';
 import { DocumentParser } from '../src/parser/DocumentParser';
 
-describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5.5.6 Integrity', () => {
+describe('TDB-607 through TDB-752: Final Release Documentation, Bloat Purge & v5.6.8 Integrity', () => {
   it('accurately detects 60Hz, 120Hz, 144Hz, 165Hz, and 240Hz monitor refresh rates from VSync frame deltas', () => {
     expect(snapToStandardRefreshRate(59.94)).toBe(60);
     expect(snapToStandardRefreshRate(119.88)).toBe(120);
@@ -78,13 +78,13 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     expect(content).toContain('Copy-Paste Prompt for Gemini');
   });
 
-  it('provides the synchronized v5.6.6 README.md, package.json, and electron-builder.json free of third-party hardware/platform trademarks', () => {
+  it('provides the synchronized v5.6.8 README.md, package.json, and electron-builder.json free of third-party hardware/platform trademarks', () => {
     const readmePath = path.resolve(__dirname, '../README.md');
     expect(fs.existsSync(readmePath)).toBe(true);
 
     const content = fs.readFileSync(readmePath, 'utf-8');
     expect(content).toContain('TENUTO STUDIO 5');
-    expect(content).toContain('v5.6.6');
+    expect(content).toContain('v5.6.8');
     expect(content).toContain('TENUTO_GRAMMAR.md');
     expect(content).toContain('repomix.config.json');
     expect(content).toContain('npm run electron:build:mac');
@@ -97,7 +97,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     );
     expect(fs.existsSync(guidePath)).toBe(true);
     const guideContent = fs.readFileSync(guidePath, 'utf-8');
-    expect(guideContent).toContain('v5.6.6');
+    expect(guideContent).toContain('v5.6.8');
     expect(guideContent).toContain('Blueprint 1:');
     expect(guideContent).toContain('Blueprint 6:');
 
@@ -124,7 +124,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     const pkgJson = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8')
     );
-    expect(pkgJson.version).toBe('5.6.6');
+    expect(pkgJson.version).toBe('5.6.8');
     expect(pkgJson.scripts['clean:bloat']).toBeDefined();
     expect(pkgJson.scripts['electron:build:mac']).toContain('--mac pkg');
     expect(pkgJson.scripts['electron:build:win']).toContain('--win nsis');
@@ -132,7 +132,7 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     const builderJson = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '../electron-builder.json'), 'utf-8')
     );
-    expect(builderJson.extraMetadata.version).toBe('5.6.6');
+    expect(builderJson.extraMetadata.version).toBe('5.6.8');
   });
 
   it('synthesizes all 12 SuperCollider (sc:*) UGen-Graph patches, encodes RFC-compliant OSC 1.1 /s_new bundles, and exports valid sclang .scd scores', async () => {
@@ -364,6 +364,43 @@ describe('TDB-607 through TDB-749: Final Release Documentation, Bloat Purge & v5
     const engine = new StudioAudioEngine();
     const wavBlob = await engine.exportWavBlob(dslScore);
     expect(wavBlob.size).toBeGreaterThan(44100);
+  });
+
+  it('parses SuperCollider UGen modifiers (.rlpf, .dfm1, .moog_ff, .klank) and sticky-duration fast/slow blocks, and documents all MIT engines in TENUTO_GRAMMAR.md', () => {
+    const parser = new DocumentParser();
+    const scModScore = parser.compile(`tenuto "6.0" {
+      meta @{ title: "SC UGen Modifiers & Sticky Fast", tempo: 120, time: "4/4" }
+      def acid "SC Acid" style=scsynth patch="sc:tb303"
+      def bell "SC Klank" style=scsynth patch="sc:klank_resonator"
+      measure 1 {
+        acid:  c2:4.dfm1(1800, 2.6) g2:4.rlpf(2400, 1.8) fast 2 { c3 d3 } |
+        bell:  e5:2.klank("bell", 85%) b4:2.moog_ff(3200, 2.2) |
+      }
+    }`);
+
+    const acidEvs = scModScore.events.filter((e) => e.trackId === 'acid');
+    expect(acidEvs.length).toBe(6);
+    expect(acidEvs[0]?.physics?.cutoff).toBe(1800);
+    expect(acidEvs[0]?.physics?.resonance).toBe(2.6);
+    expect(acidEvs[0]?.physics?.steinerDrive).toBeGreaterThanOrEqual(55);
+    expect(acidEvs[1]?.physics?.cutoff).toBe(2400);
+    expect(acidEvs[2]?.duration.denominator).toBe(8);
+
+    const bellEvs = scModScore.events.filter((e) => e.trackId === 'bell');
+    expect(bellEvs[0]?.physics?.damping).toBe(85);
+    expect(bellEvs[1]?.physics?.cutoff).toBe(3200);
+    expect(bellEvs[1]?.physics?.discreteDrive).toBeGreaterThanOrEqual(48);
+
+    const grammarContent = fs.readFileSync(
+      path.resolve(__dirname, '../TENUTO_GRAMMAR.md'),
+      'utf-8'
+    );
+    expect(grammarContent).toContain('sc:prophet');
+    expect(grammarContent).toContain('mi:rings_sympathetic');
+    expect(grammarContent).toContain('stk:sitar');
+    expect(grammarContent).toContain('sp:fof_choir');
+    expect(grammarContent).toContain('aw_galactic');
+    expect(grammarContent).toContain('dattorro_plate');
   });
 });
 

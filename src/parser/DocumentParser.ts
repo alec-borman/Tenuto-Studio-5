@@ -483,20 +483,42 @@ export class DocumentParser {
       const tok = rawTokens[idx];
       if (tok === '|') continue;
 
+      const getActiveStickyDenom = (): number => {
+        for (let k = expandedTokens.length - 1; k >= 0; k--) {
+          const m = expandedTokens[k].match(/:(\d+)/);
+          if (m) {
+            const d = parseInt(m[1], 10);
+            if (!isNaN(d) && d > 0) return d;
+          }
+        }
+        return (serializer as any).temporalEngine?.lastDuration?.denominator || 4;
+      };
+
       const scaleTokenDuration = (
         rawTok: string,
         factor: number,
-        mode: 'fast' | 'slow'
+        mode: 'fast' | 'slow',
+        injectStickyDuration = false
       ): string => {
         if (!Number.isFinite(factor) || factor <= 0) return rawTok;
-        return rawTok.replace(/:(\d+)/, (_m, dStr) => {
+        let normalizedTok = rawTok;
+        if (injectStickyDuration && !/:(\d+|grace)/.test(normalizedTok)) {
+          const stickyDenom = getActiveStickyDenom();
+          const dotIdx = normalizedTok.indexOf('.');
+          if (dotIdx !== -1) {
+            normalizedTok = `${normalizedTok.slice(0, dotIdx)}:${stickyDenom}${normalizedTok.slice(dotIdx)}`;
+          } else {
+            normalizedTok = `${normalizedTok}:${stickyDenom}`;
+          }
+        }
+        return normalizedTok.replace(/:(\d+)(\/\d+)?(\.*)/, (_m, dStr, fracStr, dots) => {
           const d = parseInt(dStr, 10);
           if (isNaN(d) || d <= 0) return _m;
           const scaled =
             mode === 'fast'
               ? Math.min(128, Math.max(1, Math.round(d * factor)))
               : Math.max(1, Math.round(d / factor));
-          return `:${scaled}`;
+          return `:${scaled}${fracStr || ''}${dots || ''}`;
         });
       };
 
@@ -518,13 +540,17 @@ export class DocumentParser {
               expandedTokens.push(...innerTokens);
             }
           } else if (keyword === 'fast') {
-            const scaledInner = innerTokens.map((t) => scaleTokenDuration(t, factor, 'fast'));
+            const scaledInner = innerTokens.map((t, tIdx) =>
+              scaleTokenDuration(t, factor, 'fast', tIdx === 0)
+            );
             const reps = Math.max(1, Math.min(16, Math.round(factor)));
             for (let r = 0; r < reps; r++) {
               expandedTokens.push(...scaledInner);
             }
           } else {
-            const scaledInner = innerTokens.map((t) => scaleTokenDuration(t, factor, 'slow'));
+            const scaledInner = innerTokens.map((t, tIdx) =>
+              scaleTokenDuration(t, factor, 'slow', tIdx === 0)
+            );
             expandedTokens.push(...scaledInner);
           }
           idx += 2;

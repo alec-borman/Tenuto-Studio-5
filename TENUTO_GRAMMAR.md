@@ -56,9 +56,11 @@ Define as many tracks as your arrangement needs using `def <trackId> "<Display N
 | `style` | `patch` Options | Timbre & Behavior |
 | --- | --- | --- |
 | `standard` | `"salamander_grand"` | Multi-harmonic acoustic concert grand piano with hammer transient and natural decay. |
-| `synth` | `"saw_lead"` | Detuned dual-oscillator analog brass/sawtooth lead with low-pass filter sweep. |
-| `synth` | `"warm_pad"`, `"string_pad"` | Lush, slow-attack polyphonic chorus pad / chamber string ensemble. |
-| `synth` | `"808_sub"` | Deep sine/triangle sub-bass with punchy low-pass envelope. |
+| `synth` | `"saw_lead"`, `"supersaw"`, `"reese_bass"`, `"flutter_pad"`, `"pluck_lead"`, `"acid_lead"`, `"morph_analog_12"`, `"vintage_ladder_8"`, `"hybrid_motor_12"`, `"binaural_hybrid_20"`, `"west_coast_200"`, `"tape_nostalgia_pad"`, `"ribbon_cluster_8"` | Studio analog, West Coast wavefolder, binaural hybrid, and unison continuous synthesizers (`detune=`, `cutoff=`, `resonance=`, `sub=`, `air=`, `width=`, `slop=`). |
+| `scsynth` / `synth` | `"sc:default"`, `"sc:prophet"`, `"sc:tb303"`, `"sc:jp8000"`, `"sc:modal_bell"`, `"sc:klank_resonator"`, `"sc:dx7_brass"`, `"sc:formant_choir"`, `"sc:karplus_pluck"`, `"sc:gendy_stochastic"`, `"sc:pulsar_train"`, `"sc:hoover"` | **SuperCollider (`scsynth`) UGen-Graph Synths:** 12 MIT UGen topologies with inline `.rlpf()`, `.dfm1()`, `.moog_ff()`, and `.klank()` modifiers, binary OSC 1.1 `/s_new` encoding, and `.scd` export. |
+| `eurorack` / `synth` | `"mi:plaits_va"`, `"mi:plaits_waveshaper"`, `"mi:plaits_fm"`, `"mi:plaits_grain"`, `"mi:plaits_additive"`, `"mi:plaits_swarm"`, `"mi:plaits_chord"`, `"mi:plaits_speech"`, `"mi:plaits_karplus"`, `"mi:plaits_modal"`, `"mi:rings_sympathetic"`, `"mi:clouds_texture"` | **Eurorack Macro-Oscillator & Modal Resonator Suite (`mi:*`):** 12 Plaits / Rings / Clouds models with internal Vactrol `.lpg()` and inline `.timbre()`, `.harmonics()`, `.structure()`, `.damping()`, and `.position()` modifiers. |
+| `daisy` / `stk` / `synth` | `"daisy:vosim"`, `"daisy:formant"`, `"daisy:harmonic"`, `"daisy:variable_saw"`, `"daisy:zosc"`, `"daisy:string_voice"`, `"daisy:modal_voice"`, `"daisy:drip"`, `"stk:flute"`, `"stk:clarinet"`, `"stk:blown_bottle"`, `"stk:brass"`, `"stk:bowed"`, `"stk:sitar"`, `"stk:stif_karp"`, `"stk:banded_wg"` | **Electro-Smith DaisySP & Stanford CCRMA STK Waveguide Suite (`daisy:*`, `stk:*`):** 16 physical modeling & formant engines with inline `.jawari()`, `.breath()`, `.jet()`, and `.bow()` controls. |
+| `soundpipe` / `synth` | `"sp:fof_choir"`, `"sp:gbuzz"`, `"sp:pdhalf"`, `"sp:widesaw"`, `"sp:bar_model"`, `"sp:drip_water"`, `"sp:bitcrush_lead"`, `"sp:jitter_pad"` | **Paul Batchelor Soundpipe / Csound DSP Suite (`sp:*`):** 8 IRCAM Chant FOF vocal choir, closed-form `gbuzz`, and Casio CZ `pdhalf` phase-distortion synths with inline `.pdhalf()`, `.gbuzz()`, and `.fof()` modifiers. |
 | `grid` | `"tenuto_808_kit"` | Percussion trigger grid supporting kick, snare, clap, hi-hats, toms, and cymbals. |
 
 ### 3.1 Full 128-Instrument HD SoundFont Patch Catalog (`patch="..."`)
@@ -146,8 +148,11 @@ Durations are appended to a pitch, chord, or rest using a colon (`:`):
 * **Macros (`macro name = { ... }` and `$name`):** Define reusable motifs once and invoke them with `$`:
   * `macro arp_motif = { a3:16 e4 a4 c5 e5 c5 a4 e4 }`
   * `pno: $arp_motif $arp_motif |`
-* **Inline Phrase Repeats (`repeat N { ... }`):** Repeat any pattern inline without copy-pasting tokens:
-  * `pno: repeat 2 { c4:8 d4:8 e4:8 g4:8 } |`
+* **Inline Phrase Repeats & Strudel Pattern Combinators (`repeat N`, `fast N`, `slow N`, `rev`):**
+  * `repeat 2 { c4:8 d4:8 e4:8 g4:8 }` — Repeats the block `N` times.
+  * `fast 2 { c4:4 e4:4 g4:4 b4:4 }` — Scales inner durations by `1/N` (`:4` becomes `:8`) and repeats the compressed cycle `N` times so measure beat math stays intact.
+  * `slow 2 { c4:2 g4:2 }` — Stretches inner durations by `N` (`:2` becomes `:1`).
+  * `rev { c4:8 e4:8 g4:8 b4:8 }` — Reverses the token order of the block (`b4:8 g4:8 e4:8 c4:8`).
 * **Tied Notes Across Beats & Barlines (`~`):** Merge consecutive notes or chords of the same pitch into one continuous sustained sound:
   * `vln1: d5:2~ d5:4 e5:4 |` or `pad: [c4 e4 g4]:1~`
 
@@ -188,9 +193,18 @@ Chain dot modifiers directly onto any note or chord:
   * `.pull(12ms)` delays the physical note slightly behind the grid (great for laid-back lo-fi snares).
   * `.push(8ms)` plays the note slightly ahead of the beat.
   * `.glide(80ms)` slides pitch smoothly into the next note on `style=synth` tracks.
-* **DSP Effects:**
-  * `.fx(reverb, @{mix: 0.5})`
-  * `.fx(delay, @{mix: 0.3})`
+* **MIT Synth, Physical Modeling & Strudel Note Modifiers:**
+  * `.timbre(pct)`, `.harmonics(pct)`, `.morph(pct)`, `.structure(pct)`, `.damping(pct)`, `.position(pct)` — Eurorack `mi:plaits_*` and `mi:rings_sympathetic` macro/modal controls.
+  * `.jawari(pct)` — Curved-bridge sitar buzz dispersion (`stk:sitar`).
+  * `.breath(pct)`, `.jet(pct)`, `.bow(pressurePct, posPct)` — Woodwind/brass breath & embouchure jet delay (`stk:flute`, `stk:clarinet`, `stk:brass`) and bowed string friction (`stk:bowed`).
+  * `.pdhalf(pct)`, `.gbuzz(pct)`, `.fof("a"|"e"|"i"|"o"|"u")` — Casio CZ phase-distortion skew (`sp:pdhalf`), harmonic buzz (`sp:gbuzz`), and IRCAM Chant FOF vowel formant (`sp:fof_choir`).
+  * `.rlpf(cutoffHz, res)`, `.dfm1(cutoffHz, res)`, `.moog_ff(cutoffHz, res)`, `.klank(mode, decayPct)` — SuperCollider (`sc:*`) resonant low-pass, self-oscillating diode/ladder filter, and modal bank decay modifiers.
+  * `.ply(N)` — Subdivides a note/chord into `N` rapid Strudel-style re-triggers; `.degrade(pct)` applies stochastic drop probability (`100 - pct%` chance).
+  * `.galactic(mixPct)`, `.dattorro(mixPct)`, `.paulstretch(ratioX)`, `.totape(slamPct)`, `.fdn_reverb(mixPct)` — Per-note inline FX shorthands.
+* **DSP Effects (`.fx(<type>, @{ ... })`):**
+  * **Core & Creative FX:** `reverb`, `hybrid_reverb`, `true_stereo_hall_reverb`, `gated_reverb`, `delay`, `echo`, `chorus`, `eq_eight`, `auto_filter`, `compressor`, `glue_compressor`, `multiband_dynamics` (`ott`), `drum_buss`, `roar`, `saturator`, `tape_degrade`, `vocoder`, `spectral_resonator`, `auto_shift`, `utility`, `limiter`.
+  * **MIT Signalsmith, Airwindows, Dattorro, PaulStretch & ChowDSP FX:** `signalsmith_reverb`, `signalsmith_stretch`, `signalsmith_chorus`, `aw_galactic`, `aw_totape6`, `aw_console7`, `aw_pressure4`, `dattorro_plate`, `paulstretch`, `chow_tape`.
+  * **Outboard Mastering FX:** `transformer_color_adc`, `dual_bus_silk_sum`, `fet_fast_limiter`, `vari_mu_tube_comp`, `mastering_clip_limiter`, `spectral_pitch_harmonizer`.
 
 ---
 
@@ -213,19 +227,23 @@ To ensure `measure 1`, `measure 2`, `measure 3`, etc. in your code line up 1-to-
 Copy the prompt block below into any LLM chat when you want it to write a new song for Tenuto Studio 5:
 
 ```text
-Write a multi-track musical composition in Tenuto 5.0 DSL (.ten) and return ONLY the code inside a single ```tenuto code block.
+Write a multi-track musical composition in Tenuto 5.0 / 6.0 DSL (.ten) and return ONLY the code inside a single ```tenuto code block.
 
-Follow these strict Tenuto 5.0 rules:
+Follow these strict Tenuto rules:
 1. Wrap the score in:
-   tenuto "5.0" {
-     meta @{ title: "Title", tempo: 120, time: "4/4", sidechain: "drums" }
+   tenuto "6.0" {
+     meta @{ title: "Title", tempo: 120, time: "4/4", key: "D", scale: "dorian", sidechain: "drums" }
      ...
    }
-2. Define instruments using `def <id> "<Name>" style=<standard|synth|grid> patch="<salamander_grand|saw_lead|warm_pad|string_pad|808_sub|tenuto_808_kit>"`.
+2. Define instruments using `def <id> "<Name>" style=<standard|synth|scsynth|eurorack|daisy|stk|soundpipe|grid> patch="<patch>"`:
+   - Acoustic/Orchestral (`style=standard`): "salamander_grand", "electric_piano_1", "violin", "viola", "cello", "contrabass", "string_ensemble_1", "orchestral_harp", "flute", "oboe", "clarinet", "french_horn", "trumpet", "choir_aahs", "timpani".
+   - Studio Synths (`style=synth`): "supersaw", "reese_bass", "flutter_pad", "pluck_lead", "saw_lead", "morph_analog_12", "vintage_ladder_8", "hybrid_motor_12", "binaural_hybrid_20", "west_coast_200", "tape_nostalgia_pad", "ribbon_cluster_8".
+   - SuperCollider UGen Synths (`style=scsynth`): "sc:default", "sc:prophet", "sc:tb303", "sc:jp8000", "sc:modal_bell", "sc:klank_resonator", "sc:dx7_brass", "sc:formant_choir", "sc:karplus_pluck", "sc:gendy_stochastic", "sc:pulsar_train", "sc:hoover".
+   - Eurorack Plaits/Rings/Clouds (`style=eurorack`): "mi:plaits_va", "mi:plaits_waveshaper", "mi:plaits_fm", "mi:plaits_grain", "mi:plaits_additive", "mi:plaits_swarm", "mi:plaits_chord", "mi:plaits_speech", "mi:plaits_karplus", "mi:plaits_modal", "mi:rings_sympathetic", "mi:clouds_texture".
+   - DaisySP & Stanford STK Waveguides (`style=daisy` or `style=stk`): "daisy:vosim", "daisy:formant", "daisy:harmonic", "daisy:string_voice", "daisy:modal_voice", "stk:flute", "stk:clarinet", "stk:brass", "stk:bowed", "stk:sitar", "stk:stif_karp", "stk:banded_wg".
+   - Soundpipe / Csound (`style=soundpipe`): "sp:fof_choir", "sp:gbuzz", "sp:pdhalf", "sp:widesaw", "sp:bar_model", "sp:drip_water".
+   - Drum Kit (`style=grid`): "tenuto_808_kit" (tokens: k, s, cp, rim, h, oh, lt, mt, ht, cr, rd).
 3. Use `measure 1 { ... }`, `measure 2 { ... }`, etc.
-4. CRITICAL MEASURE MATH: In 4/4 time, every track/voice line inside a single `measure N` block MUST sum to exactly 4 quarter-note beats (1 whole note = :1, two :2 notes, four :4 notes, eight :8 notes, or sixteen :16 notes). Never put 8 beats inside one measure block.
-5. Pitches: c4, d#4, eb3, f5, or r (rest). Durations: :1, :2, :2., :4, :4., :8, :8., :16.
-6. Chords: [c4 e4 g4]:2. Polyphonic voices on one track: <[ v1: ... | v2: ... ]>.
-7. Drum tokens on `style=grid` tracks: k (kick), s (snare), cp (clap), h (closed hat), oh (open hat).
-8. Expressive modifiers: .stacc, .marc, .pp, .p, .mp, .mf, .f, .ff, .pan(-0.3), .pull(10ms), .fx(reverb, @{mix: 0.4}).
+4. CRITICAL MEASURE MATH: In 4/4 time, every track/voice line inside a single `measure N` block MUST sum to exactly 4 quarter-note beats (1 whole note = :1, two :2 notes, four :4 notes, eight :8 notes, or sixteen :16 notes). When attaching a modifier to a dotted duration (`:2.`, `:4.`, `:8.`), write two dots (`a4:2..mp.legato`).
+5. Pattern Combinators & Expressive Modifiers: `repeat N { ... }`, `fast N { ... }`, `slow N { ... }`, `rev { ... }`, `.stacc`, `.legato`, `.vib`, `.pp..ff`, `.cresc`, `.dim`, `.glide(180ms)`, `.detune(75%, 0.2..0.85)`, `.filter(600, 4200)`, `.open_voice`, `.rootless`, `.plane("m9")`, `.lpg("both", 360ms)`, `.timbre(70%)`, `.structure(65%)`, `.damping(80%)`, `.jawari(75%)`, `.breath(65%)`, `.jet(52%)`, `.pdhalf(75%)`, `.gbuzz(70%)`, `.fof("a")`, `.rlpf(2400, 1.8)`, `.dfm1(1800, 2.5)`, `.ply(2)`, `.degrade(25%)`, `.galactic(45%)`, `.dattorro(38%)`, `.paulstretch(4.0)`, `.totape(50%)`, `.fdn_reverb(40%)`.
 ```

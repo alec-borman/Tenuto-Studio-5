@@ -297,6 +297,15 @@ export function configureTenutoMonaco(monaco: any): void {
         'paulstretch',
         'totape',
         'fdn_reverb',
+        'rlpf',
+        'dfm1',
+        'moog_ff',
+        'klank',
+        'scsynth',
+        'eurorack',
+        'daisy',
+        'stk',
+        'soundpipe',
       ],
       tokenizer: {
         root: [
