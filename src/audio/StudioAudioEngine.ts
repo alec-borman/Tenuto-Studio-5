@@ -115,7 +115,7 @@ export class StudioAudioEngine {
   private soloedGroups: Set<string> = new Set();
   private sidechainTapMode: 'pre_fx' | 'post_fx' | 'post_mixer' = 'post_fx';
   private polyphonyScalar: number = 1.0;
-  private masterVolumeScalar: number = 1.25;
+  private masterVolumeScalar: number = 0.8;
 
   private scheduledTimeline: ScheduledNoteEvent[] = [];
   private prebakedScoreSignature: string | null = null;
@@ -146,7 +146,7 @@ export class StudioAudioEngine {
   public setMasterVolume(scalar: number): void {
     this.masterVolumeScalar = Math.max(0, Math.min(2.5, scalar));
     if (this.masterGain && this.ctx) {
-      this.masterGain.gain.setValueAtTime(0.92 * this.masterVolumeScalar, this.ctx.currentTime || 0);
+      this.masterGain.gain.setValueAtTime(0.48 * this.masterVolumeScalar, this.ctx.currentTime || 0);
     }
   }
 
@@ -163,7 +163,7 @@ export class StudioAudioEngine {
       this.rebuildMasterChain(this.ctx);
     } else {
       this.masterGain.gain.setValueAtTime(
-        0.92 * this.masterVolumeScalar,
+        0.48 * this.masterVolumeScalar,
         this.ctx.currentTime || 0
       );
     }
@@ -224,7 +224,7 @@ export class StudioAudioEngine {
     }
 
     this.masterGain = ctx.createGain();
-    this.masterGain.gain.value = 0.92 * this.masterVolumeScalar;
+    this.masterGain.gain.value = 0.48 * this.masterVolumeScalar;
 
     let masterOutputNode: AudioNode = this.masterGain;
     if (typeof ctx.createBiquadFilter === 'function') {
@@ -243,11 +243,11 @@ export class StudioAudioEngine {
     if (typeof (ctx as unknown as { createDynamicsCompressor?: unknown }).createDynamicsCompressor === 'function') {
       const comp = ctx.createDynamicsCompressor();
       const now = ctx.currentTime || 0;
-      comp.threshold?.setValueAtTime?.(-1.2, now);
-      comp.knee?.setValueAtTime?.(10, now);
-      comp.ratio?.setValueAtTime?.(3.0, now);
-      comp.attack?.setValueAtTime?.(0.012, now);
-      comp.release?.setValueAtTime?.(0.22, now);
+      comp.threshold?.setValueAtTime?.(-2.4, now);
+      comp.knee?.setValueAtTime?.(6, now);
+      comp.ratio?.setValueAtTime?.(12.0, now);
+      comp.attack?.setValueAtTime?.(0.002, now);
+      comp.release?.setValueAtTime?.(0.18, now);
       comp.connect(ctx.destination);
       masterOutputNode.connect(comp);
       this.compressorNode = comp;
@@ -963,7 +963,16 @@ export class StudioAudioEngine {
     }
 
     const numTracks = Math.max(1, score.defs.length);
-    this.polyphonyScalar = numTracks >= 10 ? 0.78 : numTracks >= 6 ? 0.85 : numTracks >= 3 ? 0.92 : 1.0;
+    this.polyphonyScalar =
+      numTracks >= 10
+        ? 0.62
+        : numTracks >= 6
+          ? 0.7
+          : numTracks >= 4
+            ? 0.76
+            : numTracks >= 2
+              ? 0.85
+              : 0.95;
 
     const automationLanes =
       score.automationLanes && score.automationLanes.length > 0
@@ -1083,7 +1092,7 @@ export class StudioAudioEngine {
           : rawDuckScalar;
 
       const trackGainScalar =
-        (trackVolMidi / 100) * groupVolScalar * duckScalar * 0.95 * this.polyphonyScalar;
+        (trackVolMidi / 100) * groupVolScalar * duckScalar * 0.78 * this.polyphonyScalar;
       let startSec = rawStartSec + seatingOffsetSec;
       if (isGrace) {
         startSec = Math.max(0, startSec - 0.045);
@@ -1112,8 +1121,8 @@ export class StudioAudioEngine {
         durSec = durSec * 1.65;
       }
 
-      // Map MIDI velocity (1..127) onto an audible studio dynamic curve (0.28..1.0)
-      const velToAudibleCurve = (v: number) => 0.25 + 0.75 * Math.pow(Math.max(1, Math.min(127, v)) / 127, 0.85);
+      // Map MIDI velocity (1..127) onto a clean studio dynamic curve (0.18..1.0)
+      const velToAudibleCurve = (v: number) => 0.18 + 0.82 * Math.pow(Math.max(1, Math.min(127, v)) / 127, 1.05);
 
       let vel = ev.physics?.velocity ?? 90;
       if (def?.groove && groovesById.has(def.groove)) {
@@ -2186,12 +2195,13 @@ export class StudioAudioEngine {
         const src = ctx.createBufferSource();
         src.buffer = buf;
         const envGain = ctx.createGain();
+        const voiceHeadroomGain = 0.58;
         const safeOffset = Math.max(0, Math.min(inNoteOffsetSec, Math.max(0, buf.duration - 0.04)));
         if (safeOffset > 0.005) {
           envGain.gain.setValueAtTime(0.001, safeStart);
-          envGain.gain.linearRampToValueAtTime(1.0, safeStart + 0.015);
+          envGain.gain.linearRampToValueAtTime(voiceHeadroomGain, safeStart + 0.015);
         } else {
-          envGain.gain.setValueAtTime(1.0, safeStart);
+          envGain.gain.setValueAtTime(voiceHeadroomGain, safeStart);
         }
         src.connect(envGain);
         envGain.connect(voiceOut);
@@ -2609,7 +2619,7 @@ export class StudioAudioEngine {
     const tSustain = Math.max(tAttack + 0.015, t0 + durSec);
     const release = hasNextConnectedNote ? 0.16 : Math.max(0.65, profile.releaseSec);
     const tEnd = tSustain + release;
-    const sampleScale = 2.1;
+    const sampleScale = 0.85;
 
     env.gain.setValueAtTime(0.0001, t0);
     if (physics?.fp) {
@@ -4794,7 +4804,7 @@ export class StudioAudioEngine {
             readPos2 += rateRatio2 * modScalar;
           }
 
-          const gain = env * baseAmpScalar * 2.1;
+          const gain = env * baseAmpScalar * 0.85;
           targetL[startFrame + i] += lpState0 * gain * gainL;
           targetR[startFrame + i] += lpState1 * gain * gainR;
         }

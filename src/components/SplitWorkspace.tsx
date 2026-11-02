@@ -46,7 +46,7 @@ export default function SplitWorkspace() {
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isLooping, setIsLooping] = useState<boolean>(false);
   const [playheadBeat, setPlayheadBeat] = useState<number>(0);
-  const [masterVolume, setMasterVolume] = useState<number>(125);
+  const [masterVolume, setMasterVolume] = useState<number>(80);
   const [activeMainView, setActiveMainView] = useState<MainStudioView>('piano_roll');
   const [activeBottomDock, setActiveBottomDock] = useState<BottomDockTab>(null);
   const [isCodeVisible, setIsCodeVisible] = useState<boolean>(true);
@@ -1134,19 +1134,13 @@ export default function SplitWorkspace() {
             isFullscreen ? 'tenuto-fullscreen-active' : ''
           } flex-1 w-full max-w-[100vw] bg-slate-950 text-slate-100 overflow-hidden flex flex-col min-h-0`}
         >
-          {/* Top Bar: Transport Controls & Demo Selector (Collapsed in Immersive Mode or Auto-Hidden During Playback) */}
+          {/* Top Bar: Transport Controls & Demo Selector (Collapsed in Immersive Mode; Locked in Desktop Mode to prevent layout bounce) */}
           <div
             data-testid="app-top-header"
             data-topbar-hidden={isTopBarHidden ? 'true' : 'false'}
             onMouseEnter={revealTopBar}
             onMouseMove={revealTopBar}
-            className={
-              isImmersiveStage
-                ? 'sr-only'
-                : isTopBarHidden
-                  ? 'max-h-0 opacity-0 overflow-hidden py-0 border-0 pointer-events-none transition-all duration-200'
-                  : 'shrink-0 transition-all duration-200'
-            }
+            className={isImmersiveStage ? 'sr-only' : 'shrink-0'}
           >
             <Transport
               isPlaying={isPlaying}

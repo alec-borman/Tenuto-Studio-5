@@ -1,5 +1,5 @@
 # The Definitive Guide to Music Creation in Tenuto Studio 5 (`.ten`)
-### Complete Grammar Specification, Synthesis Physics, Compositional Theory & Studio Engineering Manual (`v5.5.0`)
+### Complete Grammar Specification, Synthesis Physics, Compositional Theory & Studio Engineering Manual (`v5.5.2`)
 
 > **Self-Contained Reference:** This manual contains the complete **Tenuto 6.0 (`.ten`)** formal grammar, compiler rules, instrument & patch catalog, continuous synthesizer modifiers, outboard DSP effects, psychoacoustic voicing laws, and stylistic blueprints. A human composer or AI agent reading **only this document** has 100% of the knowledge required to write studio-mastered, multi-track `.ten` compositions from scratch.
 

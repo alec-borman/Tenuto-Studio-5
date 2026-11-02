@@ -381,8 +381,10 @@ export default function CodeEditor({
         if (decorationIdsRef.current.length > 0) {
           decorationIdsRef.current = editor.deltaDecorations(decorationIdsRef.current, []);
         }
-        lastRevealedLineRef.current = 0;
-        lastRevealedMeasureRef.current = 0;
+        if (!isPlaying) {
+          lastRevealedLineRef.current = 0;
+          lastRevealedMeasureRef.current = 0;
+        }
         return;
       }
 
@@ -447,12 +449,16 @@ export default function CodeEditor({
         newDecorations
       );
 
-      // Only compute and scroll to the active measure when the measure number actually changes!
-      const currentMeasure = activeTokens[0].measureNumber;
-      if (currentMeasure !== lastRevealedMeasureRef.current) {
+      // Only compute and scroll to the active measure when the playhead measure number actually changes!
+      const playheadMeasure = Math.max(
+        1,
+        Math.floor(playheadBeat / 4) + 1,
+        activeTokens[0].measureNumber
+      );
+      if (playheadMeasure !== lastRevealedMeasureRef.current) {
         const scrollTarget = computeActiveMeasureScrollTarget(code, activeTokens);
         if (scrollTarget) {
-          lastRevealedMeasureRef.current = scrollTarget.measureNumber;
+          lastRevealedMeasureRef.current = playheadMeasure;
           lastRevealedLineRef.current = scrollTarget.centerLine;
 
           if (typeof editor.revealLinesInCenter === 'function') {
@@ -468,15 +474,15 @@ export default function CodeEditor({
     } catch {
       // Graceful fallback for mocked environments
     }
-  }, [activeSpanSignature, code, codeLines]);
+  }, [activeSpanSignature, code, codeLines, isPlaying, playheadBeat]);
 
   return (
     <div className="w-full h-full flex flex-col overflow-hidden relative tenuto-editor-playback">
-      {/* Top compact Horizontal Karaoke progress ticker ribbon */}
+      {/* Top compact Horizontal Karaoke progress ticker ribbon (Locked 32px height when active) */}
       {activeTokens.length > 0 && (
         <div
           data-testid="karaoke-code-ribbon"
-          className="bg-slate-900/95 border-b border-emerald-500/40 px-3 py-1.5 flex items-center gap-2 overflow-x-auto no-scrollbar shrink-0 z-10 select-none"
+          className="h-8 min-h-[32px] max-h-[32px] bg-slate-900/95 border-b border-emerald-500/40 px-3 flex items-center gap-2 overflow-hidden shrink-0 z-10 select-none"
         >
           <span className="px-2 py-0.5 rounded bg-emerald-500/25 border border-emerald-500/50 text-emerald-300 text-[10px] font-mono font-bold uppercase tracking-wider shrink-0 shadow-[0_0_8px_rgba(16,185,129,0.25)]">
             ♫ Now Playing M{activeTokens[0].measureNumber}
@@ -487,7 +493,7 @@ export default function CodeEditor({
               <div
                 key={`${tok.trackId}-${tok.line}-${tok.col}-${idx}`}
                 data-testid={`karaoke-pill-${tok.trackId}`}
-                className="relative overflow-hidden rounded bg-slate-950 border border-emerald-500/50 px-2.5 py-0.5 text-[11px] font-mono flex items-center gap-1.5 shrink-0 shadow-[0_0_6px_rgba(16,185,129,0.15)]"
+                className="relative h-6 overflow-hidden rounded bg-slate-950 border border-emerald-500/50 px-2.5 text-[11px] font-mono flex items-center gap-1.5 shrink-0 whitespace-nowrap shadow-[0_0_6px_rgba(16,185,129,0.15)]"
               >
                 <div
                   data-testid={`karaoke-fill-${tok.trackId}`}
@@ -583,6 +589,8 @@ export default function CodeEditor({
             options={{
               minimap: { enabled: false },
               wordWrap: 'on',
+              wrappingStrategy: 'simple',
+              fontLigatures: false,
               lineNumbers: 'on',
               scrollBeyondLastLine: false,
               fontSize: 14,
@@ -590,7 +598,10 @@ export default function CodeEditor({
               fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
               padding: { top: 16, bottom: 16 },
               renderLineHighlight: 'none',
-              smoothScrolling: true,
+              smoothScrolling: false,
+              scrollbar: {
+                alwaysConsumeMouseWheel: false,
+              },
               contextmenu: false,
               domReadOnly: false,
             }}

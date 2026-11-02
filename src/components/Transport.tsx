@@ -59,7 +59,7 @@ export default function Transport({
   rootKey = 'C',
   scaleName = 'chromatic',
   onKeyScaleChange,
-  masterVolume = 125,
+  masterVolume = 80,
   onMasterVolumeChange,
   onSelectPreset,
   onExportWav,

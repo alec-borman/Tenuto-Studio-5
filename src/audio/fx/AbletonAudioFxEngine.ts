@@ -206,38 +206,22 @@ export class AbletonAudioFxEngine {
           if (Number.isFinite(cut) && cut > 0) {
             cutoffHz = clamp(cut, 60, 16000);
           }
-          const drive = Number(p.drive ?? 0);
-          if (drive > 0) {
-            amp *= 1 + clamp(drive, 0, 24) * 0.015;
-          }
           break;
         }
         case 'compressor':
         case 'glue_compressor': {
-          const makeupDb = Number(p.makeup ?? (type === 'glue_compressor' ? 3 : 2));
-          amp *= dbToLinear(clamp(makeupDb * 0.45, -6, 9));
           break;
         }
         case 'multiband_dynamics': {
-          const amount = clamp(Number(p.amount ?? 0.5), 0, 1);
           const highGainDb = Number(p.high_gain ?? 2.5);
-          amp *= 1 + amount * 0.18;
           if (cutoffHz === undefined && highGainDb > 0) {
             cutoffHz = clamp(4200 + highGainDb * 400, 1200, 15000);
           }
           break;
         }
-        case 'drum_buss': {
-          const drive = clamp(Number(p.drive ?? 0.35), 0, 1);
-          const boom = clamp(Number(p.boom_amount ?? p.boom ?? 0.45), 0, 1);
-          amp *= 1 + drive * 0.22 + boom * 0.12;
-          break;
-        }
+        case 'drum_buss':
         case 'roar':
         case 'saturator': {
-          const rawDrive = Number(p.drive ?? (type === 'saturator' ? 6.0 : 0.4));
-          const normDrive = type === 'saturator' ? clamp(rawDrive / 24, 0, 1) : clamp(rawDrive, 0, 1);
-          amp *= 1 + normDrive * 0.2;
           break;
         }
         case 'tape_degrade': {
@@ -292,19 +276,11 @@ export class AbletonAudioFxEngine {
           break;
         }
         case 'limiter':
-        case 'bettermaker_limiter': {
-          const gainDb = Number(p.gain_db ?? 2.0);
-          const ceilingDb = Number(p.ceiling ?? -0.3);
-          const ceilingLin = dbToLinear(clamp(ceilingDb, -18, 0));
-          amp = Math.min(ceilingLin * 1.35, amp * dbToLinear(clamp(gainDb, 0, 18)));
-          break;
-        }
+        case 'bettermaker_limiter':
         case 'burl_mothership':
         case 'neve_5059':
         case 'wes_mimas':
         case 'wes_rhea': {
-          const drive = clamp(Number(p.drive ?? p.texture ?? 0.45), 0, 1);
-          amp *= 1 + drive * 0.16;
           break;
         }
         case 'bricasti_m7':
